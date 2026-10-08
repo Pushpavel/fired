@@ -1,0 +1,31 @@
+# Runs fired on the KVM workstation. See docs/operations.md for host setup
+# (tmpfs for the hot tier, firewall rule for the API port, kernel build).
+services:
+  fired:
+    build:
+      context: ..
+    image: fired:latest
+    # Firecracker + jailer need /dev/kvm, mount, chroot, mknod and cgroup
+    # access. Untrusted code runs inside the microVMs, not in this container.
+    privileged: true
+    cgroup: private
+    # Hard budget for everything sandbox-related: VMs + tmpfs disks/snapshots.
+    cpuset: "32-47"
+    mem_limit: 56g
+    memswap_limit: 56g
+    # Bind to the LAN address your backend reaches, and restrict it in the
+    # DOCKER-USER chain (published ports bypass ufw/INPUT rules).
+    ports:
+      - "${FIRED_BIND:-0.0.0.0}:8443:8443"
+    environment:
+      FIRED_API_TOKEN: ${FIRED_API_TOKEN:?set FIRED_API_TOKEN}
+    volumes:
+      - ./config.yaml:/etc/fired/config.yaml:ro
+      - /srv/fired/hot:/data/hot                 # host tmpfs (survives container restarts)
+      - /mnt/hdd/fired/cold:/data/cold
+      - /mnt/hdd/fired/templates:/data/templates
+      - /mnt/hdd/fired/state:/data/state
+      - /mnt/hdd/fired/kernels:/data/kernels:ro
+    # Long enough to snapshot every running sandbox on shutdown.
+    stop_grace_period: 3m
+    restart: unless-stopped

@@ -1,0 +1,15 @@
+# Local development: fake driver (commands run on your machine, no isolation).
+# make dev
+listen: "127.0.0.1:8443"
+driver: fake
+fake:
+  agent_binary: ./bin/fired-agent
+capacity:
+  max_running_memory_mb: 8192
+defaults:
+  memory_mb: 512
+  disk_mb: 1024
+egress:
+  enabled: true
+  allow_private_cidrs: ["127.0.0.0/8"]
+log_level: debug

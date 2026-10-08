@@ -1,0 +1,82 @@
+# fired configuration. Every key is optional; values shown are examples for
+# a shared 256 GB / 48-core workstation (see docs/operations.md).
+
+listen: ":8443"
+
+auth:
+  # Prefer the FIRED_API_TOKEN environment variable.
+  token: ""
+
+# tls:
+#   cert: /etc/fired/tls/server.crt
+#   key: /etc/fired/tls/server.key
+#   client_ca: /etc/fired/tls/clients-ca.crt   # enables mTLS
+
+data:
+  state_dir: /data/state          # SQLite (HDD is fine)
+  hot_dir: /data/hot              # host tmpfs: running disks + hot snapshots
+  cold_dir: /data/cold            # HDD: compressed archives
+  templates_dir: /data/templates  # HDD: template rootfs + base snapshots
+
+driver: firecracker
+
+firecracker:
+  binary: /usr/local/bin/firecracker
+  kernel: /data/kernels/vmlinux   # build with scripts/build-kernel.sh
+  agent_binary: /usr/local/lib/fired/fired-agent
+  boot_timeout: 30s
+  # insecure_registries: ["registry.lan:5000"]
+  jailer:
+    enabled: true
+    binary: /usr/local/bin/jailer
+    uid: 10000
+    gid: 10000
+    cgroups: true
+    parent_cgroup: fired
+    memory_overhead_mb: 128
+
+capacity:
+  # Sum of memory_mb of running sandboxes. Leave headroom inside the
+  # container memory limit for sandbox disks and hot snapshots in tmpfs.
+  max_running_memory_mb: 32768
+  max_sandboxes: 0
+  evict_idle: true
+
+defaults:
+  template: node
+  vcpus: 2
+  memory_mb: 1536
+  disk_mb: 10240
+  redact: true
+  max_vcpus: 8
+  max_memory_mb: 8192
+  max_disk_mb: 51200
+  ttl:
+    idle_suspend: 5m      # running → suspended (hot)
+    archive_after: 1h     # suspended → archived (cold, HDD)
+    delete_after: 168h    # no activity for 7 days → deleted
+
+egress:
+  enabled: true
+  # Merged into every sandbox's allowlist.
+  global_allow:
+    - registry.npmjs.org
+    - "*.npmjs.org"
+    - pypi.org
+    - files.pythonhosted.org
+  # Private/loopback destinations are blocked unless listed here, e.g. your
+  # local registry mirror or git server.
+  allow_private_cidrs: []
+  allowed_ports: [443, 80]
+  upstream_proxy: ""
+
+exec:
+  default_timeout: 5m
+  max_timeout: 2h
+  max_output_bytes: 1048576
+
+reaper_interval: 15s
+# suspend: hot-snapshot running sandboxes on SIGTERM (survives container restarts)
+# archive: also compress them to cold_dir (survives host reboots; slower)
+shutdown_action: suspend
+log_level: info
