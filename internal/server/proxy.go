@@ -30,6 +30,19 @@ func (s *Server) handlePortProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPort(w, r, id, port, "/v1/sandboxes/"+id+"/ports/"+strconv.Itoa(port)+"/proxy")
 }
 
+// handleHeaderProxy serves a request routed by headers instead of by path,
+// for a front proxy that owns the preview domain: it resolves the hostname
+// to a sandbox and port, then forwards the request unchanged (same path and
+// query) with X-Fired-Sandbox, X-Fired-Port and the API token.
+func (s *Server) handleHeaderProxy(w http.ResponseWriter, r *http.Request) {
+	port, err := strconv.Atoi(r.Header.Get("X-Fired-Port"))
+	if err != nil || port <= 0 || port > 65535 {
+		writeError(w, &sandbox.Error{Status: 400, Code: "invalid_request", Msg: "X-Fired-Port must be a port number when X-Fired-Sandbox is set"})
+		return
+	}
+	s.proxyPort(w, r, r.Header.Get("X-Fired-Sandbox"), port, "")
+}
+
 // proxyPort forwards the part of the request path after prefix.
 func (s *Server) proxyPort(w http.ResponseWriter, r *http.Request, id string, port int, prefix string) {
 	if _, err := s.m.Get(id); err != nil {
@@ -85,6 +98,8 @@ func (s *Server) proxyPort(w http.ResponseWriter, r *http.Request, id string, po
 			}
 			pr.Out.Header.Del("X-Fired-Token")
 			pr.Out.Header.Del("X-Fired-No-Wake")
+			pr.Out.Header.Del("X-Fired-Sandbox")
+			pr.Out.Header.Del("X-Fired-Port")
 			stripCookie(pr.Out.Header, sessionCookie)
 			if a := pr.Out.Header.Get("Authorization"); s.token != "" && a == "Bearer "+s.token {
 				pr.Out.Header.Del("Authorization")

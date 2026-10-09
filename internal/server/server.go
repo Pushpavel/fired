@@ -25,6 +25,8 @@ type Server struct {
 	log   *slog.Logger
 	mux   *http.ServeMux
 	ui    bool
+	// previewDomain serves port previews on p{port}-{id}-{sig}.<domain>.
+	previewDomain string
 }
 
 func New(m *sandbox.Manager, token string, log *slog.Logger) *Server {
@@ -82,14 +84,22 @@ func (s *Server) routes() {
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		if id, port, ok := s.previewTarget(r.Host); ok {
+			s.proxyPort(w, r, id, port, "")
+			return
+		}
 		if !s.public(r.URL.Path) && !s.authorized(r) {
 			writeError(w, &sandbox.Error{Status: 401, Code: "unauthorized", Msg: "missing or invalid API token"})
 			return
 		}
 		sw := &statusWriter{ResponseWriter: w, status: 200}
-		s.mux.ServeHTTP(sw, r)
+		if r.Header.Get("X-Fired-Sandbox") != "" {
+			s.handleHeaderProxy(sw, r)
+		} else {
+			s.mux.ServeHTTP(sw, r)
+		}
 		lvl := slog.LevelInfo
-		if strings.Contains(r.URL.Path, "/proxy") || r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
+		if strings.Contains(r.URL.Path, "/proxy") || r.URL.Path == "/healthz" || r.URL.Path == "/metrics" || r.Header.Get("X-Fired-Sandbox") != "" {
 			lvl = slog.LevelDebug
 		}
 		s.log.Log(r.Context(), lvl, "request", "method", r.Method, "path", r.URL.Path, "status", sw.status,

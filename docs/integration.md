@@ -115,6 +115,36 @@ then:
    adding `X-Fired-Token` and `X-Forwarded-Host: p3000-<id>.preview.example.com`
    and passing WebSocket upgrades through.
 
+   Alternatively, forward the request **unchanged** (same path and query) to
+   `{FIRED_URL}` with `X-Fired-Sandbox: <id>` and `X-Fired-Port: 3000` added.
+   No path rewriting is needed, so a plain nginx, Caddy or Traefik route works:
+
+   ```nginx
+   server {
+     server_name ~^p(?<fport>\d+)-(?<fsb>[a-z0-9-]+)\.preview\.example\.com$;
+     location / {
+       # after your auth check
+       proxy_set_header X-Fired-Sandbox $fsb;
+       proxy_set_header X-Fired-Port    $fport;
+       proxy_set_header X-Fired-Token   $fired_token;
+       proxy_set_header X-Forwarded-Host $host;
+       proxy_set_header Upgrade $http_upgrade;
+       proxy_set_header Connection $connection_upgrade;
+       proxy_http_version 1.1;
+       proxy_pass http://fired-host:8443;
+     }
+   }
+   ```
+
+   `proxy_set_header` replaces anything a client sent under those names. With
+   other proxies, make sure client-supplied `X-Fired-*` headers are dropped.
+
+For trying things by hand, fired's console (`ui: true`) can also serve
+previews itself on `p<port>-<sandbox>-<sig>.<preview_domain>`, or on nip.io
+when no domain is configured. The signature in the hostname is a capability
+for that one port. Your product should still use the flow above, which adds
+per-user auth and wake control.
+
 **Dev server settings for the template.** Vite rejects unknown Host headers
 and needs to know where HMR connects back to:
 

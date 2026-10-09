@@ -132,7 +132,7 @@ func serve(args []string) int {
 
 	api := server.New(mgr, cfg.Auth.Token, log)
 	if cfg.UI {
-		api.EnableUI()
+		api.EnableUI(cfg.PreviewDomain)
 	}
 	srv := &http.Server{
 		Handler:           api.Handler(),

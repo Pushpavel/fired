@@ -264,6 +264,14 @@ Relative paths are resolved against the template workdir (`/workspace`).
   - **Errors:** `502 port_not_listening` if nothing is listening on the port.
   - **Activity:** proxied traffic counts as activity. An open WebSocket does
     not keep the sandbox busy on its own.
+- **Header routing, the same proxy without path rewriting:** send any
+  request, with its original path and query, to fired with
+  `X-Fired-Sandbox: <id>` and `X-Fired-Port: <port>` plus the API token. This
+  is for a front proxy that owns the wildcard preview domain: it maps
+  `p3000-<id>.preview.example.com/some/page` to a sandbox and port and
+  forwards `/some/page` as it is. All the rules above apply. Both headers are
+  removed before forwarding. The front proxy must set these headers itself
+  and drop any `X-Fired-*` headers that come from clients.
 
 ---
 

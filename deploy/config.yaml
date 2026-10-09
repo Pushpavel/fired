@@ -81,5 +81,10 @@ reaper_interval: 15s
 shutdown_action: suspend
 # Browser console at /ui/ (sign in with the API token). Env FIRED_UI=1.
 ui: false
+# Console port previews are served on p<port>-<sandbox>-<sig>.<preview_domain>.
+# Point a wildcard DNS record (*.<preview_domain>) at fired. Empty uses
+# nip.io for the IP the console is opened on (e.g. *.127-0-0-1.nip.io).
+# Env FIRED_PREVIEW_DOMAIN.
+preview_domain: ""
 
 log_level: info

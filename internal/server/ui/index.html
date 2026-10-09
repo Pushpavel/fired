@@ -959,15 +959,16 @@ TAB_RENDER.ports = (pane, id) => {
   const list = h("div");
   const frame = h("div");
   const port = h("input", { type: "number", min: 1, max: 65535, placeholder: "3000", style: "width:110px", "aria-label": "Port" });
-  const links = {};
+  const links = {}, linkErr = {};
   async function load() {
     const ports = curSb()?.ports || [];
-    for (const p of ports) if (!links[p]) {
-      try { links[p] = (await api("POST", "/ui/preview-link", { sandbox: id, port: p }, { quiet: true })).url; } catch {}
+    for (const p of ports) if (!links[p] && !linkErr[p]) {
+      try { links[p] = (await api("POST", "/ui/preview-link", { sandbox: id, port: p }, { quiet: true })).url; }
+      catch (e) { linkErr[p] = e.message; }
     }
     list.replaceChildren(ports.length ? h("table", {}, h("tbody", {}, ports.map(p => h("tr", {},
       h("td", { class: "num", style: "width:80px" }, h("strong", {}, p)),
-      h("td", {}, links[p] ? h("a", { href: links[p], target: "_blank", rel: "noopener", class: "mono" }, location.origin + links[p]) : "Getting a link…"),
+      h("td", {}, links[p] ? h("a", { href: links[p], target: "_blank", rel: "noopener", class: "mono" }, links[p]) : linkErr[p] ? h("span", { class: "err-text" }, linkErr[p]) : "Getting a link…"),
       h("td", { style: "text-align:right;white-space:nowrap" },
         h("button", { class: "btn small", onclick: () => preview(p) }, "Preview"), " ",
         h("button", { class: "btn small danger", onclick: async () => { await guard(() => api("DELETE", `/sandboxes/${enc(id)}/ports/${p}`), `Closed port ${p}`); await refreshAll(); load(); } }, "Close port"))))))
@@ -997,7 +998,7 @@ TAB_RENDER.ports = (pane, id) => {
     h("div", { class: "row" }, h("h2", { class: "section-title" }, "Open a port"), port,
       h("button", { class: "btn primary", onclick: () => port.value && expose(port.value) }, "Open port"),
       h("span", { class: "note" }, "or"), h("button", { class: "btn", onclick: demo }, "Serve a sample site")),
-    h("p", { class: "note", style: "margin:0" }, "Start a server inside the sandbox that listens on 127.0.0.1, then open its port. Requests wake a sleeping sandbox. Preview links work for one port only and run the page in an isolated origin, so sites that rely on cookies or local storage may behave differently here."),
+    h("p", { class: "note", style: "margin:0" }, "Start a server inside the sandbox that listens on 127.0.0.1, then open its port. Each port gets its own address, so the app runs at / like it would in production. The address works only for that port, and opening it wakes a sleeping sandbox. Browsers may block an app's own cookies inside the preview frame here, so open it in a new tab when it needs them. Dev servers that check the Host header, like Vite, need the preview domain in their allowed hosts."),
     list, frame);
   load();
   const iv = setInterval(load, 5000);

@@ -39,6 +39,10 @@ type Config struct {
 	// UI serves a browser console at /ui/ for poking at the API by hand.
 	// Login uses the API token; env FIRED_UI=1 enables it.
 	UI bool `yaml:"ui"`
+	// PreviewDomain is a wildcard DNS name (*.<domain> → fired) for console
+	// port previews. Empty uses nip.io for the IP the console is reached on.
+	// Env FIRED_PREVIEW_DOMAIN.
+	PreviewDomain string `yaml:"preview_domain"`
 }
 
 type AuthConfig struct {
@@ -228,6 +232,9 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("FIRED_DRIVER"); v != "" {
 		cfg.Driver = v
+	}
+	if v := os.Getenv("FIRED_PREVIEW_DOMAIN"); v != "" {
+		cfg.PreviewDomain = v
 	}
 	if v := os.Getenv("FIRED_UI"); v != "" {
 		cfg.UI = v == "1" || v == "true"

@@ -100,6 +100,14 @@ takes 10–20 minutes, and later builds reuse it from the cache. `ui: true`
 commands, secrets, files, port previews, lifecycle controls and a live
 event/API log, and you sign in with the API token.
 
+Console port previews get their own origin, at
+`p<port>-<sandbox>-<sig>.<preview_domain>`, so apps run at `/` the same way
+they do behind your backend's preview domain. Without `preview_domain`
+(`FIRED_PREVIEW_DOMAIN`), the console uses nip.io for the IP you opened it on,
+for example `p3000-web-1a2b3c4d5e6f.127-0-0-1.nip.io:8443`. Some routers block
+public DNS names that resolve to private IPs. If nip.io doesn't resolve on your
+network, set `preview_domain` to a wildcard DNS name that points at fired.
+
 ## Production (the KVM workstation)
 
 The steps are summarized here; the full guide is
