@@ -27,6 +27,11 @@ func (s *Server) handlePortProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &sandbox.Error{Status: 400, Code: "invalid_request", Msg: "bad port"})
 		return
 	}
+	s.proxyPort(w, r, id, port, "/v1/sandboxes/"+id+"/ports/"+strconv.Itoa(port)+"/proxy")
+}
+
+// proxyPort forwards the part of the request path after prefix.
+func (s *Server) proxyPort(w http.ResponseWriter, r *http.Request, id string, port int, prefix string) {
 	if _, err := s.m.Get(id); err != nil {
 		writeError(w, err)
 		return
@@ -49,7 +54,6 @@ func (s *Server) handlePortProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	prefix := "/v1/sandboxes/" + id + "/ports/" + strconv.Itoa(port) + "/proxy"
 	rest := strings.TrimPrefix(r.URL.EscapedPath(), prefix)
 	if rest == "" || rest[0] != '/' {
 		rest = "/" + rest
@@ -81,6 +85,7 @@ func (s *Server) handlePortProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			pr.Out.Header.Del("X-Fired-Token")
 			pr.Out.Header.Del("X-Fired-No-Wake")
+			stripCookie(pr.Out.Header, sessionCookie)
 			if a := pr.Out.Header.Get("Authorization"); s.token != "" && a == "Bearer "+s.token {
 				pr.Out.Header.Del("Authorization")
 			}

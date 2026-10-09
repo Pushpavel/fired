@@ -79,4 +79,7 @@ reaper_interval: 15s
 # suspend: hot-snapshot running sandboxes on SIGTERM (survives container restarts)
 # archive: also compress them to cold_dir (survives host reboots; slower)
 shutdown_action: suspend
+# Browser console at /ui/ (sign in with the API token). Env FIRED_UI=1.
+ui: false
+
 log_level: info

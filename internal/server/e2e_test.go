@@ -101,7 +101,11 @@ func newEnv(t *testing.T, data string, mutate func(*config.Config)) *env {
 	if err := mgr.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(server.New(mgr, token, log).Handler())
+	h := server.New(mgr, token, log)
+	if cfg.UI {
+		h.EnableUI()
+	}
+	srv := httptest.NewServer(h.Handler())
 	e := &env{t: t, cfg: cfg, st: st, mgr: mgr, srv: srv, c: client.New(srv.URL, token), data: data}
 	return e
 }

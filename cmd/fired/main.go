@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/Pushpavel/fired/internal/config"
 	"github.com/Pushpavel/fired/internal/events"
 	"github.com/Pushpavel/fired/internal/redact"
@@ -128,8 +130,12 @@ func serve(args []string) int {
 	}
 	mgr.Start()
 
+	api := server.New(mgr, cfg.Auth.Token, log)
+	if cfg.UI {
+		api.EnableUI()
+	}
 	srv := &http.Server{
-		Handler:           server.New(mgr, cfg.Auth.Token, log).Handler(),
+		Handler:           api.Handler(),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -148,7 +154,7 @@ func serve(args []string) int {
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
-	log.Info("fired listening", "addr", cfg.Listen, "driver", drv.Name(), "version", version, "tls", cfg.TLS.Cert != "")
+	log.Info("fired listening", "addr", cfg.Listen, "driver", drv.Name(), "version", version, "tls", cfg.TLS.Cert != "", "ui", cfg.UI)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
@@ -266,6 +272,15 @@ func check(args []string) int {
 			fsType = strings.TrimSpace(string(b))
 		}
 		report(true, name, d+" ("+fsType+")")
+	}
+	if cfg.Driver == "firecracker" && cfg.Firecracker.Jailer.Enabled {
+		// The jailer copies firecracker into each jail and creates /dev/kvm
+		// there, so the hot tier must allow both.
+		var st unix.Statfs_t
+		if err := unix.Statfs(cfg.Data.HotDir, &st); err == nil {
+			report(st.Flags&unix.ST_NODEV == 0, "hot_dir allows devices", "mount without nodev (docker --tmpfs needs \"dev\")")
+			report(st.Flags&unix.ST_NOEXEC == 0, "hot_dir allows exec", "mount without noexec (docker --tmpfs needs \"exec\")")
+		}
 	}
 	report(cfg.Auth.Token != "" || cfg.TLS.ClientCA != "" || strings.HasPrefix(cfg.Listen, "unix:"), "API authentication", "token, mTLS or unix socket")
 	if failed > 0 {

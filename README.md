@@ -84,12 +84,29 @@ curl -s -H "X-Fired-Token: $T" -d '{"template":"base"}' $U/v1/sandboxes         
 curl -s -H "X-Fired-Token: $T" -d '{"cmd":"echo hi"}' $U/v1/sandboxes/sb-…/exec
 ```
 
+## Try it on a KVM machine (disposable)
+
+Runs the production image with real Firecracker VMs and nothing mounted.
+All state lives inside the container (the hot tier is a container tmpfs), so
+stopping it deletes everything.
+
+```bash
+make try            # builds fired:latest, then: http://localhost:8443/ui/  (token: dev)
+```
+
+The image includes the guest kernel. The first build compiles it, which
+takes 10–20 minutes, and later builds reuse it from the cache. `ui: true`
+(or `FIRED_UI=1`) turns on the browser console at `/ui/`. It has a terminal,
+commands, secrets, files, port previews, lifecycle controls and a live
+event/API log, and you sign in with the API token.
+
 ## Production (the KVM workstation)
 
 The steps are summarized here; the full guide is
 [docs/operations.md](docs/operations.md).
 
-1. Build a guest kernel: `scripts/build-kernel.sh /mnt/hdd/fired/kernels`.
+1. The image includes a guest kernel at `/data/kernels/vmlinux`. To use your
+   own, build it with `scripts/build-kernel.sh /mnt/hdd/fired/kernels` and mount it there.
 2. Create a host tmpfs for the hot tier, e.g. `/srv/fired/hot` (size ≈ the
    container memory limit).
 3. Edit `deploy/config.yaml` and `deploy/docker-compose.yml` (cpuset,

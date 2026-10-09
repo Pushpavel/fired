@@ -36,6 +36,9 @@ type Config struct {
 	// cold dir; survives host reboots, slower).
 	ShutdownAction string `yaml:"shutdown_action"`
 	LogLevel       string `yaml:"log_level"`
+	// UI serves a browser console at /ui/ for poking at the API by hand.
+	// Login uses the API token; env FIRED_UI=1 enables it.
+	UI bool `yaml:"ui"`
 }
 
 type AuthConfig struct {
@@ -225,6 +228,9 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("FIRED_DRIVER"); v != "" {
 		cfg.Driver = v
+	}
+	if v := os.Getenv("FIRED_UI"); v != "" {
+		cfg.UI = v == "1" || v == "true"
 	}
 	if v := os.Getenv("FIRED_DATA_DIR"); v != "" {
 		cfg.Data = DataConfig{

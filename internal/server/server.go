@@ -24,6 +24,7 @@ type Server struct {
 	token string
 	log   *slog.Logger
 	mux   *http.ServeMux
+	ui    bool
 }
 
 func New(m *sandbox.Manager, token string, log *slog.Logger) *Server {
@@ -81,7 +82,7 @@ func (s *Server) routes() {
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		if r.URL.Path != "/healthz" && !s.authorized(r) {
+		if !s.public(r.URL.Path) && !s.authorized(r) {
 			writeError(w, &sandbox.Error{Status: 401, Code: "unauthorized", Msg: "missing or invalid API token"})
 			return
 		}
@@ -106,7 +107,10 @@ func (s *Server) authorized(r *http.Request) bool {
 			got = strings.TrimPrefix(a, "Bearer ")
 		}
 	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
+	if got != "" {
+		return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
+	}
+	return s.ui && s.uiSession(r)
 }
 
 type statusWriter struct {

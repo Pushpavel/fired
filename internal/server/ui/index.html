@@ -1,0 +1,1133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fired console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Fragment+Mono&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<style>
+/* Thermal palette: color always means a sandbox's temperature (state).
+   Ember = running, amber = suspended (warm snapshot), steel = archived (cold),
+   ash = stopped, fault = error. Everything else is fog and slate. */
+:root {
+  --ground: #E8EBEE; --surface: #F6F7F8; --sunk: #DDE2E7;
+  --ink: #18212B; --ink-2: #56616E; --rule: #C9CFD6;
+  --ember: #E5481B; --amber: #D98E04; --steel: #3F6E9A; --ash: #8B95A1; --fault: #B4235A; --ok: #2F7D4F;
+  --ember-tint: #FBE3DA; --amber-tint: #F8ECCF; --steel-tint: #DCE6F0; --ash-tint: #E3E6EA; --fault-tint: #F5DCE6;
+  --code-bg: #1B232D; --code-ink: #DCE3EA;
+  --sans: "Archivo", system-ui, sans-serif;
+  --mono: "Fragment Mono", ui-monospace, Menlo, Consolas, monospace;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #161C24; --surface: #1D2530; --sunk: #121820;
+    --ink: #E6EAEE; --ink-2: #97A3B0; --rule: #2E3946;
+    --ember: #FF6A3D; --amber: #F2B33D; --steel: #7FA7CF; --ash: #7D8794; --fault: #F06292; --ok: #5FBF85;
+    --ember-tint: #3A2219; --amber-tint: #362C17; --steel-tint: #1E2D3D; --ash-tint: #262E38; --fault-tint: #3A1E2A;
+    --code-bg: #10151B;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--ground); color: var(--ink);
+  font: 400 14px/1.5 var(--sans); font-variation-settings: "wdth" 100;
+  display: grid; grid-template-rows: auto 1fr auto;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
+a { color: var(--steel); }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+/* Heat: one source of truth for state color */
+.heat { --c: var(--ash); --t: var(--ash-tint); }
+.heat-running, .heat-creating, .heat-resuming { --c: var(--ember); --t: var(--ember-tint); }
+.heat-suspended, .heat-suspending, .heat-building { --c: var(--amber); --t: var(--amber-tint); }
+.heat-archived, .heat-archiving { --c: var(--steel); --t: var(--steel-tint); }
+.heat-error, .heat-failed { --c: var(--fault); --t: var(--fault-tint); }
+.heat-ready { --c: var(--ok); --t: transparent; }
+.state { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+.state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.busy::before { animation: flicker 1.1s ease-in-out infinite; }
+@keyframes flicker { 50% { opacity: .3; } }
+
+/* Top bar */
+header { display: flex; align-items: center; gap: var(--s5); padding: var(--s3) var(--s5); border-bottom: 1px solid var(--rule); background: var(--surface); flex-wrap: wrap; }
+.wordmark { font-size: 22px; font-weight: 850; font-variation-settings: "wdth" 125; letter-spacing: -.01em; line-height: 1; }
+.fleet { display: flex; align-items: center; gap: var(--s5); margin-left: auto; font-size: 13px; color: var(--ink-2); flex-wrap: wrap; }
+.fleet b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.gauge { display: inline-flex; align-items: center; gap: var(--s2); }
+.gauge-bar { width: 96px; height: 6px; background: var(--sunk); border-radius: 3px; overflow: hidden; }
+.gauge-bar i { display: block; height: 100%; background: var(--ember); }
+.offline { color: var(--fault); font-weight: 600; }
+
+/* Shell layout */
+.app { display: grid; grid-template-columns: 272px 1fr; min-height: 0; }
+aside { border-right: 1px solid var(--rule); overflow: auto; padding: var(--s4) 0; display: flex; flex-direction: column; gap: var(--s5); }
+main { overflow: auto; min-width: 0; display: flex; flex-direction: column; }
+.side-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 var(--s4) var(--s2); }
+.side-head h2 { margin: 0; font-size: 14px; font-weight: 700; }
+.row-item { display: grid; grid-template-columns: 3px 1fr auto; gap: 0 var(--s3); width: 100%; text-align: left; padding: var(--s2) var(--s4) var(--s2) 0; border: 0; background: none; cursor: pointer; align-items: center; }
+.row-item::before { content: ""; grid-row: 1 / 3; align-self: stretch; background: var(--c); border-radius: 0 2px 2px 0; }
+.row-item:hover { background: var(--sunk); }
+.row-item[aria-current="true"] { background: var(--surface); box-shadow: inset 0 1px 0 var(--rule), inset 0 -1px 0 var(--rule); }
+.row-name { font-weight: 650; font-variation-settings: "wdth" 112; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-sub { grid-column: 2 / 4; font-size: 12.5px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-empty { padding: 0 var(--s4); color: var(--ink-2); font-size: 13px; }
+
+/* Buttons and fields */
+.btn { border: 1px solid var(--rule); background: var(--surface); padding: 6px 14px; border-radius: 4px; cursor: pointer; white-space: nowrap; font-weight: 500; }
+.btn:hover { border-color: var(--ink-2); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.btn.primary:hover { opacity: .88; }
+.btn.danger { color: var(--fault); }
+.btn.danger:hover { border-color: var(--fault); }
+.btn.small { padding: 3px 10px; font-size: 13px; }
+.btn.quiet { border-color: transparent; background: none; color: var(--ink-2); }
+.btn.quiet:hover { color: var(--ink); border-color: var(--rule); }
+.add { border: 0; background: none; cursor: pointer; color: var(--ink-2); font-weight: 600; padding: 2px 4px; border-radius: 4px; }
+.add:hover { color: var(--ink); background: var(--sunk); }
+input[type=text], input[type=number], input[type=password], select, textarea {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 7px 10px; width: 100%;
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; border-color: var(--ink); }
+textarea { font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+.field { display: flex; flex-direction: column; gap: var(--s1); font-size: 13px; }
+.field > span { color: var(--ink-2); }
+.field > span strong { color: var(--ink); font-weight: 600; }
+.check { display: inline-flex; align-items: center; gap: var(--s2); cursor: pointer; }
+.row { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--s3) var(--s4); }
+.note { font-size: 13px; color: var(--ink-2); max-width: 72ch; }
+.spacer { flex: 1; }
+.err-text { color: var(--fault); }
+.ok-text { color: var(--ok); }
+
+/* Sandbox header: the lifecycle track is the control */
+.sb-top { padding: var(--s5) var(--s6) var(--s4); background: var(--surface); border-bottom: 1px solid var(--rule); }
+.sb-title { display: flex; align-items: flex-start; gap: var(--s4); flex-wrap: wrap; }
+.sb-title h1 { margin: 0; font-size: 30px; line-height: 1.1; font-weight: 800; font-variation-settings: "wdth" 125; letter-spacing: -.015em; word-break: break-all; }
+.sb-facts { display: flex; gap: var(--s1) var(--s5); flex-wrap: wrap; margin: var(--s2) 0 0; font-size: 13px; color: var(--ink-2); }
+.sb-facts dt { display: inline; }
+.sb-facts dd { display: inline; margin: 0 0 0 4px; color: var(--ink); }
+.track { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: var(--s5); position: relative; max-width: 760px; }
+.track::before { content: ""; position: absolute; left: 7px; right: calc(33.33% - 7px); top: 7px; height: 2px; background: linear-gradient(90deg, var(--ember), var(--amber) 50%, var(--steel)); opacity: .35; }
+.stop { position: relative; padding-right: var(--s4); }
+.stop-dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--c); background: var(--surface); position: relative; z-index: 1; }
+.stop[data-here] .stop-dot { background: var(--c); box-shadow: 0 0 0 5px var(--t); }
+.stop[data-moving] .stop-dot { animation: kiln 1.4s ease-in-out infinite; }
+@keyframes kiln { 50% { box-shadow: 0 0 0 8px var(--t); } }
+.stop-name { font-weight: 700; font-variation-settings: "wdth" 110; margin-top: var(--s2); }
+.stop[data-here] .stop-name { color: var(--c); }
+.stop-desc { font-size: 12.5px; color: var(--ink-2); }
+.stop .btn { margin-top: var(--s2); }
+.track-note { margin-top: var(--s3); font-size: 13px; color: var(--ink-2); }
+.track-note.problem { color: var(--fault); }
+
+/* Tabs */
+.tabs { display: flex; gap: var(--s1); padding: 0 var(--s6); border-bottom: 1px solid var(--rule); overflow-x: auto; background: var(--surface); }
+.tab { padding: var(--s3) var(--s3); border: 0; background: none; border-bottom: 2px solid transparent; cursor: pointer; color: var(--ink-2); font-weight: 500; white-space: nowrap; }
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); font-weight: 650; }
+.pane { padding: var(--s5) var(--s6); display: flex; flex-direction: column; gap: var(--s4); flex: 1; min-height: 0; }
+.section-title { margin: 0; font-size: 16px; font-weight: 700; }
+
+/* Output, tables */
+.out { background: var(--code-bg); color: var(--code-ink); border-radius: 4px; padding: var(--s3) var(--s4); margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 440px; overflow: auto; min-height: 44px; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; }
+.out .e { color: #FF9C86; }
+.out .dim { color: #7F8B98; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--rule); font-size: 13.5px; vertical-align: middle; }
+th { color: var(--ink-2); font-weight: 500; font-size: 12.5px; }
+tbody tr.link { cursor: pointer; }
+tbody tr.link:hover td { background: var(--sunk); }
+.num { font-variant-numeric: tabular-nums; }
+.panel { border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
+.panel-head { display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+.panel-body { padding: var(--s4); }
+
+#term-wrap { background: var(--code-bg); border-radius: 4px; padding: var(--s3); flex: 1; min-height: 380px; position: relative; }
+#term { position: absolute; inset: var(--s3); }
+.term-cover { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(16, 21, 27, .82); color: #DCE3EA; border-radius: 4px; z-index: 5; text-align: center; padding: var(--s5); }
+
+.crumbs { font-family: var(--mono); font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; }
+.crumbs button { border: 0; background: none; cursor: pointer; padding: 2px 3px; border-radius: 3px; color: var(--steel); font: inherit; }
+.crumbs button:hover { background: var(--sunk); }
+.icon-btn { border: 1px solid transparent; background: none; cursor: pointer; padding: 2px 8px; border-radius: 4px; color: var(--ink-2); font-size: 13px; }
+.icon-btn:hover { border-color: var(--rule); color: var(--ink); }
+.icon-btn.danger:hover { color: var(--fault); border-color: var(--fault); }
+
+/* Home: the fleet laid out by temperature */
+.home { padding: var(--s7) var(--s6); max-width: 1080px; }
+.home h1 { margin: 0; font-size: 40px; line-height: 1.05; font-weight: 850; font-variation-settings: "wdth" 125; letter-spacing: -.02em; }
+.home > p { margin: var(--s3) 0 0; color: var(--ink-2); max-width: 64ch; font-size: 15px; }
+.thermal { margin-top: var(--s6); display: grid; grid-template-columns: repeat(3, 1fr); border-top: 4px solid; border-image: linear-gradient(90deg, var(--ember), var(--amber), var(--steel)) 1; }
+.zone { padding: var(--s4) var(--s4) var(--s4) 0; }
+.zone + .zone { padding-left: var(--s4); border-left: 1px solid var(--rule); }
+.zone h2 { margin: 0; font-size: 17px; font-weight: 750; font-variation-settings: "wdth" 115; color: var(--c); }
+.zone .about { font-size: 13px; color: var(--ink-2); margin: 2px 0 var(--s3); }
+.zone ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.zone li button { border: 0; background: none; padding: 3px 0; cursor: pointer; font-weight: 600; font-variation-settings: "wdth" 110; text-align: left; }
+.zone li button:hover { color: var(--c); }
+.zone .none { color: var(--ink-2); font-size: 13px; }
+.others { margin-top: var(--s4); font-size: 13px; color: var(--ink-2); }
+.start { margin-top: var(--s7); max-width: 680px; }
+.start h2 { margin: 0 0 var(--s3); font-size: 18px; font-weight: 750; }
+.start ol { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: var(--s3); }
+.start li::marker { font-weight: 700; color: var(--ink-2); }
+.start li.done { color: var(--ink-2); }
+.start li.done::marker { content: "✓  "; color: var(--ok); }
+.start li strong { font-weight: 650; }
+
+/* Login */
+.login { max-width: 400px; margin: 14vh auto; padding: 0 var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
+.login h1 { margin: 0 0 var(--s1); font-size: 30px; font-weight: 850; font-variation-settings: "wdth" 125; }
+
+/* Activity drawer */
+footer { border-top: 1px solid var(--rule); background: var(--surface); display: flex; flex-direction: column; min-height: 0; }
+.drawer-bar { display: flex; align-items: center; gap: var(--s1); padding: 0 var(--s4); }
+.drawer-bar .tab { padding: var(--s2) var(--s3); font-size: 13px; }
+.drawer-body { height: 210px; overflow: auto; font-size: 12.5px; padding: var(--s1) var(--s4) var(--s3); display: none; }
+footer.open .drawer-body { display: block; }
+.log-row { display: grid; grid-template-columns: 64px 44px 1fr auto; gap: var(--s3); padding: 3px 0; border-bottom: 1px solid var(--rule); align-items: center; }
+.ev-row { display: grid; grid-template-columns: 64px 1fr; gap: var(--s3); padding: 3px 0; border-bottom: 1px solid var(--rule); align-items: center; }
+.t { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.log-row .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Dialogs */
+dialog { border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); color: var(--ink); padding: 0; width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 40px); box-shadow: 0 24px 60px rgba(10, 16, 24, .28); }
+dialog::backdrop { background: rgba(14, 20, 28, .5); }
+dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 42px); }
+.d-head { padding: var(--s4) var(--s5); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--rule); }
+.d-head h2 { margin: 0; font-size: 20px; font-weight: 800; font-variation-settings: "wdth" 120; }
+.d-body { padding: var(--s5); display: flex; flex-direction: column; gap: var(--s4); overflow: auto; }
+.d-foot { padding: var(--s3) var(--s5); border-top: 1px solid var(--rule); display: flex; gap: var(--s2); justify-content: flex-end; }
+.presets { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.preset { border: 1px solid var(--rule); background: none; border-radius: 4px; padding: var(--s2) var(--s3); cursor: pointer; text-align: left; }
+.preset:hover, .preset[aria-pressed="true"] { border-color: var(--ink); }
+.preset strong { display: block; font-weight: 650; }
+.preset span { font-size: 12px; color: var(--ink-2); font-family: var(--mono); }
+details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
+details[open] summary { margin-bottom: var(--s3); }
+
+/* Toasts */
+#toasts { position: fixed; right: var(--s4); bottom: var(--s4); display: flex; flex-direction: column; gap: var(--s2); z-index: 1000; max-width: 420px; }
+.toast { background: var(--ink); color: var(--surface); padding: var(--s3) var(--s4); border-radius: 4px; font-size: 13.5px; box-shadow: 0 10px 30px rgba(10, 16, 24, .25); border-left: 4px solid var(--ash); }
+.toast.ok { border-left-color: var(--ok); }
+.toast.err { border-left-color: var(--fault); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before { animation: none !important; transition: none !important; }
+}
+@media (max-width: 800px) {
+  /* One scrolling page instead of three cramped panes */
+  html, body { height: auto; }
+  body { display: block; }
+  .app { display: block; }
+  main { overflow: visible; }
+  header { gap: var(--s2) var(--s4); padding: var(--s3) var(--s4); }
+  .fleet { gap: var(--s1) var(--s4); font-size: 12.5px; order: 3; width: 100%; }
+  #btn-logout { margin-left: auto; }
+  aside { border-right: 0; border-bottom: 1px solid var(--rule); }
+  .sb-title h1, .login h1 { font-size: 26px; }
+  .home h1 { font-size: 30px; }
+  .drawer-body { height: 40vh; }
+  #term-wrap { min-height: 60vh; }
+  .sb-top, .pane, .home { padding-left: var(--s4); padding-right: var(--s4); }
+  .tabs { padding: 0 var(--s4); }
+  .thermal, .track { grid-template-columns: 1fr; border-image: none; border-top: 0; }
+  .track::before { display: none; }
+  .zone + .zone { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); }
+  .stop { padding-bottom: var(--s3); }
+  .fleet { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">fired</div>
+  <div class="fleet" id="fleet"></div>
+  <button class="btn small quiet" id="btn-logout" hidden>Sign out</button>
+</header>
+
+<div class="app">
+  <aside aria-label="Sandboxes and templates">
+    <section>
+      <div class="side-head"><h2>Sandboxes</h2><button class="add" id="btn-new-sb" title="Create a sandbox">+ New</button></div>
+      <div id="sb-list"></div>
+    </section>
+    <section>
+      <div class="side-head"><h2>Templates</h2><button class="add" id="btn-new-tpl" title="Build a template">+ New</button></div>
+      <div id="tpl-list"></div>
+    </section>
+  </aside>
+  <main id="main"></main>
+</div>
+
+<footer id="drawer">
+  <div class="drawer-bar" role="tablist" aria-label="Activity">
+    <button class="tab" data-d="events" role="tab">State changes <span id="ev-count" class="t"></span></button>
+    <button class="tab" data-d="api" role="tab">Requests <span id="api-count" class="t"></span></button>
+    <span class="spacer"></span>
+    <button class="btn small quiet" id="drawer-clear">Clear</button>
+    <button class="btn small quiet" id="drawer-toggle">Show activity</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</footer>
+
+<div id="toasts" role="status" aria-live="polite"></div>
+
+<!-- Create sandbox -->
+<dialog id="dlg-sb" aria-labelledby="dlg-sb-title"><form method="dialog">
+  <div class="d-head"><h2 id="dlg-sb-title">Create a sandbox</h2><button type="button" class="btn small quiet" data-close aria-label="Close">Close</button></div>
+  <div class="d-body">
+    <div class="cols">
+      <label class="field"><span><strong>Template</strong></span><select name="template" required></select></label>
+      <label class="field"><span><strong>Name</strong>, optional</span><input type="text" name="id" placeholder="Generated if empty" pattern="[a-z0-9-]{3,40}" title="3 to 40 characters: a–z, 0–9 and -"></label>
+    </div>
+    <label class="field"><span><strong>Internet access.</strong> One domain per line. Leave empty for no internet.</span>
+      <textarea name="egress" rows="3" placeholder="github.com&#10;*.githubusercontent.com"></textarea></label>
+    <div class="row note">Add:
+      <button type="button" class="btn small" data-egress="github.com&#10;*.github.com&#10;*.githubusercontent.com">GitHub</button>
+      <button type="button" class="btn small" data-egress="pypi.org&#10;files.pythonhosted.org">PyPI</button>
+      <button type="button" class="btn small" data-egress="registry.npmjs.org">npm</button>
+      <button type="button" class="btn small" data-egress="*">Any domain</button>
+    </div>
+    <details><summary>Size, idle timers, labels and environment</summary>
+      <div class="d-body" style="padding:0">
+        <div class="cols">
+          <label class="field"><span>vCPUs</span><input type="number" name="vcpus" min="0" placeholder="Template default"></label>
+          <label class="field"><span>Memory (MB)</span><input type="number" name="memory_mb" min="0" placeholder="Template default"></label>
+          <label class="field"><span>Disk (MB)</span><input type="number" name="disk_mb" min="0" placeholder="Template default"></label>
+        </div>
+        <p class="note" style="margin:0">A size different from the template's boots from scratch instead of restoring its snapshot, so creation takes longer.</p>
+        <div class="cols">
+          <label class="field"><span>Suspend after idle for</span><input type="text" name="idle_suspend" placeholder="Daemon default"></label>
+          <label class="field"><span>Archive after</span><input type="text" name="archive_after" placeholder="Daemon default"></label>
+          <label class="field"><span>Delete after</span><input type="text" name="delete_after" placeholder="Daemon default"></label>
+        </div>
+        <p class="note" style="margin:0">Durations look like 30s, 5m or 2h. Use -1 to turn a timer off.</p>
+        <div class="cols">
+          <label class="field"><span>Labels, one key=value per line</span><textarea name="labels" rows="2" placeholder="user=42"></textarea></label>
+          <label class="field"><span>Environment for every command</span><textarea name="env" rows="2" placeholder="CI=1"></textarea></label>
+        </div>
+        <label class="check"><input type="checkbox" name="redact" checked> Hide secret values in command output</label>
+      </div>
+    </details>
+  </div>
+  <div class="d-foot"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" value="ok">Create sandbox</button></div>
+</form></dialog>
+
+<!-- Build template -->
+<dialog id="dlg-tpl" aria-labelledby="dlg-tpl-title"><form method="dialog">
+  <div class="d-head"><h2 id="dlg-tpl-title">Build a template</h2><button type="button" class="btn small quiet" data-close aria-label="Close">Close</button></div>
+  <div class="d-body">
+    <p class="note" style="margin:0">fired pulls the image, turns it into a disk, boots it once and saves a snapshot. Sandboxes then start from that snapshot in a fraction of a second.</p>
+    <div class="presets" role="group" aria-label="Start from">
+      <button type="button" class="preset" data-preset="debian|debian:bookworm"><strong>Debian 12</strong><span>debian:bookworm</span></button>
+      <button type="button" class="preset" data-preset="python|python:3.12-slim-bookworm"><strong>Python 3.12</strong><span>python:3.12-slim</span></button>
+      <button type="button" class="preset" data-preset="node|node:22-bookworm-slim"><strong>Node 22</strong><span>node:22-slim</span></button>
+      <button type="button" class="preset" data-preset="alpine|alpine:3.20"><strong>Alpine</strong><span>alpine:3.20</span></button>
+    </div>
+    <div class="cols">
+      <label class="field"><span><strong>Name</strong></span><input type="text" name="name" required pattern="[a-z0-9-]{1,32}" title="Up to 32 characters: a–z, 0–9 and -" placeholder="python"></label>
+      <label class="field"><span><strong>Image</strong></span><input type="text" name="image" required placeholder="python:3.12-slim-bookworm"></label>
+    </div>
+    <details><summary>Setup commands, size and environment</summary>
+      <div class="d-body" style="padding:0">
+        <label class="field"><span>Setup commands, one per line. They run inside the VM before the snapshot and can only reach domains the daemon allows for everyone.</span><textarea name="run" rows="3" placeholder="mkdir -p /workspace/app"></textarea></label>
+        <div class="cols">
+          <label class="field"><span>vCPUs</span><input type="number" name="vcpus" min="0" placeholder="Default"></label>
+          <label class="field"><span>Memory (MB)</span><input type="number" name="memory_mb" min="0" placeholder="Default"></label>
+          <label class="field"><span>Working directory</span><input type="text" name="workdir" placeholder="/workspace"></label>
+        </div>
+        <label class="field"><span>Environment, one KEY=value per line</span><textarea name="env" rows="2"></textarea></label>
+      </div>
+    </details>
+  </div>
+  <div class="d-foot"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" value="ok">Build template</button></div>
+</form></dialog>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+<script>
+"use strict";
+
+// ---------- helpers
+const $ = (s, el = document) => el.querySelector(s);
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "class") el.className = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) el.append(c.nodeType ? c : String(c));
+  return el;
+}
+const enc = encodeURIComponent;
+const fmtBytes = n => n == null ? "0 B" : n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(0) + " KB" : n < 1073741824 ? (n / 1048576).toFixed(0) + " MB" : (n / 1073741824).toFixed(1) + " GB";
+const fmtMB = mb => mb >= 1024 ? (mb / 1024).toFixed(mb % 1024 ? 1 : 0) + " GB" : mb + " MB";
+function ago(t) {
+  if (!t) return "never";
+  const s = Math.round((Date.now() - new Date(t)) / 1000);
+  if (s < 10) return "just now";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+}
+// Go durations: "3m0s" → "3m", "1h0m0s" → "1h"
+const fmtDur = d => !d ? null : String(d).startsWith("-") ? "never" : String(d).replace(/(\D)0s$/, "$1").replace(/(\D)0m$/, "$1");
+const clock = () => new Date().toLocaleTimeString([], { hour12: false });
+const MOVING = ["creating", "resuming", "suspending", "archiving", "deleting", "building"];
+const stateTag = s => h("span", { class: `state heat heat-${s}${MOVING.includes(s) ? " busy" : ""}` }, s);
+function kvLines(text) {
+  const out = {};
+  for (const line of (text || "").split("\n")) {
+    const l = line.trim(); if (!l) continue;
+    const i = l.indexOf("=");
+    if (i < 1) throw new Error(`“${l}” needs to look like KEY=value.`);
+    out[l.slice(0, i).trim()] = l.slice(i + 1);
+  }
+  return out;
+}
+const lines = t => (t || "").split("\n").map(s => s.trim()).filter(Boolean);
+const kvText = o => Object.entries(o || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+
+function toast(msg, kind = "") {
+  const t = h("div", { class: "toast " + kind }, msg);
+  $("#toasts").append(t);
+  setTimeout(() => t.remove(), kind === "err" ? 7000 : 3200);
+}
+
+// ---------- API; every user-triggered call is recorded in the activity drawer
+const apiLog = [];
+async function api(method, path, body, opts = {}) {
+  const init = { method, headers: {} };
+  if (body !== undefined) {
+    if (body instanceof Blob || typeof body === "string") init.body = body;
+    else { init.body = JSON.stringify(body); init.headers["Content-Type"] = "application/json"; }
+  }
+  const t0 = performance.now();
+  let res, err;
+  try { res = await fetch(path.startsWith("/ui/") ? path : "/v1" + path, init); } catch (e) { err = e; }
+  if (!opts.quiet) {
+    apiLog.push({ at: clock(), method, path, status: res ? res.status : "—", ms: Math.round(performance.now() - t0),
+      body: init.headers["Content-Type"] ? init.body : init.body ? "<file>" : null });
+    if (apiLog.length > 300) apiLog.shift();
+    drawerUpdate("api");
+  }
+  if (err) throw new Error("Can't reach the daemon. Check that the container is running.");
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try { const j = await res.json(); if (j.error) msg = j.error.message.charAt(0).toUpperCase() + j.error.message.slice(1) + "."; } catch {}
+    const e = new Error(msg); e.status = res.status;
+    if (res.status === 401 && S.view !== "login") showLogin();
+    throw e;
+  }
+  if (opts.raw) return res;
+  if (res.status === 204) return null;
+  return (res.headers.get("content-type") || "").includes("json") ? res.json() : res.text();
+}
+async function guard(fn, okMsg) {
+  try { const r = await fn(); if (okMsg) toast(okMsg, "ok"); return r; }
+  catch (e) { toast(e.message, "err"); throw e; }
+}
+function curlFor(e) {
+  const base = location.origin;
+  let c = `curl -X ${e.method} -H "X-Fired-Token: $FIRED_API_TOKEN"`;
+  if (e.body && e.body !== "<file>") c += ` -H 'Content-Type: application/json' -d '${e.body.replace(/'/g, "'\\''")}'`;
+  return c + ` "${base}${e.path.startsWith("/ui/") ? e.path : "/v1" + e.path}"`;
+}
+
+// ---------- state
+const S = { sandboxes: [], templates: [], host: null, sel: null, tab: "shell", online: true, view: "home" };
+const HEAT_ORDER = { running: 0, resuming: 0, creating: 0, suspending: 1, suspended: 1, archiving: 2, archived: 2, stopped: 3, error: 4, deleting: 5 };
+
+async function refreshAll() {
+  if (S.view === "login") return;
+  try {
+    const [sb, tp, host] = await Promise.all([
+      api("GET", "/sandboxes", undefined, { quiet: true }),
+      api("GET", "/templates", undefined, { quiet: true }),
+      api("GET", "/host", undefined, { quiet: true }),
+    ]);
+    S.sandboxes = (sb.sandboxes || []).sort((a, b) => (HEAT_ORDER[a.state] ?? 9) - (HEAT_ORDER[b.state] ?? 9) || new Date(b.last_active_at) - new Date(a.last_active_at));
+    S.templates = (tp.templates || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    S.host = host; S.online = true;
+  } catch { S.online = false; }
+  renderFleet(); renderSidebar();
+  if (S.sel && !S.sandboxes.find(s => s.id === S.sel)) { closeSandbox(); return; }
+  if (S.sel) renderSandboxTop(); else if (S.view === "home") renderHome();
+}
+const curSb = () => S.sandboxes.find(s => s.id === S.sel);
+
+// ---------- top bar
+function renderFleet() {
+  const el = $("#fleet"); el.replaceChildren();
+  if (!S.online) { el.append(h("span", { class: "offline" }, "Daemon unreachable")); return; }
+  const H = S.host; if (!H) return;
+  const pct = H.memory_budget_mb ? Math.min(100, 100 * H.memory_running_mb / H.memory_budget_mb) : 0;
+  el.append(h("span", { class: "gauge", title: "Memory reserved by running sandboxes, out of the daemon's budget" },
+    "Memory", h("span", { class: "gauge-bar" }, h("i", { style: `width:${pct}%` })), h("b", {}, fmtMB(H.memory_running_mb)), "of " + fmtMB(H.memory_budget_mb)));
+  el.append(h("span", { title: "Running sandbox disks and suspended snapshots" }, "Hot tier ", h("b", {}, fmtBytes(H.hot_dir_used_bytes))));
+  el.append(h("span", { title: "Compressed archives" }, "Cold tier ", h("b", {}, fmtBytes(H.cold_dir_used_bytes))));
+  el.append(h("span", { title: "VM backend" }, h("b", {}, H.driver)));
+}
+
+// ---------- sidebar
+function renderSidebar() {
+  const sl = $("#sb-list"); sl.replaceChildren();
+  if (!S.sandboxes.length) sl.append(h("p", { class: "side-empty" }, S.templates.some(t => t.status === "ready") ? "None yet. Create one from a template." : "None yet. Build a template first."));
+  for (const s of S.sandboxes) {
+    sl.append(h("button", { class: `row-item heat heat-${s.state}`, "aria-current": s.id === S.sel ? "true" : "false", onclick: () => openSandbox(s.id) },
+      h("span", { class: "row-name", title: s.id }, s.id), stateTag(s.state),
+      h("span", { class: "row-sub" }, `${s.template}, active ${ago(s.last_active_at)}`)));
+  }
+  const tl = $("#tpl-list"); tl.replaceChildren();
+  if (!S.templates.length) tl.append(h("p", { class: "side-empty" }, "None yet. Build one from any container image."));
+  for (const t of S.templates) {
+    tl.append(h("button", { class: `row-item heat heat-${t.status}`, "aria-current": S.view === "template" && S.tplId === t.id ? "true" : "false", onclick: () => showTemplate(t) },
+      h("span", { class: "row-name", title: t.id }, t.name), stateTag(t.status),
+      h("span", { class: "row-sub" }, t.image)));
+  }
+}
+
+// ---------- home: the fleet by temperature
+function renderHome() {
+  const ready = S.templates.some(t => t.status === "ready");
+  const building = S.templates.some(t => t.status === "building");
+  const by = st => S.sandboxes.filter(s => st.includes(s.state));
+  const zone = (cls, title, about, list) => h("div", { class: `zone heat ${cls}` },
+    h("h2", {}, title), h("p", { class: "about" }, about),
+    list.length ? h("ul", {}, list.map(s => h("li", {}, h("button", { onclick: () => openSandbox(s.id) }, s.id))))
+      : h("p", { class: "none" }, "None"));
+  const others = S.sandboxes.filter(s => !["running", "creating", "resuming", "suspending", "suspended", "archiving", "archived"].includes(s.state));
+  const steps = [
+    [ready, "Build a template", building ? " from any container image. One is building now; open it on the left to follow the log." : " from any container image.", !ready && !building ? h("button", { class: "btn small", onclick: newTemplate }, "Build a template") : null],
+    [S.sandboxes.length > 0, "Create a sandbox", " and choose which domains it can reach.", ready && !S.sandboxes.length ? h("button", { class: "btn small primary", onclick: newSandbox }, "Create a sandbox") : null],
+    [false, "Work inside it", ": open a shell, run commands with secrets, edit files, and preview a web server on an exposed port.", null],
+    [false, "Let it cool", ". Idle sandboxes suspend, then archive. The next command wakes them with running processes intact.", null],
+  ];
+  const showSteps = !ready || !S.sandboxes.length;
+  $("#main").replaceChildren(h("div", { class: "home" },
+    h("h1", {}, "Sandboxes cool down when idle"),
+    h("p", {}, "Each sandbox is a Firecracker microVM. Running ones hold memory. Idle ones are snapshotted to the hot tier, then compressed to the cold tier, and any command brings them back."),
+    h("div", { class: "thermal" },
+      zone("heat-running", "Running", "Live VM in memory", by(["running", "creating", "resuming"])),
+      zone("heat-suspended", "Suspended", "Memory snapshot, wakes in seconds", by(["suspending", "suspended"])),
+      zone("heat-archived", "Archived", "Compressed on disk", by(["archiving", "archived"]))),
+    others.length ? h("p", { class: "others" }, "Also: ", others.map((s, i) => [i ? ", " : "", h("button", { class: "btn small quiet", onclick: () => openSandbox(s.id) }, `${s.id} (${s.state})`)])) : null,
+    showSteps ? h("section", { class: "start" }, h("h2", {}, "Getting started"),
+      h("ol", {}, steps.map(([done, strong, rest, action]) => h("li", { class: done ? "done" : "" }, h("strong", {}, strong), rest, action ? [" ", action] : null)))) : null));
+}
+
+// ---------- templates
+let tplTimer = null;
+async function showTemplate(t) {
+  closeSandbox(false); S.view = "template"; S.tplId = t.id; clearTimeout(tplTimer); renderSidebar();
+  try { t = await api("GET", `/templates/${enc(t.id)}`, undefined, { quiet: true }); } catch {}
+  if (S.view !== "template" || S.tplId !== t.id) return;
+  if (t.status === "building") tplTimer = setTimeout(() => { if (S.view === "template" && S.tplId === t.id) showTemplate(t); }, 2000);
+  let log = "";
+  try { log = await api("GET", `/templates/${enc(t.id)}/logs`, undefined, { quiet: true }); } catch (e) { log = e.message; }
+  const fact = (k, v) => h("div", {}, h("dt", {}, k), h("dd", {}, v));
+  $("#main").replaceChildren(
+    h("div", { class: "sb-top" },
+      h("div", { class: "sb-title" }, h("h1", {}, t.name), stateTag(t.status), h("span", { class: "spacer" }),
+        h("button", { class: "btn primary", disabled: t.status !== "ready", onclick: () => newSandbox(t.name) }, "Create a sandbox"),
+        h("button", { class: "btn danger", onclick: async () => {
+          if (!confirm(`Delete the template build ${t.id}? Sandboxes using it must be deleted first.`)) return;
+          await guard(() => api("DELETE", `/templates/${enc(t.id)}`), "Template deleted"); S.view = "home"; await refreshAll(); } }, "Delete")),
+      h("dl", { class: "sb-facts" }, fact("Build", t.id), fact("Image", t.image), fact("Size", `${t.vcpus} vCPU, ${fmtMB(t.memory_mb)} memory, ${fmtMB(t.disk_mb)} disk`),
+        fact("Working directory", t.workdir || "/workspace"), fact("Snapshot", t.has_snapshot ? "yes" : "no"))),
+    h("div", { class: "pane" },
+      t.error ? h("p", { class: "err-text", style: "margin:0" }, t.error) : null,
+      h("h2", { class: "section-title" }, t.status === "building" ? "Build log, updating" : "Build log"),
+      h("pre", { class: "out", id: "tpl-log", style: "max-height:none" }, log || "Nothing logged yet.")));
+  const lg = $("#tpl-log"); if (lg) lg.scrollTop = lg.scrollHeight;
+}
+
+// ---------- dialogs
+for (const d of document.querySelectorAll("dialog")) {
+  d.querySelectorAll("[data-close]").forEach(b => b.onclick = () => d.close("cancel"));
+}
+const dlgTpl = $("#dlg-tpl");
+$("#btn-new-tpl").onclick = newTemplate;
+function newTemplate() {
+  dlgTpl.querySelector("form").reset(); dlgTpl.returnValue = "";
+  dlgTpl.querySelectorAll(".preset").forEach(p => p.setAttribute("aria-pressed", "false"));
+  dlgTpl.showModal();
+}
+dlgTpl.querySelectorAll("[data-preset]").forEach(b => b.onclick = () => {
+  const [name, image] = b.dataset.preset.split("|"); const f = dlgTpl.querySelector("form").elements;
+  f.name.value = name; f.image.value = image;
+  dlgTpl.querySelectorAll(".preset").forEach(p => p.setAttribute("aria-pressed", String(p === b)));
+});
+dlgTpl.addEventListener("close", async () => {
+  if (dlgTpl.returnValue !== "ok") return;
+  const f = dlgTpl.querySelector("form").elements;
+  try {
+    const req = { name: f.name.value.trim(), image: f.image.value.trim() };
+    const run = lines(f.run.value); if (run.length) req.run = run;
+    for (const k of ["vcpus", "memory_mb"]) if (+f[k].value) req[k] = +f[k].value;
+    if (f.workdir.value.trim()) req.workdir = f.workdir.value.trim();
+    const env = kvLines(f.env.value); if (Object.keys(env).length) req.env = env;
+    const t = await guard(() => api("POST", "/templates", req), `Building ${req.name}`);
+    await refreshAll(); showTemplate(t);
+  } catch (e) { if (!e.status) toast(e.message, "err"); }
+});
+
+const dlgSb = $("#dlg-sb");
+$("#btn-new-sb").onclick = () => newSandbox();
+function newSandbox(template) {
+  const form = dlgSb.querySelector("form"); form.reset(); dlgSb.returnValue = "";
+  const sel = form.elements.template; sel.replaceChildren();
+  const names = [...new Set(S.templates.filter(t => t.status === "ready").map(t => t.name))];
+  if (!names.length) { toast("No template is ready yet. Build one first.", "err"); return; }
+  for (const n of names) sel.append(h("option", { value: n, selected: n === template }, n));
+  dlgSb.showModal();
+}
+dlgSb.querySelectorAll("[data-egress]").forEach(b => b.onclick = () => {
+  const ta = dlgSb.querySelector("[name=egress]");
+  const cur = new Set(lines(ta.value)); lines(b.dataset.egress).forEach(x => cur.add(x));
+  ta.value = [...cur].join("\n");
+});
+dlgSb.addEventListener("close", async () => {
+  if (dlgSb.returnValue !== "ok") return;
+  const f = dlgSb.querySelector("form").elements;
+  try {
+    const req = { template: f.template.value, egress: { allow: lines(f.egress.value) }, redact: f.redact.checked };
+    if (f.id.value.trim()) req.id = f.id.value.trim();
+    for (const k of ["vcpus", "memory_mb", "disk_mb"]) if (+f[k].value) req[k] = +f[k].value;
+    const ttl = {}; for (const k of ["idle_suspend", "archive_after", "delete_after"]) if (f[k].value.trim()) ttl[k] = f[k].value.trim();
+    if (Object.keys(ttl).length) req.ttl = ttl;
+    const labels = kvLines(f.labels.value); if (Object.keys(labels).length) req.labels = labels;
+    const env = kvLines(f.env.value); if (Object.keys(env).length) req.env = env;
+    toast("Creating sandbox…");
+    const sb = await guard(() => api("POST", "/sandboxes", req), "Sandbox created");
+    await refreshAll(); openSandbox(sb.id, "shell");
+  } catch (e) { if (!e.status) toast(e.message, "err"); }
+});
+
+// ---------- sandbox view
+const TABS = [["shell", "Shell"], ["run", "Run a command"], ["processes", "Processes"], ["files", "Files"], ["ports", "Ports"], ["settings", "Settings"], ["log", "VM log"]];
+let tabCleanup = null;
+
+function closeSandbox(render = true) {
+  if (tabCleanup) { tabCleanup(); tabCleanup = null; }
+  S.sel = null; S.view = "home"; renderSidebar();
+  if (render) renderHome();
+}
+function openSandbox(id, tab) {
+  if (S.sel !== id && tabCleanup) { tabCleanup(); tabCleanup = null; }
+  clearTimeout(tplTimer);
+  S.sel = id; S.view = "sandbox"; if (tab) S.tab = tab;
+  renderSidebar();
+  $("#main").replaceChildren(h("div", { id: "sb-top" }),
+    h("nav", { class: "tabs", role: "tablist", id: "tabs" }, TABS.map(([k, label]) =>
+      h("button", { class: "tab", role: "tab", "aria-selected": String(k === S.tab), onclick: () => switchTab(k) }, label))),
+    h("div", { class: "pane", id: "pane", role: "tabpanel" }));
+  renderSandboxTop(); switchTab(S.tab, true);
+}
+function switchTab(k, force) {
+  if (k === S.tab && !force) return;
+  if (tabCleanup) { tabCleanup(); tabCleanup = null; }
+  S.tab = k;
+  document.querySelectorAll("#tabs .tab").forEach((b, i) => b.setAttribute("aria-selected", String(TABS[i][0] === k)));
+  const pane = $("#pane"); pane.replaceChildren();
+  TAB_RENDER[k](pane, S.sel);
+}
+
+async function lifecycle(s, action, done) {
+  await guard(() => api("POST", `/sandboxes/${enc(s.id)}/${action}`), done);
+  refreshAll();
+}
+function renderSandboxTop() {
+  const wrap = $("#sb-top"); const s = curSb(); if (!wrap || !s) return;
+  const ttl = s.ttl || {};
+  const idle = fmtDur(ttl.idle_suspend), arch = fmtDur(ttl.archive_after);
+  const place = { running: 0, creating: 0, resuming: 0, suspending: 1, suspended: 1, archiving: 2, archived: 2 }[s.state];
+  const moving = MOVING.includes(s.state);
+  const stop = (i, cls, name, desc, actionLabel, action, done) => h("div", { class: `stop heat ${cls}`, "data-here": place === i ? "" : null, "data-moving": place === i && moving ? "" : null },
+    h("div", { class: "stop-dot" }), h("div", { class: "stop-name" }, name), h("div", { class: "stop-desc" }, desc),
+    place !== i && !moving && s.state !== "error" ? h("button", { class: "btn small", onclick: () => lifecycle(s, action, done) }, actionLabel) : null);
+  let note = null;
+  if (s.state === "stopped") note = h("p", { class: "track-note" }, "Stopped without a memory snapshot. The disk is kept; the next command boots it from scratch.");
+  if (s.state === "error") note = h("p", { class: "track-note problem" }, s.error || "This sandbox failed. Check the VM log.");
+  if (moving) note = h("p", { class: "track-note" }, `${s.state.charAt(0).toUpperCase() + s.state.slice(1)}…`);
+  const fact = (k, v) => h("div", {}, h("dt", {}, k), h("dd", {}, v));
+  const allow = s.egress?.allow || [];
+  wrap.replaceChildren(h("div", { class: "sb-top" },
+    h("div", { class: "sb-title" }, h("h1", {}, s.id), h("span", { class: "spacer" }),
+      h("button", { class: "btn danger", onclick: async () => {
+        if (!confirm(`Delete ${s.id}? Its disk, snapshots and archive are removed for good.`)) return;
+        await guard(() => api("DELETE", `/sandboxes/${enc(s.id)}`), "Sandbox deleted"); closeSandbox(); refreshAll(); } }, "Delete")),
+    h("dl", { class: "sb-facts" },
+      fact("Template", s.template_id || s.template), fact("Size", `${s.vcpus} vCPU, ${fmtMB(s.memory_mb)} memory, ${fmtMB(s.disk_mb)} disk`),
+      fact("Last active", ago(s.last_active_at)), fact("Internet", allow.length ? allow.join(", ") : "none")),
+    h("div", { class: "track", role: "group", "aria-label": "Lifecycle" },
+      stop(0, "heat-running", "Running", "Live VM in memory", "Resume", "resume", "Resumed"),
+      stop(1, "heat-suspended", "Suspended", idle ? (idle === "never" ? "Never automatically" : `After ${idle} idle`) : "Memory snapshot", "Suspend now", "suspend", "Suspended"),
+      stop(2, "heat-archived", "Archived", arch ? (arch === "never" ? "Never automatically" : `After ${arch}`) : "Compressed on disk", "Archive now", "archive", "Archived")),
+    note));
+}
+
+const TAB_RENDER = {};
+
+// --- Shell (WebSocket PTY)
+TAB_RENDER.shell = (pane, id) => {
+  const wrap = h("div", { id: "term-wrap" }, h("div", { id: "term" }));
+  pane.append(h("div", { class: "row" },
+    h("p", { class: "note", style: "margin:0" }, "A login shell inside the VM. Leaving this tab ends the shell; background work belongs in Run a command."),
+    h("span", { class: "spacer" }),
+    h("button", { class: "btn small", onclick: () => send({ type: "signal", signal: "INT" }) }, "Send Ctrl-C"),
+    h("button", { class: "btn small", onclick: () => connect() }, "New shell")), wrap);
+  if (!window.Terminal) { wrap.append(h("div", { class: "term-cover" }, "The terminal library couldn't load from the CDN. Use Run a command instead.")); return; }
+  const term = new Terminal({ fontFamily: '"Fragment Mono", ui-monospace, Menlo, Consolas, monospace', fontSize: 13, cursorBlink: true,
+    theme: { background: getComputedStyle(document.documentElement).getPropertyValue("--code-bg").trim() || "#1B232D", foreground: "#DCE3EA", cursor: "#FF6A3D", selectionBackground: "#3A4655" } });
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
+  term.open($("#term", wrap)); fit.fit();
+  let ws = null, cover = null;
+  const te = new TextEncoder();
+  function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+  function setCover(msg, again) {
+    cover?.remove(); cover = null; if (!msg) return;
+    cover = h("div", { class: "term-cover" }, h("div", {}, h("div", {}, msg),
+      again ? h("button", { class: "btn", style: "margin-top:12px", onclick: () => connect() }, "Start a new shell") : null));
+    wrap.append(cover);
+  }
+  function connect() {
+    if (ws) { ws.onclose = null; ws.close(); }
+    term.reset(); setCover("Connecting. A suspended or archived sandbox wakes up first.");
+    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/v1/sandboxes/${enc(id)}/exec/stream`);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => ws.send(JSON.stringify({ cmd: "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi", pty: true, cols: term.cols, rows: term.rows, env: { TERM: "xterm-256color" } }));
+    ws.onmessage = ev => {
+      if (typeof ev.data === "string") {
+        const m = JSON.parse(ev.data);
+        if (m.type === "started") { setCover(null); term.focus(); refreshAll(); }
+        else if (m.type === "exit") setCover(`The shell exited with code ${m.exit_code ?? 0}.`, true);
+        else if (m.type === "error") setCover(m.message, true);
+      } else term.write(new Uint8Array(ev.data, 1));
+    };
+    ws.onclose = () => { if (!cover) setCover("The connection closed.", true); };
+  }
+  const d1 = term.onData(d => { if (ws && ws.readyState === 1) ws.send(te.encode(d)); });
+  const d2 = term.onResize(({ cols, rows }) => send({ type: "resize", cols, rows }));
+  const ro = new ResizeObserver(() => { try { fit.fit(); } catch {} }); ro.observe(wrap);
+  connect();
+  tabCleanup = () => { ro.disconnect(); d1.dispose(); d2.dispose(); if (ws) { ws.onclose = null; ws.close(); } term.dispose(); };
+};
+
+// --- Run a command
+const EXAMPLES = [
+  ["System info", "uname -a; cat /etc/os-release | head -2; nproc; df -h /workspace"],
+  ["Hide a secret", "echo \"token: $GH_TOKEN\"; printf %s \"$GH_TOKEN\" | base64", { secret: "GH_TOKEN=ghp_supersecret123" }],
+  ["Secret file", "ls -l \"$SECRET_DIR\"; cat \"$SECRET_DIR/creds\"", { sfile: "creds=hunter2" }],
+  ["Internet check", "wget -q -O /dev/null https://github.com && echo reachable || echo blocked"],
+  ["Timeout", "for i in 1 2 3 4 5; do echo tick $i; sleep 1; done", { timeout: 3 }],
+  ["Background counter", "i=0; while true; do i=$((i+1)); echo \"count $i\"; sleep 1; done", { bg: true }],
+  ["Standard input", "tr a-z A-Z", { stdin: "hello from stdin" }],
+];
+TAB_RENDER.run = (pane, id) => {
+  const f = {
+    cmd: h("textarea", { rows: 4, placeholder: "ls -la", "aria-label": "Command" }),
+    cwd: h("input", { type: "text", placeholder: "Template working directory" }),
+    timeout: h("input", { type: "number", min: 0, placeholder: "300", style: "width:90px" }),
+    bg: h("input", { type: "checkbox" }),
+    env: h("textarea", { rows: 2, placeholder: "FOO=bar" }),
+    secret: h("textarea", { rows: 2, placeholder: "GH_TOKEN=ghp_…" }),
+    sfile: h("textarea", { rows: 2, placeholder: "name=contents" }),
+    stdin: h("textarea", { rows: 2 }),
+  };
+  const out = h("pre", { class: "out" }, h("span", { class: "dim" }, "Output shows up here."));
+  const status = h("div", { class: "row note" });
+  const runBtn = h("button", { class: "btn primary", onclick: run }, "Run");
+  f.cmd.addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) run(); });
+  async function run() {
+    if (!f.cmd.value.trim()) return f.cmd.focus();
+    let req;
+    try {
+      req = { cmd: f.cmd.value, background: f.bg.checked };
+      if (f.cwd.value.trim()) req.cwd = f.cwd.value.trim();
+      if (+f.timeout.value && !f.bg.checked) req.timeout_s = +f.timeout.value;
+      const env = kvLines(f.env.value), se = kvLines(f.secret.value), sf = kvLines(f.sfile.value);
+      if (Object.keys(env).length) req.env = env;
+      if (Object.keys(se).length) req.secret_env = se;
+      if (Object.keys(sf).length) req.secret_files = sf;
+      if (f.stdin.value) req.stdin = f.stdin.value;
+    } catch (e) { return toast(e.message, "err"); }
+    runBtn.disabled = true; status.replaceChildren("Running…"); out.replaceChildren(h("span", { class: "dim" }, "Waiting for output"));
+    try {
+      const r = await api("POST", `/sandboxes/${enc(id)}/exec`, req);
+      if (req.background) {
+        status.replaceChildren(`Started in the background as process ${r.pid}.`,
+          h("button", { class: "btn small", onclick: () => { pendingProc = r.pid; switchTab("processes"); } }, "Follow its output"));
+        out.replaceChildren(h("span", { class: "dim" }, "Background processes stream their output in Processes."));
+      } else {
+        status.replaceChildren(h("span", {}, h("span", { class: r.exit_code === 0 ? "ok-text" : "err-text" }, `Exited with ${r.exit_code}`),
+          ` in ${r.duration_ms} ms`, r.timed_out ? h("span", { class: "err-text" }, ", stopped at the timeout") : "", r.truncated ? ", output trimmed" : ""));
+        out.replaceChildren(r.stdout || "", r.stderr ? h("span", { class: "e" }, r.stderr) : "",
+          !r.stdout && !r.stderr ? h("span", { class: "dim" }, "No output.") : "");
+      }
+    } catch (e) { status.replaceChildren(h("span", { class: "err-text" }, e.message)); out.replaceChildren(); }
+    runBtn.disabled = false; refreshAll();
+  }
+  const adv = h("details", {}, h("summary", {}, "Secrets, environment, input and working directory"),
+    h("div", { class: "cols" },
+      h("label", { class: "field" }, h("span", {}, h("strong", {}, "Secret environment"), ". Values are hidden in output and never stored."), f.secret),
+      h("label", { class: "field" }, h("span", {}, h("strong", {}, "Secret files"), ", written to $SECRET_DIR/name."), f.sfile),
+      h("label", { class: "field" }, h("span", {}, "Environment, KEY=value per line"), f.env),
+      h("label", { class: "field" }, h("span", {}, "Standard input"), f.stdin),
+      h("label", { class: "field" }, h("span", {}, "Working directory"), f.cwd)));
+  pane.append(
+    h("div", { class: "row note" }, "Examples:", EXAMPLES.map(([label, cmd, o = {}]) => h("button", { class: "btn small", onclick: () => {
+      f.cmd.value = cmd; f.bg.checked = !!o.bg; f.secret.value = o.secret || ""; f.sfile.value = o.sfile || ""; f.stdin.value = o.stdin || "";
+      f.timeout.value = o.timeout || ""; if (o.secret || o.sfile || o.stdin) adv.open = true; f.cmd.focus(); } }, label))),
+    h("label", { class: "field" }, h("span", {}, "Runs with /bin/sh -c. Press Ctrl+Enter to run."), f.cmd),
+    h("div", { class: "row" }, runBtn, h("label", { class: "check" }, f.bg, "Keep running in the background"),
+      h("label", { class: "row note" }, "Timeout in seconds", f.timeout)),
+    adv, status, out);
+  f.cmd.focus();
+};
+
+// --- Processes
+let pendingProc = null;
+TAB_RENDER.processes = (pane, id) => {
+  const tbody = h("tbody");
+  const viewer = h("div");
+  let alive = true, follow = null;
+  async function load() {
+    try {
+      const r = await api("GET", `/sandboxes/${enc(id)}/processes`, undefined, { quiet: true });
+      const ps = (r.processes || []).sort((a, b) => b.pid - a.pid);
+      tbody.replaceChildren(...(ps.length ? ps.map(p => h("tr", { class: "link", tabindex: 0, onclick: () => watch(p.pid), onkeydown: e => e.key === "Enter" && watch(p.pid) },
+        h("td", { class: "num" }, p.pid),
+        h("td", { class: "mono", style: "max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap", title: p.cmd }, p.cmd),
+        h("td", {}, p.background ? "Background" : "Foreground"),
+        h("td", {}, p.running ? h("span", { class: "state heat heat-running" }, "running") : `exited ${p.exit_code ?? ""}`),
+        h("td", { class: "t" }, ago(p.started_at)),
+        h("td", { style: "text-align:right" }, p.running ? h("button", { class: "btn small danger", onclick: e => { e.stopPropagation(); kill(p.pid, "TERM"); } }, "Stop") : null)))
+        : [h("tr", {}, h("td", { colspan: 6, class: "note" }, "Nothing has run yet. Start something in Run a command, with “Keep running in the background” checked."))]));
+    } catch (e) { tbody.replaceChildren(h("tr", {}, h("td", { colspan: 6, class: "err-text" }, e.message))); }
+  }
+  async function kill(pid, sig) {
+    await guard(() => api("DELETE", `/sandboxes/${enc(id)}/processes/${pid}?signal=${sig}`), `Sent ${sig} to process ${pid}`); load();
+  }
+  function watch(pid) {
+    if (follow) follow.stop = true;
+    const me = follow = { stop: false };
+    const out = h("pre", { class: "out", style: "max-height:380px" });
+    const st = h("span", { class: "note" }, "Streaming");
+    const sig = h("select", { style: "width:auto", "aria-label": "Signal" }, ["TERM", "KILL", "INT", "HUP", "QUIT", "USR1", "USR2"].map(s => h("option", {}, s)));
+    viewer.replaceChildren(h("div", { class: "panel" },
+      h("div", { class: "panel-head" }, h("strong", {}, `Process ${pid}`), st, h("span", { class: "spacer" }),
+        sig, h("button", { class: "btn small danger", onclick: () => kill(pid, sig.value) }, "Send signal"),
+        h("button", { class: "btn small quiet", onclick: () => { me.stop = true; viewer.replaceChildren(); } }, "Close")),
+      h("div", { class: "panel-body" }, out)));
+    let so = 0, se = 0;
+    (async () => {
+      while (alive && !me.stop) {
+        try {
+          const r = await api("GET", `/sandboxes/${enc(id)}/processes/${pid}/output?since_stdout=${so}&since_stderr=${se}&wait_ms=10000`, undefined, { quiet: true });
+          if (me.stop) return;
+          const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 20;
+          if (r.dropped) out.append(h("span", { class: "dim" }, "[older output was discarded]\n"));
+          if (r.stdout) out.append(r.stdout);
+          if (r.stderr) out.append(h("span", { class: "e" }, r.stderr));
+          if (atBottom) out.scrollTop = out.scrollHeight;
+          so = r.stdout_offset; se = r.stderr_offset;
+          if (!r.running) { st.textContent = `Exited with ${r.exit_code ?? "?"}`; load(); return; }
+        } catch (e) { st.textContent = e.message; return; }
+      }
+    })();
+  }
+  pane.append(h("div", { class: "row" }, h("h2", { class: "section-title" }, "Processes"), h("span", { class: "note" }, "Select one to stream its output."),
+    h("span", { class: "spacer" }), h("button", { class: "btn small", onclick: load }, "Refresh")),
+    h("table", {}, h("thead", {}, h("tr", {}, ["Process", "Command", "Kind", "Status", "Started", ""].map(x => h("th", {}, x)))), tbody),
+    viewer);
+  load(); const iv = setInterval(load, 4000);
+  if (pendingProc) { watch(pendingProc); pendingProc = null; }
+  tabCleanup = () => { alive = false; clearInterval(iv); if (follow) follow.stop = true; };
+};
+
+// --- Files
+const fileCwd = {};
+TAB_RENDER.files = (pane, id) => {
+  const crumbs = h("nav", { class: "crumbs", "aria-label": "Path" });
+  const tbody = h("tbody");
+  const editor = h("div");
+  const upload = h("input", { type: "file", multiple: true, hidden: true });
+  let cwd = fileCwd[id] || "/workspace";
+  const base = `/sandboxes/${enc(id)}`;
+  const join = (d, n) => (d.endsWith("/") ? d : d + "/") + n;
+  async function ls(dir) {
+    cwd = fileCwd[id] = dir;
+    crumbs.replaceChildren(h("button", { onclick: () => ls("/") }, "/"));
+    let acc = "";
+    for (const part of dir.split("/").filter(Boolean)) { acc += "/" + part; const p = acc; crumbs.append(h("button", { onclick: () => ls(p) }, part), "/"); }
+    try {
+      const r = await api("GET", `${base}/files?path=${enc(dir)}`);
+      if (typeof r !== "object") throw new Error(`${dir} is a file, not a folder.`);
+      const es = (r.entries || []).sort((a, b) => (b.is_dir - a.is_dir) || a.name.localeCompare(b.name));
+      const rows = [];
+      if (dir !== "/") rows.push(h("tr", { class: "link", tabindex: 0, onclick: () => ls(dir.replace(/\/[^/]+\/?$/, "") || "/") }, h("td", { colspan: 5, class: "mono" }, "../")));
+      for (const e of es) {
+        const p = e.path || join(dir, e.name);
+        const open = () => e.is_dir ? ls(p) : openFile(p);
+        rows.push(h("tr", { class: "link", tabindex: 0, onclick: open, onkeydown: ev => ev.key === "Enter" && open() },
+          h("td", { class: "mono" }, e.name + (e.is_dir ? "/" : e.is_link ? " ↪" : "")),
+          h("td", { class: "t num" }, e.is_dir ? "" : fmtBytes(e.size)),
+          h("td", { class: "t mono" }, e.mode),
+          h("td", { class: "t" }, ago(e.mod_time)),
+          h("td", { style: "text-align:right;white-space:nowrap" },
+            h("button", { class: "icon-btn", onclick: ev => { ev.stopPropagation(); mv(p); } }, "Rename"),
+            h("button", { class: "icon-btn", onclick: ev => { ev.stopPropagation(); download(p, e.is_dir); } }, "Download"),
+            h("button", { class: "icon-btn danger", onclick: ev => { ev.stopPropagation(); rm(p, e.is_dir); } }, "Delete"))));
+      }
+      if (!es.length) rows.push(h("tr", {}, h("td", { colspan: 5, class: "note" }, "This folder is empty. Create a file or upload one.")));
+      tbody.replaceChildren(...rows);
+    } catch (e) { tbody.replaceChildren(h("tr", {}, h("td", { colspan: 5, class: "err-text" }, e.message))); }
+  }
+  async function openFile(p) {
+    try {
+      const res = await api("GET", `${base}/files?path=${enc(p)}`, undefined, { raw: true });
+      const buf = await res.arrayBuffer();
+      const binary = new Uint8Array(buf.slice(0, 8000)).includes(0);
+      const ta = h("textarea", { rows: 18, spellcheck: "false", "aria-label": p });
+      ta.value = binary ? "" : new TextDecoder().decode(buf);
+      editor.replaceChildren(h("div", { class: "panel" },
+        h("div", { class: "panel-head" }, h("strong", { class: "mono" }, p), h("span", { class: "t" }, `${fmtBytes(buf.byteLength)}, mode ${res.headers.get("X-Fired-Mode") || "?"}`),
+          h("span", { class: "spacer" }),
+          binary ? null : h("button", { class: "btn small primary", onclick: () => save(p, ta.value) }, "Save"),
+          h("button", { class: "btn small quiet", onclick: () => editor.replaceChildren() }, "Close")),
+        h("div", { class: "panel-body" }, binary ? h("p", { class: "note", style: "margin:0" }, "This is a binary file. Download it to inspect it.") : ta)));
+      ta.addEventListener("keydown", e => { if (e.key === "s" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(p, ta.value); } });
+      ta.focus();
+    } catch (e) { toast(e.message, "err"); }
+  }
+  async function save(p, text) { await guard(() => api("PUT", `${base}/files?path=${enc(p)}`, text), "Saved"); ls(cwd); }
+  async function rm(p, dir) {
+    if (!confirm(`Delete ${p}${dir ? " and everything in it" : ""}?`)) return;
+    await guard(() => api("DELETE", `${base}/files?path=${enc(p)}${dir ? "&recursive=1" : ""}`), "Deleted"); ls(cwd);
+  }
+  async function mv(p) {
+    const to = prompt("New path", p); if (!to || to === p) return;
+    await guard(() => api("POST", `${base}/files/move`, { from: p, to }), "Renamed"); ls(cwd);
+  }
+  async function download(p, dir) {
+    try {
+      const res = await api("GET", dir ? `${base}/files/archive?path=${enc(p)}` : `${base}/files?path=${enc(p)}`, undefined, { raw: true });
+      const a = h("a", { href: URL.createObjectURL(await res.blob()), download: (p.split("/").pop() || "root") + (dir ? ".tar.gz" : "") });
+      a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (e) { toast(e.message, "err"); }
+  }
+  upload.onchange = async () => {
+    for (const file of upload.files) await guard(() => api("PUT", `${base}/files?path=${enc(join(cwd, file.name))}`, file), `Uploaded ${file.name}`);
+    upload.value = ""; ls(cwd);
+  };
+  const go = h("input", { type: "text", placeholder: "Go to a path", style: "width:200px", "aria-label": "Go to a path" });
+  go.addEventListener("keydown", e => { if (e.key === "Enter" && go.value.trim()) { ls(go.value.trim()); go.value = ""; } });
+  pane.append(
+    h("div", { class: "row" }, crumbs, h("span", { class: "spacer" }), go,
+      h("button", { class: "btn small", onclick: async () => { const n = prompt("File name"); if (!n) return; const p = n.startsWith("/") ? n : join(cwd, n);
+        await guard(() => api("PUT", `${base}/files?path=${enc(p)}`, ""), "Created"); await ls(cwd); openFile(p); } }, "New file"),
+      h("button", { class: "btn small", onclick: async () => { const n = prompt("Folder name"); if (!n) return;
+        await guard(() => api("POST", `${base}/files/mkdir?path=${enc(n.startsWith("/") ? n : join(cwd, n))}`), "Created"); ls(cwd); } }, "New folder"),
+      h("button", { class: "btn small", onclick: () => upload.click() }, "Upload"),
+      h("button", { class: "btn small", onclick: () => download(cwd, true) }, "Download folder"), upload),
+    editor,
+    h("table", {}, h("thead", {}, h("tr", {}, ["Name", "Size", "Mode", "Modified", ""].map(x => h("th", {}, x)))), tbody));
+  ls(cwd);
+};
+
+// --- Ports
+TAB_RENDER.ports = (pane, id) => {
+  const list = h("div");
+  const frame = h("div");
+  const port = h("input", { type: "number", min: 1, max: 65535, placeholder: "3000", style: "width:110px", "aria-label": "Port" });
+  const links = {};
+  async function load() {
+    const ports = curSb()?.ports || [];
+    for (const p of ports) if (!links[p]) {
+      try { links[p] = (await api("POST", "/ui/preview-link", { sandbox: id, port: p }, { quiet: true })).url; } catch {}
+    }
+    list.replaceChildren(ports.length ? h("table", {}, h("tbody", {}, ports.map(p => h("tr", {},
+      h("td", { class: "num", style: "width:80px" }, h("strong", {}, p)),
+      h("td", {}, links[p] ? h("a", { href: links[p], target: "_blank", rel: "noopener", class: "mono" }, location.origin + links[p]) : "Getting a link…"),
+      h("td", { style: "text-align:right;white-space:nowrap" },
+        h("button", { class: "btn small", onclick: () => preview(p) }, "Preview"), " ",
+        h("button", { class: "btn small danger", onclick: async () => { await guard(() => api("DELETE", `/sandboxes/${enc(id)}/ports/${p}`), `Closed port ${p}`); await refreshAll(); load(); } }, "Close port"))))))
+      : h("p", { class: "note" }, "No ports are open. Every port is closed until you open it here."));
+  }
+  function preview(p) {
+    if (!links[p]) return;
+    frame.replaceChildren(h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("strong", {}, `Port ${p}`), h("span", { class: "spacer" }),
+      h("button", { class: "btn small", onclick: () => preview(p) }, "Reload"), h("button", { class: "btn small quiet", onclick: () => frame.replaceChildren() }, "Close preview")),
+      h("iframe", { src: links[p], title: `Preview of port ${p}`, style: "width:100%;height:440px;border:0;display:block;background:#fff;border-radius:0 0 4px 4px" })));
+  }
+  async function expose(p) {
+    await guard(() => api("POST", `/sandboxes/${enc(id)}/ports`, { port: +p }), `Opened port ${p}`); await refreshAll(); await load();
+  }
+  async function demo() {
+    const chk = await guard(() => api("POST", `/sandboxes/${enc(id)}/exec`, { cmd: "command -v python3" }));
+    if (chk.exit_code !== 0) return toast("The sample site needs python3, which this image doesn't have. Use a sandbox from a Python template, or start your own server and open its port.", "err");
+    const p = 8000 + Math.floor(Math.random() * 900);
+    const html = `<!doctype html><meta charset="utf-8"><title>${id}</title><body style="font-family:system-ui;padding:40px;max-width:60ch"><h1>Hello from ${id}</h1><p>This page is served by <code>python3 -m http.server ${p}</code> inside the microVM and reaches you through fired over vsock.</p><p>Edit <code>/workspace/site/index.html</code> in Files, then reload.</p>`;
+    await guard(() => api("PUT", `/sandboxes/${enc(id)}/files?path=${enc("/workspace/site/index.html")}`, html));
+    await guard(() => api("POST", `/sandboxes/${enc(id)}/exec`, { cmd: `cd /workspace/site && exec python3 -m http.server ${p} --bind 127.0.0.1`, background: true }));
+    await expose(p);
+    setTimeout(() => preview(p), 800);
+  }
+  port.addEventListener("keydown", e => { if (e.key === "Enter" && port.value) expose(port.value); });
+  pane.append(
+    h("div", { class: "row" }, h("h2", { class: "section-title" }, "Open a port"), port,
+      h("button", { class: "btn primary", onclick: () => port.value && expose(port.value) }, "Open port"),
+      h("span", { class: "note" }, "or"), h("button", { class: "btn", onclick: demo }, "Serve a sample site")),
+    h("p", { class: "note", style: "margin:0" }, "Start a server inside the sandbox that listens on 127.0.0.1, then open its port. Requests wake a sleeping sandbox. Preview links work for one port only and run the page in an isolated origin, so sites that rely on cookies or local storage may behave differently here."),
+    list, frame);
+  load();
+  const iv = setInterval(load, 5000);
+  tabCleanup = () => clearInterval(iv);
+};
+
+// --- Settings
+TAB_RENDER.settings = (pane, id) => {
+  const s = curSb(); if (!s) return;
+  const f = {
+    labels: h("textarea", { rows: 3 }), env: h("textarea", { rows: 3 }), egress: h("textarea", { rows: 3 }),
+    idle_suspend: h("input", { type: "text", value: fmtDur(s.ttl?.idle_suspend) || "", placeholder: "Daemon default" }),
+    archive_after: h("input", { type: "text", value: fmtDur(s.ttl?.archive_after) || "", placeholder: "Daemon default" }),
+    delete_after: h("input", { type: "text", value: fmtDur(s.ttl?.delete_after) || "", placeholder: "Daemon default" }),
+    redact: h("input", { type: "checkbox", checked: s.redact }),
+  };
+  for (const k of ["idle_suspend", "archive_after", "delete_after"]) if (f[k].value === "never") f[k].value = "-1";
+  f.labels.value = kvText(s.labels); f.env.value = kvText(s.env); f.egress.value = (s.egress?.allow || []).join("\n");
+  async function save() {
+    try {
+      const req = { labels: kvLines(f.labels.value), env: kvLines(f.env.value), egress: { allow: lines(f.egress.value) }, redact: f.redact.checked,
+        ttl: { idle_suspend: f.idle_suspend.value.trim() || "0", archive_after: f.archive_after.value.trim() || "0", delete_after: f.delete_after.value.trim() || "0" } };
+      await guard(() => api("PATCH", `/sandboxes/${enc(id)}`, req), "Changes saved"); refreshAll();
+    } catch (e) { if (!e.status) toast(e.message, "err"); }
+  }
+  pane.append(
+    h("label", { class: "field" }, h("span", {}, h("strong", {}, "Internet access"), ". One domain per line, like github.com, *.npmjs.org, host:8443, or * for any. Changes apply right away."), f.egress),
+    h("div", { class: "cols" },
+      h("label", { class: "field" }, h("span", {}, "Suspend after idle for"), f.idle_suspend),
+      h("label", { class: "field" }, h("span", {}, "Archive after"), f.archive_after),
+      h("label", { class: "field" }, h("span", {}, "Delete after"), f.delete_after)),
+    h("div", { class: "cols" },
+      h("label", { class: "field" }, h("span", {}, "Labels, key=value per line"), f.labels),
+      h("label", { class: "field" }, h("span", {}, "Environment for every command"), f.env)),
+    h("label", { class: "check" }, f.redact, "Hide secret values in command output"),
+    h("div", { class: "row" }, h("button", { class: "btn primary", onclick: save }, "Save changes")),
+    h("details", {}, h("summary", {}, "Raw sandbox record"), h("pre", { class: "out" }, JSON.stringify(s, null, 2))));
+};
+
+// --- VM log
+TAB_RENDER.log = (pane, id) => {
+  const out = h("pre", { class: "out", style: "max-height:none;flex:1" }, "Loading…");
+  async function load() {
+    try { const t = await api("GET", `/sandboxes/${enc(id)}/logs?bytes=65536`); out.textContent = t || "Nothing logged yet."; out.scrollTop = out.scrollHeight; }
+    catch (e) { out.textContent = e.message; }
+  }
+  pane.append(h("div", { class: "row" }, h("p", { class: "note", style: "margin:0" }, "Firecracker and serial console output. Look here first when a sandbox fails to boot or resume."),
+    h("span", { class: "spacer" }), h("button", { class: "btn small", onclick: load }, "Refresh")), out);
+  load();
+};
+
+// ---------- activity drawer
+const events = [];
+let drawerTab = "events";
+const drawer = $("#drawer");
+function drawerUpdate(which) {
+  $("#ev-count").textContent = events.length ? events.length : "";
+  $("#api-count").textContent = apiLog.length ? apiLog.length : "";
+  if (which && which !== drawerTab) return;
+  const body = $("#drawer-body");
+  const stick = body.scrollTop + body.clientHeight >= body.scrollHeight - 10;
+  if (drawerTab === "events") {
+    body.replaceChildren(...(events.length ? events.map(e => h("div", { class: "ev-row" }, h("span", { class: "t" }, e.at),
+      h("span", {}, e.sandbox_id ? h("button", { class: "btn small quiet", onclick: () => openSandbox(e.sandbox_id) }, e.sandbox_id) : h("strong", {}, e.template || ""), " ",
+        e.type === "sandbox.deleted" ? "deleted" : [e.prev_state ? `${e.prev_state} to ` : "", e.state ? stateTag(e.state) : e.status ? stateTag(e.status) : ""],
+        e.error ? h("span", { class: "err-text" }, " " + e.error) : null)))
+      : [h("p", { class: "note" }, "Sandbox and template state changes appear here as they happen.")]));
+  } else {
+    body.replaceChildren(...(apiLog.length ? apiLog.map(e => h("div", { class: "log-row" }, h("span", { class: "t" }, e.at),
+      h("span", { class: e.status >= 200 && e.status < 400 ? "ok-text num" : "err-text num" }, e.status),
+      h("span", { class: "mono", title: e.body || "" }, `${e.method} ${e.path.startsWith("/ui/") ? e.path : "/v1" + e.path}`, h("span", { class: "t" }, `  ${e.ms} ms`)),
+      h("button", { class: "btn small quiet", onclick: () => { navigator.clipboard?.writeText(curlFor(e)); toast("Copied as curl"); } }, "Copy as curl")))
+      : [h("p", { class: "note" }, "Requests you make from this console appear here, ready to copy as curl. Background refreshes are left out.")]));
+  }
+  if (stick) body.scrollTop = body.scrollHeight;
+}
+function setDrawer(tab, open) {
+  drawerTab = tab;
+  drawer.querySelectorAll(".drawer-bar .tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.d === tab && open)));
+  drawer.classList.toggle("open", open);
+  $("#drawer-toggle").textContent = open ? "Hide activity" : "Show activity";
+  drawerUpdate();
+}
+drawer.querySelectorAll(".drawer-bar .tab").forEach(b => b.onclick = () => setDrawer(b.dataset.d, !(drawer.classList.contains("open") && drawerTab === b.dataset.d)));
+$("#drawer-toggle").onclick = () => setDrawer(drawerTab, !drawer.classList.contains("open"));
+$("#drawer-clear").onclick = () => { (drawerTab === "events" ? events : apiLog).length = 0; drawerUpdate(); };
+
+let refreshTimer = null;
+function connectEvents() {
+  const es = new EventSource("/v1/events");
+  const onEv = ev => {
+    try { const d = JSON.parse(ev.data); d.at = clock(); events.push(d); if (events.length > 300) events.shift(); } catch { return; }
+    drawerUpdate("events");
+    clearTimeout(refreshTimer); refreshTimer = setTimeout(refreshAll, 150);
+  };
+  for (const t of ["sandbox.state", "sandbox.deleted", "template.status", "message"]) es.addEventListener(t, onEv);
+  es.onerror = () => { S.online = false; renderFleet(); };
+  es.onopen = () => refreshAll();
+}
+
+// ---------- sign in (the token becomes an HttpOnly session cookie)
+let booted = false;
+function showLogin(msg) {
+  if (tabCleanup) { tabCleanup(); tabCleanup = null; }
+  S.sel = null; S.view = "login";
+  $("#btn-logout").hidden = true; $("#fleet").replaceChildren();
+  const tok = h("input", { type: "password", placeholder: "API token", autocomplete: "current-password", "aria-label": "API token" });
+  const err = h("p", { class: "err-text", style: "margin:0", role: "alert" }, msg || "");
+  const go = async () => {
+    const res = await fetch("/ui/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: tok.value.trim() }) });
+    if (res.ok) { closeSandbox(); boot(); } else err.textContent = "That token doesn't match the daemon's FIRED_API_TOKEN.";
+  };
+  tok.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+  $("#main").replaceChildren(h("div", { class: "login" }, h("h1", {}, "Sign in"),
+    h("p", { class: "note", style: "margin:0" }, "Enter the daemon's API token, the value of FIRED_API_TOKEN. This browser keeps a session cookie so you don't have to enter it again."),
+    tok, h("button", { class: "btn primary", onclick: go }, "Sign in"), err));
+  tok.focus();
+}
+$("#btn-logout").onclick = async () => { await fetch("/ui/logout", { method: "POST" }); location.reload(); };
+
+function boot() {
+  $("#btn-logout").hidden = false;
+  if (booted) { refreshAll(); return; }
+  booted = true;
+  refreshAll();
+  connectEvents();
+  setInterval(refreshAll, 5000);
+}
+setDrawer("events", false);
+fetch("/ui/session").then(r => r.json()).then(s => s.authenticated ? boot() : showLogin()).catch(() => showLogin("Can't reach the daemon. Check that the container is running."));
+</script>
+</body>
+</html>

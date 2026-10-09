@@ -81,11 +81,17 @@ Also cap the other tenants so they can't grow into the sandbox budget:
 
 ## 4. Kernel
 
-Build the guest kernel:
+The image already includes a guest kernel at `/data/kernels/vmlinux`. It is
+built by the Dockerfile's `kernel` stage. To pin or customize the kernel
+outside the image, build it into the mounted kernels directory. The mount
+hides the built-in one:
 
 ```bash
 scripts/build-kernel.sh /mnt/hdd/fired/kernels     # ~10–20 min, needs Docker
 ```
+
+If you would rather use the kernel in the image, drop the `/data/kernels`
+volume from `deploy/docker-compose.yml`.
 
 The script starts from Firecracker's CI guest config and builds in overlayfs,
 vsock, ext4, devtmpfs and virtio-rng. **overlayfs is required** for a

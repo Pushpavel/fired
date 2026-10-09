@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test race lint docker dev clean
+.PHONY: build test race lint docker dev clean try
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/fired ./cmd/fired
@@ -27,3 +27,15 @@ dev: build
 
 clean:
 	rm -rf bin .dev
+
+# Run the production image with nothing mounted: real Firecracker VMs, the
+# web console on http://localhost:8443/ui/ (token below), and all state
+# inside the container, so `docker rm` (or Ctrl-C, thanks to --rm) wipes it.
+TRY_PORT ?= 8443
+TRY_TOKEN ?= dev
+try: docker
+	docker run --rm -it --name fired-try --privileged --cgroupns=private \
+	  --tmpfs /data/hot:exec,dev,mode=0755,size=8g \
+	  -p 127.0.0.1:$(TRY_PORT):8443 \
+	  -e FIRED_API_TOKEN=$(TRY_TOKEN) -e FIRED_UI=1 \
+	  fired:latest
