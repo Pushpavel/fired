@@ -193,7 +193,9 @@ func (d *Driver) Start(ctx context.Context, spec vmm.StartSpec, mode vmm.Mode) (
 		return nil, info, err
 	}
 	// Leftovers from a previous run of this jail id would make the jailer fail.
-	for _, n := range []string{fVsock, fEgress, fAPISock, "dev", "run", d.execName} {
+	// That includes the pid file the jailer writes (<exec name>.pid), which
+	// survives a suspend and blocks the next resume in the same jail.
+	for _, n := range []string{fVsock, fEgress, fAPISock, "dev", "run", d.execName, d.execName + ".pid"} {
 		_ = os.RemoveAll(filepath.Join(w, n))
 	}
 	d.removeCgroup(spec.ID)
