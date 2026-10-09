@@ -39,6 +39,8 @@ Firecracker v1.x API and is unit-tested at the protocol level, but it has
   - `running` → `suspended` (hot memory snapshot) → `archived` (compressed on the cold disk) → deleted.
   - Driven by per-sandbox idle TTLs, plus explicit API calls.
   - Any exec, file call or preview request auto-resumes the sandbox.
+  - The states, timers and what counts as activity are covered in
+    [docs/lifecycle.md](docs/lifecycle.md).
 - **Fast creates:** each template is booted once and snapshotted. New
   sandboxes restore that snapshot with a copy-on-write disk instead of
   cold-booting.

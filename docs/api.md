@@ -31,6 +31,9 @@ disables that behavior.
 
 ## Sandbox states
 
+The timers that move sandboxes between these states, and what counts as
+activity, are covered in [lifecycle.md](lifecycle.md).
+
 ```
 creating → running ⇄ suspending → suspended → archiving → archived
                 ▲                     │                       │
