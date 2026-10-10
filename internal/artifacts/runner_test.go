@@ -23,6 +23,7 @@ import (
 	"github.com/Pushpavel/fired/internal/sandbox"
 	"github.com/Pushpavel/fired/internal/server"
 	firedstore "github.com/Pushpavel/fired/internal/store"
+	"github.com/Pushpavel/fired/internal/store/storetest"
 	"github.com/Pushpavel/fired/internal/vmm/fake"
 	"github.com/Pushpavel/fired/pkg/api"
 	pa "github.com/Pushpavel/fired/pkg/artifacts"
@@ -56,8 +57,10 @@ func startFired(t *testing.T) (*client.Client, string) {
 	cfg := config.Default()
 	cfg.Driver = "fake"
 	cfg.Fake.AgentBinary = agentBin
-	cfg.Data = config.DataConfig{StateDir: filepath.Join(data, "state"), HotDir: filepath.Join(data, "hot"),
+	cfg.Data = config.DataConfig{HotDir: filepath.Join(data, "hot"),
 		ColdDir: filepath.Join(data, "cold"), TemplatesDir: filepath.Join(data, "tpl")}
+	cfg.DatabaseURL = storetest.URL(t)
+	cfg.Cluster.HostID = "test-host"
 	cfg.Auth.Token = firedToken
 	cfg.Capacity.MaxRunningMemoryMB = 8192
 	cfg.Defaults.MemoryMB = 512
@@ -65,11 +68,9 @@ func startFired(t *testing.T) (*client.Client, string) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range []string{cfg.Data.StateDir, cfg.Data.HotDir} {
-		os.MkdirAll(d, 0o755)
-	}
+	os.MkdirAll(cfg.Data.HotDir, 0o755)
 	log := testLogger()
-	st, err := firedstore.Open(cfg.Data.StateDir)
+	st, err := firedstore.Open(context.Background(), cfg.DatabaseURL, cfg.Cluster.HostID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +85,7 @@ func startFired(t *testing.T) (*client.Client, string) {
 	if err := mgr.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	mgr.StartCluster()
 	srv := httptest.NewServer(server.New(mgr, firedToken, log).Handler())
 	t.Cleanup(func() {
 		srv.Close()

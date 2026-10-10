@@ -1,7 +1,8 @@
 // Command fired is the sandbox daemon.
 //
-//	fired serve  [-config /etc/fired/config.yaml]
-//	fired check  [-config ...]   preflight checks for the host
+//	fired serve    [-config /etc/fired/config.yaml]
+//	fired check    [-config ...]   preflight checks for the host
+//	fired migrate  [-config ...]   bring the database schema up to date
 //	fired version
 package main
 
@@ -48,6 +49,8 @@ func main() {
 		os.Exit(serve(args))
 	case "check":
 		os.Exit(check(args))
+	case "migrate":
+		os.Exit(migrate(args))
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	default:
@@ -57,7 +60,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fired serve|check|version [-config path]")
+	fmt.Fprintln(os.Stderr, "usage: fired serve|check|migrate|version [-config path]")
 }
 
 func loadConfig(args []string) (config.Config, error) {
@@ -99,15 +102,15 @@ func serve(args []string) int {
 		log.Error("refusing to start without authentication: set auth.token / FIRED_API_TOKEN, tls.client_ca, or listen on a unix socket")
 		return 2
 	}
-	for _, d := range []string{cfg.Data.StateDir, cfg.Data.HotDir, cfg.Data.ColdDir, cfg.Data.TemplatesDir} {
+	for _, d := range []string{cfg.Data.HotDir, cfg.Data.ColdDir, cfg.Data.TemplatesDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			log.Error("create data dir", "dir", d, "err", err)
 			return 1
 		}
 	}
-	st, err := store.Open(cfg.Data.StateDir)
+	st, err := store.Open(context.Background(), cfg.DatabaseURL, cfg.Cluster.HostID)
 	if err != nil {
-		log.Error("open state db", "err", err)
+		log.Error("open database", "err", err)
 		return 1
 	}
 	defer st.Close()
@@ -154,7 +157,8 @@ func serve(args []string) int {
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
-	log.Info("fired listening", "addr", cfg.Listen, "driver", drv.Name(), "version", version, "tls", cfg.TLS.Cert != "", "ui", cfg.UI)
+	log.Info("fired listening", "addr", cfg.Listen, "driver", drv.Name(), "version", version, "tls", cfg.TLS.Cert != "", "ui", cfg.UI,
+		"host", cfg.Cluster.HostID, "advertise", cfg.Cluster.AdvertiseURL, "pools", strings.Join(cfg.Cluster.Pools, ","))
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
@@ -172,6 +176,10 @@ func serve(args []string) int {
 	// Snapshotting many VMs can take a while; Docker's stop_grace_period
 	// must cover it.
 	mgr.Shutdown(context.Background())
+	// Tell the other hosts now rather than after cluster.host_timeout.
+	if err := st.MarkDown(context.Background()); err != nil {
+		log.Warn("mark host down", "err", err)
+	}
 	log.Info("bye")
 	return 0
 }
@@ -207,6 +215,22 @@ func tlsConfig(c config.TLSConfig) (*tls.Config, error) {
 		tc.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	return tc, nil
+}
+
+// migrate brings the database schema up to date and exits. fired serve
+// does the same on startup; this lets a deploy run it once beforehand.
+func migrate(args []string) int {
+	cfg, err := loadConfig(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config:", err)
+		return 2
+	}
+	if err := store.Migrate(context.Background(), cfg.DatabaseURL); err != nil {
+		fmt.Fprintln(os.Stderr, "migrate:", err)
+		return 1
+	}
+	fmt.Printf("database schema is at v%d\n", store.SchemaVersion)
+	return 0
 }
 
 // check runs host preflight checks and prints a report.
@@ -262,7 +286,7 @@ func check(args []string) int {
 		_, err = os.Stat("/sys/fs/cgroup/cgroup.controllers")
 		report(err == nil, "cgroup v2", "")
 	}
-	for name, d := range map[string]string{"hot_dir": cfg.Data.HotDir, "cold_dir": cfg.Data.ColdDir, "templates_dir": cfg.Data.TemplatesDir, "state_dir": cfg.Data.StateDir} {
+	for name, d := range map[string]string{"hot_dir": cfg.Data.HotDir, "cold_dir": cfg.Data.ColdDir, "templates_dir": cfg.Data.TemplatesDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			report(false, name, err.Error())
 			continue
@@ -283,6 +307,11 @@ func check(args []string) int {
 		}
 	}
 	report(cfg.Auth.Token != "" || cfg.TLS.ClientCA != "" || strings.HasPrefix(cfg.Listen, "unix:"), "API authentication", "token, mTLS or unix socket")
+	if err := store.Ping(context.Background(), cfg.DatabaseURL); err != nil {
+		report(false, "database", err.Error())
+	} else {
+		report(true, "database", "reachable")
+	}
 	if failed > 0 {
 		fmt.Printf("\n%d check(s) failed\n", failed)
 		return 1

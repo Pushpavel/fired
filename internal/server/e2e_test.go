@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/Pushpavel/fired/internal/sandbox"
 	"github.com/Pushpavel/fired/internal/server"
 	"github.com/Pushpavel/fired/internal/store"
+	"github.com/Pushpavel/fired/internal/store/storetest"
 	"github.com/Pushpavel/fired/internal/vmm/fake"
 	"github.com/Pushpavel/fired/pkg/api"
 	"github.com/Pushpavel/fired/pkg/client"
@@ -49,6 +52,19 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// dbs keeps one database per data dir, so a restarted daemon (same data
+// dir) finds its state again.
+var dbs sync.Map
+
+func dbFor(t *testing.T, data string) string {
+	if u, ok := dbs.Load(data); ok {
+		return u.(string)
+	}
+	u := storetest.URL(t)
+	dbs.Store(data, u)
+	return u
+}
+
 type env struct {
 	t    *testing.T
 	cfg  config.Config
@@ -65,28 +81,32 @@ func newEnv(t *testing.T, data string, mutate func(*config.Config)) *env {
 	cfg.Driver = "fake"
 	cfg.Fake.AgentBinary = agentBin
 	cfg.Data = config.DataConfig{
-		StateDir: filepath.Join(data, "state"), HotDir: filepath.Join(data, "hot"),
-		ColdDir: filepath.Join(data, "cold"), TemplatesDir: filepath.Join(data, "tpl"),
+		HotDir: filepath.Join(data, "hot"), ColdDir: filepath.Join(data, "cold"), TemplatesDir: filepath.Join(data, "tpl"),
 	}
+	cfg.DatabaseURL = dbFor(t, data)
+	cfg.Cluster.HostID = "test-host"
 	cfg.Auth.Token = token
 	cfg.Capacity.MaxRunningMemoryMB = 8192
 	cfg.Defaults.MemoryMB = 512
 	cfg.Defaults.DiskMB = 1024
 	cfg.Egress.AllowPrivateCIDRs = []string{"127.0.0.0/8"}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Cluster.AdvertiseURL = "http://" + ln.Addr().String()
 	if mutate != nil {
 		mutate(&cfg)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range []string{cfg.Data.StateDir, cfg.Data.HotDir} {
-		os.MkdirAll(d, 0o755)
-	}
+	os.MkdirAll(cfg.Data.HotDir, 0o755)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if testing.Verbose() {
 		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}
-	st, err := store.Open(cfg.Data.StateDir)
+	st, err := store.Open(context.Background(), cfg.DatabaseURL, cfg.Cluster.HostID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,11 +121,15 @@ func newEnv(t *testing.T, data string, mutate func(*config.Config)) *env {
 	if err := mgr.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	mgr.StartCluster()
 	h := server.New(mgr, token, log)
 	if cfg.UI {
 		h.EnableUI(cfg.PreviewDomain)
 	}
-	srv := httptest.NewServer(h.Handler())
+	srv := httptest.NewUnstartedServer(h.Handler())
+	srv.Listener.Close()
+	srv.Listener = ln
+	srv.Start()
 	e := &env{t: t, cfg: cfg, st: st, mgr: mgr, srv: srv, c: client.New(srv.URL, token), data: data}
 	return e
 }
@@ -113,6 +137,7 @@ func newEnv(t *testing.T, data string, mutate func(*config.Config)) *env {
 func (e *env) close(action string) {
 	e.srv.Close()
 	e.mgr.Shutdown(context.Background())
+	_ = e.st.MarkDown(context.Background())
 	e.st.Close()
 }
 

@@ -84,7 +84,7 @@ git config --system url."https://github.com/".insteadOf git@github.com:
 
 **What fired does with the secrets:**
 
-- It never writes secret values to SQLite or to its logs.
+- It never writes secret values to its database or to its logs.
 - It redacts the values (raw, base64 and URL-encoded) from exec output,
   stream output and process output.
 - Background processes keep their secrets, and `$SECRET_DIR` stays for the

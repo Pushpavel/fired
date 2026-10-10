@@ -7,13 +7,34 @@ auth:
   # Prefer the FIRED_API_TOKEN environment variable.
   token: ""
 
+# Postgres holds fired's state (sandboxes, templates, hosts, quotas). Every
+# fired host of a cluster uses the same database; only fired reads it.
+# Prefer the FIRED_DATABASE_URL environment variable. Required.
+database_url: ""
+
+# Several hosts share one database and answer for each other: any host
+# accepts any request and forwards it to the host a sandbox lives on.
+cluster:
+  host_id: ""             # default: hostname. Must stay the same across restarts. Env FIRED_HOST_ID
+  advertise_url: ""       # how other hosts reach this one, e.g. http://10.0.0.5:8443. Env FIRED_ADVERTISE_URL
+  pools: ["*"]            # pools this host runs ("*" = any), e.g. ["chat"]. Env FIRED_POOLS
+  default_pool: default   # pool of sandboxes created without one
+  heartbeat: 5s
+  host_timeout: 30s       # a host silent this long is down
+
+# Per-user limits by pool, for sandboxes created with a quota_key. Usage is
+# memory × running time: 2 GB for 2 h is 4 GB-hours. 0 or absent = no limit.
+# Override per key with PUT /v1/quotas/{key}/{pool}.
+quotas: {}
+#   chat:      {max_memory_mb: 4096, gb_hours_per_day: 48}
+#   artifacts: {max_memory_mb: 2048, gb_hours_per_day: 24}
+
 # tls:
 #   cert: /etc/fired/tls/server.crt
 #   key: /etc/fired/tls/server.key
 #   client_ca: /etc/fired/tls/clients-ca.crt   # enables mTLS
 
 data:
-  state_dir: /data/state          # SQLite (HDD is fine)
   hot_dir: /data/hot              # host tmpfs: running disks + hot snapshots
   cold_dir: /data/cold            # HDD: compressed archives
   templates_dir: /data/templates  # HDD: template rootfs + base snapshots

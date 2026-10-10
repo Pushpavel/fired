@@ -76,6 +76,11 @@ Firecracker v1.x API and is unit-tested at the protocol level, but it has
   them, and runs their scheduled jobs in fired sandboxes, writing the results
   back as new versions. It is a separate binary meant to run next to your
   backend on durable storage; see [docs/artifacts.md](docs/artifacts.md).
+- **Several hosts:** fired keeps its state in Postgres. Hosts sharing one
+  database act as one service: any host answers any request (forwarding to
+  the host a sandbox lives on), places new sandboxes by pool and free
+  memory, and enforces per-user memory and GB-hour limits across all of
+  them. See [docs/cluster.md](docs/cluster.md).
   It has its own console (`make dev-artifacts`, then
   http://127.0.0.1:8444/ui/) with example artifacts to start from.
 
@@ -85,7 +90,7 @@ The fake driver runs the guest agent as a normal process. **There is no
 isolation**, so use it only for developing against the API.
 
 ```bash
-make dev        # builds bin/fired + bin/fired-agent, serves on 127.0.0.1:8443, token "dev"
+make dev        # starts Postgres (make db), builds bin/fired + bin/fired-agent, serves on 127.0.0.1:8443, token "dev"
 
 T=dev; U=http://127.0.0.1:8443
 curl -s -H "X-Fired-Token: $T" -d '{"name":"base"}' $U/v1/templates
@@ -128,9 +133,10 @@ The steps are summarized here; the full guide is
    container memory limit).
 3. Edit `deploy/config.yaml` and `deploy/docker-compose.yml` (cpuset,
    mem_limit, bind address, paths).
-4. Start it:
+4. Start it, with Postgres for fired's state:
    ```bash
-   FIRED_API_TOKEN=$(openssl rand -hex 32) docker compose -f deploy/docker-compose.yml up -d
+   FIRED_API_TOKEN=$(openssl rand -hex 32) FIRED_DB_PASSWORD=$(openssl rand -hex 16) \
+     docker compose -f deploy/docker-compose.yml up -d
    ```
 5. Check the host:
    ```bash

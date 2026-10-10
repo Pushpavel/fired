@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -19,7 +20,17 @@ type Config struct {
 	Listen string     `yaml:"listen"`
 	Auth   AuthConfig `yaml:"auth"`
 	TLS    TLSConfig  `yaml:"tls"`
-	Data   DataConfig `yaml:"data"`
+	// DatabaseURL is the Postgres database fired keeps its state in
+	// (sandboxes, templates, hosts, quotas). Every host of a cluster uses
+	// the same one; only fired reads it. Env FIRED_DATABASE_URL. Required.
+	DatabaseURL string        `yaml:"database_url"`
+	Cluster     ClusterConfig `yaml:"cluster"`
+	// Quotas are per-pool defaults for each quota key (user): e.g.
+	// {"chat": {"max_memory_mb": 4096, "gb_hours_per_day": 48}}. A pool
+	// without defaults has no limits unless set per key
+	// (PUT /v1/quotas/{key}/{pool}).
+	Quotas map[string]api.Quota `yaml:"quotas"`
+	Data   DataConfig           `yaml:"data"`
 	// Driver selects the VM backend: "firecracker" or "fake" (processes on
 	// the host, for development and tests only — no isolation).
 	Driver      string            `yaml:"driver"`
@@ -59,9 +70,29 @@ type TLSConfig struct {
 	ClientCA string `yaml:"client_ca"`
 }
 
+// ClusterConfig places this host among the fired hosts sharing the
+// database. A single host needs none of it.
+type ClusterConfig struct {
+	// HostID names this host; it must stay the same across restarts (its
+	// sandboxes are recorded under it). Env FIRED_HOST_ID. Default: the
+	// machine's hostname. On Kubernetes, the node name.
+	HostID string `yaml:"host_id"`
+	// AdvertiseURL is how other hosts reach this one's API, e.g.
+	// http://10.0.1.5:8443. Env FIRED_ADVERTISE_URL. Default:
+	// http://<hostname>:<listen port>.
+	AdvertiseURL string `yaml:"advertise_url"`
+	// Pools this host runs sandboxes for ("*" = any). Env FIRED_POOLS
+	// (comma-separated).
+	Pools []string `yaml:"pools"`
+	// DefaultPool is the pool of sandboxes created without one.
+	DefaultPool string `yaml:"default_pool"`
+	// Heartbeat is how often this host records itself as alive; a host
+	// silent for HostTimeout is down.
+	Heartbeat   api.Duration `yaml:"heartbeat"`
+	HostTimeout api.Duration `yaml:"host_timeout"`
+}
+
 type DataConfig struct {
-	// StateDir holds the SQLite database.
-	StateDir string `yaml:"state_dir"`
 	// HotDir holds running sandbox disks and hot snapshots. Put it on tmpfs
 	// or SSD. Must be a host mount to survive container restarts.
 	HotDir string `yaml:"hot_dir"`
@@ -152,8 +183,13 @@ type ExecConfig struct {
 func Default() Config {
 	return Config{
 		Listen: ":8443",
+		Cluster: ClusterConfig{
+			Pools:       []string{"*"},
+			DefaultPool: "default",
+			Heartbeat:   api.Duration(5 * time.Second),
+			HostTimeout: api.Duration(30 * time.Second),
+		},
 		Data: DataConfig{
-			StateDir:     "/data/state",
 			HotDir:       "/data/hot",
 			ColdDir:      "/data/cold",
 			TemplatesDir: "/data/templates",
@@ -239,9 +275,25 @@ func Load(path string) (Config, error) {
 	if v := os.Getenv("FIRED_UI"); v != "" {
 		cfg.UI = v == "1" || v == "true"
 	}
+	if v := os.Getenv("FIRED_DATABASE_URL"); v != "" {
+		cfg.DatabaseURL = v
+	}
+	if v := os.Getenv("FIRED_HOST_ID"); v != "" {
+		cfg.Cluster.HostID = v
+	}
+	if v := os.Getenv("FIRED_ADVERTISE_URL"); v != "" {
+		cfg.Cluster.AdvertiseURL = v
+	}
+	if v := os.Getenv("FIRED_POOLS"); v != "" {
+		cfg.Cluster.Pools = nil
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				cfg.Cluster.Pools = append(cfg.Cluster.Pools, p)
+			}
+		}
+	}
 	if v := os.Getenv("FIRED_DATA_DIR"); v != "" {
 		cfg.Data = DataConfig{
-			StateDir:     filepath.Join(v, "state"),
 			HotDir:       filepath.Join(v, "hot"),
 			ColdDir:      filepath.Join(v, "cold"),
 			TemplatesDir: filepath.Join(v, "templates"),
@@ -261,8 +313,42 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("shutdown_action must be suspend, archive or none")
 	}
+	if c.DatabaseURL == "" {
+		return fmt.Errorf("database_url (or FIRED_DATABASE_URL) is required: fired keeps its state in Postgres")
+	}
+	if c.Cluster.HostID == "" {
+		h, err := os.Hostname()
+		if err != nil || h == "" {
+			return fmt.Errorf("cluster.host_id is required (the hostname is unknown)")
+		}
+		c.Cluster.HostID = h
+	}
+	if c.Cluster.AdvertiseURL == "" {
+		port := "8443"
+		if i := strings.LastIndex(c.Listen, ":"); i >= 0 && !strings.HasPrefix(c.Listen, "unix:") {
+			port = c.Listen[i+1:]
+		}
+		scheme := "http"
+		if c.TLS.Cert != "" {
+			scheme = "https"
+		}
+		c.Cluster.AdvertiseURL = scheme + "://" + c.Cluster.HostID + ":" + port
+	}
+	c.Cluster.AdvertiseURL = strings.TrimRight(c.Cluster.AdvertiseURL, "/")
+	if len(c.Cluster.Pools) == 0 {
+		c.Cluster.Pools = []string{"*"}
+	}
+	if c.Cluster.DefaultPool == "" {
+		c.Cluster.DefaultPool = "default"
+	}
+	if c.Cluster.Heartbeat <= 0 {
+		c.Cluster.Heartbeat = api.Duration(5 * time.Second)
+	}
+	if c.Cluster.HostTimeout <= c.Cluster.Heartbeat {
+		c.Cluster.HostTimeout = api.Duration(6 * c.Cluster.Heartbeat.D())
+	}
 	for name, d := range map[string]string{
-		"data.state_dir": c.Data.StateDir, "data.hot_dir": c.Data.HotDir,
+		"data.hot_dir":  c.Data.HotDir,
 		"data.cold_dir": c.Data.ColdDir, "data.templates_dir": c.Data.TemplatesDir,
 	} {
 		if d == "" || !filepath.IsAbs(d) {
@@ -285,4 +371,14 @@ func (c *Config) Validate() error {
 		c.ReaperInterval = api.Duration(15 * time.Second)
 	}
 	return nil
+}
+
+// ServesPool reports whether this host runs sandboxes of pool.
+func (c ClusterConfig) ServesPool(pool string) bool {
+	for _, p := range c.Pools {
+		if p == "*" || p == pool {
+			return true
+		}
+	}
+	return false
 }

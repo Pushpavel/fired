@@ -9,6 +9,11 @@ endpoint that skips this.
 **Request and response bodies:** JSON, unless an endpoint below says
 otherwise. Unknown fields in request bodies are rejected.
 
+**Any host answers for the cluster.** With several fired hosts on one
+database (see [cluster.md](cluster.md)), send every request to any of them,
+e.g. through one load balancer. Requests about a sandbox or a template
+build are forwarded to the host it lives on; lists cover every host.
+
 **Errors:** every error response has this shape:
 
 ```json
@@ -21,9 +26,10 @@ otherwise. Unknown fields in request bodies are rejected.
 | 401 | `unauthorized` |
 | 403 | `port_not_exposed` |
 | 404 | `not_found`, `template_not_found` |
-| 409 | `conflict`, `unrecoverable` |
-| 502 | `agent_unreachable`, `port_not_listening`, `proxy_error` |
-| 503 | `capacity`, `not_running` |
+| 409 | `conflict`, `unrecoverable`, `wrong_pool` |
+| 429 | `quota_exceeded`: the sandbox's `quota_key` is at a limit in its pool |
+| 502 | `agent_unreachable`, `port_not_listening`, `proxy_error`, `host_unreachable` |
+| 503 | `capacity`, `not_running`, `host_unavailable` (the sandbox's host is down), `no_host` (no live host runs the pool), `admission_unavailable` (the database is down: starts fail closed) |
 
 **Durations:** given as strings like `"10m"` or `"2h"`, or as a number of
 seconds. `0` or omitted means "use the daemon default"; a negative value
@@ -85,12 +91,19 @@ count and memory size.
 
 ### Other template endpoints
 
-- `GET /templates` → `{"templates": [Template]}`
+Each host builds its own copy of a template: creating one builds it on the
+host that got the request and records it for every other host, which build
+it too (now, or when they join). Sandboxes are only placed on hosts where
+their template is `ready`.
+
+- `GET /templates` → `{"templates": [Template]}`, the builds on every host
+  (each has `host`).
 - `GET /templates/{id-or-name}` → `Template` with fields `status`
-  (`building|ready|failed`), `error`, `has_snapshot`, …
+  (`building|ready|failed`), `error`, `has_snapshot`, `host`, …
 - `GET /templates/{id-or-name}/logs?bytes=65536` → the build log, as text.
 - `DELETE /templates/{id-or-name}`:
-  - By id, deletes that build. By name, deletes every unused build of that name.
+  - By id, deletes that build. By name, stops every host from building it
+    and deletes every unused build of that name, on every live host.
   - Returns `409` if a sandbox still uses the template.
 
 ---
@@ -108,9 +121,17 @@ count and memory size.
   "labels": {"user": "42", "session": "abc"},
   "ttl": {"idle_suspend": "5m", "archive_after": "1h", "delete_after": "168h"},
   "egress": {"allow": ["github.com", "*.githubusercontent.com", "registry.npmjs.org"]},
-  "redact": true
+  "redact": true,
+  "quota_key": "user-42",                // who it's charged to; empty = no per-user limits
+  "pool": "chat"                         // which hosts and budget; default cluster.default_pool
 }
 ```
+
+**Placement:** the sandbox goes to a live host that runs its `pool` and has
+its template ready, with the most free memory. **Admission:** with a
+`quota_key`, every start (create, resume, or a wake by an exec) is checked
+against that key's limits in the pool, across all hosts; over a limit is
+`429 quota_exceeded`. See Quotas below.
 
 A `Sandbox` looks like this:
 
@@ -120,7 +141,9 @@ A `Sandbox` looks like this:
   "state": "running", "vcpus": 2, "memory_mb": 1536, "disk_mb": 10240,
   "env": {}, "labels": {}, "ttl": {}, "egress": {"allow": []}, "redact": true,
   "ports": [3000], "created_at": "…", "last_active_at": "…",
-  "state_changed_at": "…", "error": ""
+  "state_changed_at": "…", "error": "",
+  "host": "node-a", "quota_key": "user-42", "pool": "chat",
+  "host_down": false                     // true: its host stopped heartbeating
 }
 ```
 
@@ -141,8 +164,9 @@ are listed in `egress.allow_private_cidrs`. The entries in
 ### Other sandbox endpoints
 
 - `GET /sandboxes?label=user=42&label=session=abc&state=running` →
-  `{"sandboxes": [...]}`
-- `GET /sandboxes/{id}`
+  `{"sandboxes": [...]}`, on every host
+- `GET /sandboxes/{id}` (a sandbox on a down host is returned with
+  `host_down: true`; other calls about it are `503 host_unavailable`)
 - `PATCH /sandboxes/{id}`: send any of `labels`, `env`, `ttl`, `egress`,
   `redact`. Each one you send replaces the whole field. Changes take effect
   immediately, including egress.
@@ -280,13 +304,36 @@ Relative paths are resolved against the template workdir (`/workspace`).
 
 ---
 
+## Quotas
+
+Limits per quota key (user) and pool. Usage is memory × running time in
+GB-hours: 2 GB running for 2 h is 4 GB-hours. Suspended and archived
+sandboxes don't count. Defaults per pool come from the config (`quotas`).
+
+- `GET /quotas/{key}` → `{"quotas": [QuotaStatus]}`, one per pool the key
+  uses (or that has defaults).
+- `GET /quotas/{key}/{pool}` → `QuotaStatus`:
+  `{"quota_key", "pool", "quota": {"max_memory_mb", "gb_hours_per_day"},
+  "effective": {…}, "running_mb", "gb_hours_today"}`. `quota` is what was
+  set for the key, `effective` applies the defaults (`-1` = no limit).
+- `PUT /quotas/{key}/{pool}` with `{"max_memory_mb": 4096,
+  "gb_hours_per_day": 48}` → `QuotaStatus`. `0` uses the pool's default, a
+  negative value means no limit.
+
+---
+
 ## Operations
 
-- `GET /host` returns `driver`, `version`, `memory_budget_mb`,
-  `memory_running_mb`, `counts` by state, and the used/free bytes of the hot
-  and cold directories.
-- `GET /events?sandbox=<id>` is a Server-Sent Events stream:
-  - event types: `sandbox.state`, `sandbox.deleted`, `template.status`
-  - data: `{"type", "sandbox_id", "state", "prev_state", "template", "status", "error", "at"}`
+- `GET /host` returns this host's `driver`, `version`,
+  `memory_budget_mb`, `memory_running_mb`, `counts` by state, and the
+  used/free bytes of the hot and cold directories.
+- `GET /hosts` → `{"hosts": [{"id", "url", "pools", "version", "schema",
+  "capacity_mb", "running_mb", "sandboxes", "started_at", "last_seen",
+  "alive"}]}`: every host of the cluster.
+- `GET /events?sandbox=<id>` is a Server-Sent Events stream of every host's
+  events:
+  - event types: `sandbox.state`, `sandbox.deleted`, `template.status`,
+    `template.spec`
+  - data: `{"type", "sandbox_id", "state", "prev_state", "template", "status", "error", "host", "at"}`
 - `GET /metrics` is in Prometheus text format.
 - `GET /healthz` needs no authentication.

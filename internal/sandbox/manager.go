@@ -42,10 +42,15 @@ type Manager struct {
 	global  egress.Policy
 	log     *slog.Logger
 	version string
+	// host is this host's ID in the cluster (cluster.host_id).
+	host      string
+	startedAt time.Time
 
 	mu         sync.Mutex
 	entries    map[string]*entry
 	runningMem int
+	// tplMu serializes starting template builds (API and cluster specs).
+	tplMu sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -68,7 +73,10 @@ type entry struct {
 	transport *portTransport
 	policy    egress.Policy
 	memMB     int // reserved while running
-	gone      bool
+	// admitted: the quota key's limits were checked and this sandbox counts
+	// as running against them (store.Admit) until release.
+	admitted bool
+	gone     bool
 
 	lastActive atomic.Int64 // unix nanos
 	busy       atomic.Int32
@@ -102,7 +110,10 @@ func New(o Options) (*Manager, error) {
 	m := &Manager{
 		cfg: o.Config, store: o.Store, drv: o.Driver, bus: o.Bus, secrets: o.Secrets,
 		log: o.Log, version: o.Version, entries: map[string]*entry{},
+		host: o.Store.Host(), startedAt: time.Now().UTC(),
 	}
+	o.Store.HostTimeout = o.Config.Cluster.HostTimeout.D()
+	o.Store.Defaults = o.Config.Quotas
 	if m.bus == nil {
 		m.bus = events.NewBus()
 	}
@@ -142,7 +153,19 @@ func New(o Options) (*Manager, error) {
 	return m, nil
 }
 
-func (m *Manager) Bus() *events.Bus          { return m.bus }
+func (m *Manager) Bus() *events.Bus      { return m.bus }
+func (m *Manager) Store() *store.Store   { return m.store }
+func (m *Manager) HostID() string        { return m.host }
+func (m *Manager) Config() config.Config { return m.cfg }
+
+// publish sends an event from this host (to every host, see relayEvents).
+func (m *Manager) publish(e api.Event) {
+	e.Host = m.host
+	m.bus.Publish(e)
+}
+
+// Has reports whether the sandbox lives on this host.
+func (m *Manager) Has(id string) bool        { return m.get(id) != nil }
 func (m *Manager) Secrets() *redact.Registry { return m.secrets }
 func (m *Manager) DriverName() string        { return m.drv.Name() }
 
@@ -216,7 +239,7 @@ func (m *Manager) setState(e *entry, st api.SandboxState, errMsg string) {
 	if prev != st {
 		m.log.Info("sandbox state", "sandbox", e.id, "from", prev, "to", st, "error", errMsg)
 	}
-	m.bus.Publish(api.Event{Type: "sandbox.state", SandboxID: e.id, State: st, PrevState: prev, Error: errMsg, At: time.Now().UTC()})
+	m.publish(api.Event{Type: "sandbox.state", SandboxID: e.id, State: st, PrevState: prev, Error: errMsg, At: time.Now().UTC()})
 }
 
 func (m *Manager) persist(e *entry) {
@@ -234,6 +257,10 @@ func (m *Manager) persist(e *entry) {
 // Load restores in-memory state from the database after a (re)start and
 // reconciles it with what is on disk.
 func (m *Manager) Load(ctx context.Context) error {
+	// Nothing runs yet after a (re)start.
+	if err := m.store.ResetRunning(ctx); err != nil {
+		return err
+	}
 	recs, err := m.store.ListSandboxes(ctx)
 	if err != nil {
 		return err
@@ -304,10 +331,34 @@ func (m *Manager) Load(ctx context.Context) error {
 	return nil
 }
 
-// Start launches background loops.
+// Start records this host in the cluster and launches background loops.
 func (m *Manager) Start() {
 	m.wg.Add(1)
 	go m.reaper()
+	m.StartCluster()
+}
+
+// StartCluster records this host and starts the loops that keep the
+// cluster's shared view current, without the idle reaper (tests drive that
+// with ReapOnce).
+func (m *Manager) StartCluster() {
+	if err := m.heartbeat(m.ctx); err != nil {
+		m.log.Error("heartbeat", "err", err)
+	}
+	m.wg.Add(3)
+	listening := make(chan struct{})
+	go func() {
+		defer m.wg.Done()
+		m.store.Listen(m.ctx, eventsChannel, listening, m.receiveEvent)
+	}()
+	// Don't miss what other hosts announce right after we start.
+	select {
+	case <-listening:
+	case <-time.After(5 * time.Second):
+		m.log.Warn("not yet listening for other hosts' events; continuing")
+	}
+	go m.clusterLoop()
+	go m.relayEvents()
 }
 
 // Shutdown stops background loops and applies the shutdown action to
@@ -358,7 +409,56 @@ func (m *Manager) Shutdown(ctx context.Context) {
 
 // ---------------------------------------------------------------- memory
 
+// reserve admits the sandbox against its quota key's limits (fail closed:
+// no database, no start), then reserves mb of this host's memory budget.
 func (m *Manager) reserve(ctx context.Context, self *entry, mb int) error {
+	if self != nil {
+		if err := m.admit(ctx, self, mb); err != nil {
+			return err
+		}
+	}
+	if err := m.reserveMem(ctx, self, mb); err != nil {
+		if self != nil {
+			m.unadmit(self)
+		}
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) admit(ctx context.Context, e *entry, mb int) error {
+	rec := e.snapshot()
+	if rec.QuotaKey == "" {
+		return nil
+	}
+	err := m.store.Admit(ctx, e.id, rec.QuotaKey, rec.Pool, mb)
+	var qe *store.QuotaError
+	switch {
+	case errors.As(err, &qe):
+		return errf(429, "quota_exceeded", "%s", qe.Msg)
+	case err != nil:
+		m.log.Error("admission", "sandbox", e.id, "err", err)
+		return errf(503, "admission_unavailable", "can't check quota for %s: the database is unavailable", rec.QuotaKey)
+	}
+	e.mu.Lock()
+	e.admitted = true
+	e.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) unadmit(e *entry) {
+	e.mu.Lock()
+	was := e.admitted
+	e.admitted = false
+	e.mu.Unlock()
+	if was {
+		if err := m.store.Release(context.Background(), e.id); err != nil {
+			m.log.Error("release quota", "sandbox", e.id, "err", err)
+		}
+	}
+}
+
+func (m *Manager) reserveMem(ctx context.Context, self *entry, mb int) error {
 	for attempt := 0; attempt < 8; attempt++ {
 		m.mu.Lock()
 		if m.runningMem+mb <= m.cfg.Capacity.MaxRunningMemoryMB {
@@ -436,6 +536,7 @@ func (m *Manager) release(e *entry) {
 	e.memMB = 0
 	e.mu.Unlock()
 	m.releaseMB(mb)
+	m.unadmit(e)
 }
 
 func (m *Manager) releaseMB(mb int) {
@@ -450,6 +551,10 @@ func (m *Manager) releaseMB(mb int) {
 // ---------------------------------------------------------------- create
 
 var idRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,39}$`)
+
+// NewSandboxID returns a fresh sandbox ID (placement picks one before it
+// forwards a create, so a retry can't create two).
+func NewSandboxID() string { return newID("sb-") }
 
 func newID(prefix string) string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -468,7 +573,7 @@ func (m *Manager) resolveTemplate(ctx context.Context, ref string) (*api.Templat
 	if ref == "" {
 		return nil, badRequest("template is required (no defaults.template configured)")
 	}
-	if t, err := m.store.GetTemplate(ctx, ref); err == nil {
+	if t, err := m.store.GetTemplate(ctx, ref); err == nil && t.Host == m.host {
 		if t.Status != api.TemplateReady {
 			return nil, conflict("template %s is %s", ref, t.Status)
 		}
@@ -524,6 +629,13 @@ func (m *Manager) Create(ctx context.Context, req api.CreateSandboxRequest) (*ap
 	if req.Redact != nil {
 		redactOn = *req.Redact
 	}
+	pool := req.Pool
+	if pool == "" {
+		pool = m.cfg.Cluster.DefaultPool
+	}
+	if !m.cfg.Cluster.ServesPool(pool) {
+		return nil, errf(409, "wrong_pool", "host %s doesn't run pool %s", m.host, pool)
+	}
 	now := time.Now().UTC()
 	rec := api.Sandbox{
 		ID: id, Template: t.Name, TemplateID: t.ID, State: api.StateCreating,
@@ -531,6 +643,7 @@ func (m *Manager) Create(ctx context.Context, req api.CreateSandboxRequest) (*ap
 		Env: req.Env, Labels: req.Labels, TTL: req.TTL,
 		Egress: api.EgressPolicy{Allow: allow}, Redact: redactOn, Ports: []int{},
 		CreatedAt: now, LastActiveAt: now, StateChangedAt: now,
+		Host: m.host, QuotaKey: req.QuotaKey, Pool: pool,
 	}
 	e := &entry{id: id, rec: rec, policy: pol}
 	e.touch()
@@ -555,7 +668,7 @@ func (m *Manager) Create(ctx context.Context, req api.CreateSandboxRequest) (*ap
 		m.mu.Unlock()
 		return nil, conflict("sandbox %s: %v", id, err)
 	}
-	m.bus.Publish(api.Event{Type: "sandbox.state", SandboxID: id, State: api.StateCreating, At: now})
+	m.publish(api.Event{Type: "sandbox.state", SandboxID: id, State: api.StateCreating, At: now})
 
 	if err := m.reserve(ctx, e, mem); err != nil {
 		// Nothing was created; don't leave a record behind.
@@ -907,7 +1020,7 @@ func (m *Manager) casState(e *entry, cond func() bool, to api.SandboxState) bool
 		m.log.Error("persist sandbox", "sandbox", e.id, "err", err)
 	}
 	m.log.Info("sandbox state", "sandbox", e.id, "from", prev, "to", to)
-	m.bus.Publish(api.Event{Type: "sandbox.state", SandboxID: e.id, State: to, PrevState: prev, At: time.Now().UTC()})
+	m.publish(api.Event{Type: "sandbox.state", SandboxID: e.id, State: to, PrevState: prev, At: time.Now().UTC()})
 	return true
 }
 
@@ -1016,7 +1129,7 @@ func (m *Manager) deleteLocked(e *entry) {
 	delete(m.entries, e.id)
 	m.mu.Unlock()
 	m.log.Info("deleted", "sandbox", e.id)
-	m.bus.Publish(api.Event{Type: "sandbox.deleted", SandboxID: e.id, State: api.StateDeleted, At: time.Now().UTC()})
+	m.publish(api.Event{Type: "sandbox.deleted", SandboxID: e.id, State: api.StateDeleted, At: time.Now().UTC()})
 }
 
 // ---------------------------------------------------------------- queries & updates

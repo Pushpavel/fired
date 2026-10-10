@@ -417,3 +417,28 @@ func (c *Client) Host(ctx context.Context) (*api.HostInfo, error) {
 	var h api.HostInfo
 	return &h, c.do(ctx, "GET", "/v1/host", nil, &h)
 }
+
+// Hosts lists the fired hosts of the cluster.
+func (c *Client) Hosts(ctx context.Context) ([]api.HostRecord, error) {
+	var l api.HostList
+	return l.Hosts, c.do(ctx, "GET", "/v1/hosts", nil, &l)
+}
+
+// Quotas reports a quota key's limits and usage in every pool it uses.
+func (c *Client) Quotas(ctx context.Context, key string) ([]api.QuotaStatus, error) {
+	var l api.QuotaList
+	return l.Quotas, c.do(ctx, "GET", "/v1/quotas/"+url.PathEscape(key), nil, &l)
+}
+
+// Quota reports a quota key's limits and usage in one pool.
+func (c *Client) Quota(ctx context.Context, key, pool string) (*api.QuotaStatus, error) {
+	var s api.QuotaStatus
+	return &s, c.do(ctx, "GET", "/v1/quotas/"+url.PathEscape(key)+"/"+url.PathEscape(pool), nil, &s)
+}
+
+// SetQuota sets a quota key's limits in a pool (0 = the pool's default,
+// negative = no limit).
+func (c *Client) SetQuota(ctx context.Context, key, pool string, q api.Quota) (*api.QuotaStatus, error) {
+	var s api.QuotaStatus
+	return &s, c.do(ctx, "PUT", "/v1/quotas/"+url.PathEscape(key)+"/"+url.PathEscape(pool), q, &s)
+}

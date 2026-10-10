@@ -40,6 +40,10 @@ func (s *Server) routes() {
 	h("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	h("GET /metrics", s.handleMetrics)
 	h("GET /v1/host", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, s.m.Host()) })
+	h("GET /v1/hosts", s.handleHosts)
+	h("GET /v1/quotas/{key}", s.handleQuotas)
+	h("GET /v1/quotas/{key}/{pool}", s.handleQuota)
+	h("PUT /v1/quotas/{key}/{pool}", s.handlePutQuota)
 	h("GET /v1/events", s.handleEvents)
 
 	h("GET /v1/templates", s.handleListTemplates)
@@ -87,7 +91,9 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		if id, port, ok := s.previewTarget(r.Host); ok {
-			s.proxyPort(w, r, id, port, "")
+			if !s.remote(w, r, id) {
+				s.proxyPort(w, r, id, port, "")
+			}
 			return
 		}
 		if !s.public(r.URL.Path) && !s.authorized(r) {
@@ -95,9 +101,13 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		sw := &statusWriter{ResponseWriter: w, status: 200}
-		if r.Header.Get("X-Fired-Sandbox") != "" {
-			s.handleHeaderProxy(sw, r)
-		} else {
+		switch {
+		case r.Header.Get("X-Fired-Sandbox") != "":
+			if !s.remote(sw, r, r.Header.Get("X-Fired-Sandbox")) {
+				s.handleHeaderProxy(sw, r)
+			}
+		case s.remote(sw, r, sandboxPathID(r.URL.Path)):
+		default:
 			s.mux.ServeHTTP(sw, r)
 		}
 		lvl := slog.LevelInfo
@@ -210,6 +220,9 @@ func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTemplateLogs(w http.ResponseWriter, r *http.Request) {
+	if s.remoteTemplate(w, r) {
+		return
+	}
 	t, err := s.m.GetTemplate(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		writeError(w, err)
@@ -218,30 +231,7 @@ func (s *Server) handleTemplateLogs(w http.ResponseWriter, r *http.Request) {
 	serveTail(w, r, s.m.BuildLogPath(t.ID))
 }
 
-func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
-	ids, err := s.m.DeleteTemplate(r.Context(), r.PathValue("ref"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"deleted": ids})
-}
-
 // ---- sandboxes
-
-func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	var req api.CreateSandboxRequest
-	if err := decode(r, &req); err != nil {
-		writeError(w, err)
-		return
-	}
-	sb, err := s.m.Create(r.Context(), req)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, sb)
-}
 
 // GET /v1/sandboxes?label=key=value&label=k2=v2&state=running
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +243,12 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		labels[k] = v
 	}
-	writeJSON(w, 200, api.SandboxList{Sandboxes: s.m.List(labels, r.URL.Query().Get("state"))})
+	list, err := s.m.ListAll(r.Context(), labels, r.URL.Query().Get("state"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, 200, api.SandboxList{Sandboxes: list})
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {

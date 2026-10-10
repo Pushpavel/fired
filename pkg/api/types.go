@@ -111,6 +111,13 @@ type CreateSandboxRequest struct {
 	// Redact controls whether injected secret values are scrubbed from
 	// command output. Defaults to the daemon setting.
 	Redact *bool `json:"redact,omitempty"`
+	// QuotaKey is who the sandbox's compute is charged to (typically a
+	// user). Starts are admitted against that key's limits in Pool. Empty
+	// means no per-user limits apply.
+	QuotaKey string `json:"quota_key,omitempty"`
+	// Pool picks the hosts the sandbox runs on and the budget it draws from
+	// (e.g. "chat" or "artifacts"). Default: cluster.default_pool.
+	Pool string `json:"pool,omitempty"`
 }
 
 type UpdateSandboxRequest struct {
@@ -139,6 +146,13 @@ type Sandbox struct {
 	LastActiveAt   time.Time         `json:"last_active_at"`
 	StateChangedAt time.Time         `json:"state_changed_at"`
 	Error          string            `json:"error,omitempty"`
+	// Host is the fired host the sandbox lives on.
+	Host     string `json:"host,omitempty"`
+	QuotaKey string `json:"quota_key,omitempty"`
+	Pool     string `json:"pool,omitempty"`
+	// HostDown is set when the sandbox's host has stopped heartbeating; the
+	// state shown is the last one it recorded, and calls return 503.
+	HostDown bool `json:"host_down,omitempty"`
 }
 
 type SandboxList struct {
@@ -323,6 +337,9 @@ type Template struct {
 	Workdir     string            `json:"workdir,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	ReadyAt     *time.Time        `json:"ready_at,omitempty"`
+	// Host is the fired host this build lives on. Each host builds its own
+	// copy of a template.
+	Host string `json:"host,omitempty"`
 }
 
 type TemplateList struct {
@@ -337,7 +354,60 @@ type Event struct {
 	Template  string       `json:"template,omitempty"`
 	Status    string       `json:"status,omitempty"`
 	Error     string       `json:"error,omitempty"`
-	At        time.Time    `json:"at"`
+	// Host is the fired host the event happened on.
+	Host string    `json:"host,omitempty"`
+	At   time.Time `json:"at"`
+}
+
+// HostRecord is one fired host of the cluster, from GET /v1/hosts.
+type HostRecord struct {
+	ID    string   `json:"id"`
+	URL   string   `json:"url"`
+	Pools []string `json:"pools"`
+	// Version is the fired build; Schema is the database schema it was
+	// built for.
+	Version string `json:"version"`
+	Schema  int    `json:"schema"`
+	// CapacityMB is the host's memory budget for running sandboxes, and
+	// RunningMB how much of it is in use.
+	CapacityMB int       `json:"capacity_mb"`
+	RunningMB  int       `json:"running_mb"`
+	Sandboxes  int       `json:"sandboxes"`
+	StartedAt  time.Time `json:"started_at"`
+	LastSeen   time.Time `json:"last_seen"`
+	// Alive is false once the host has missed heartbeats for
+	// cluster.host_timeout.
+	Alive bool `json:"alive"`
+}
+
+type HostList struct {
+	Hosts []HostRecord `json:"hosts"`
+}
+
+// Quota limits what one quota key (user) may run in one pool. 0 uses the
+// pool's default from the config; a negative value means no limit.
+type Quota struct {
+	// MaxMemoryMB caps the memory of the key's running sandboxes at once.
+	MaxMemoryMB int `json:"max_memory_mb"`
+	// GBHoursPerDay caps memory × running time per UTC day: 2 GB for 2 h
+	// is 4 GB-hours, 100 MB for 48 h is 4.7.
+	GBHoursPerDay float64 `json:"gb_hours_per_day"`
+}
+
+// QuotaStatus is a key's limits and usage in one pool.
+type QuotaStatus struct {
+	QuotaKey string `json:"quota_key"`
+	Pool     string `json:"pool"`
+	// Quota is what was set for this key; Effective applies the defaults
+	// (-1 = no limit).
+	Quota        Quota   `json:"quota"`
+	Effective    Quota   `json:"effective"`
+	RunningMB    int     `json:"running_mb"`
+	GBHoursToday float64 `json:"gb_hours_today"`
+}
+
+type QuotaList struct {
+	Quotas []QuotaStatus `json:"quotas"`
 }
 
 type HostInfo struct {

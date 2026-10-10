@@ -24,9 +24,19 @@ func (m *Manager) BuildLogPath(id string) string {
 	return filepath.Join(m.templateDir(id), "build.log")
 }
 
-// CreateTemplate validates the request, records the template and builds it
-// asynchronously. Poll GET /v1/templates/{id} or watch events.
+// CreateTemplate validates the request and builds it on this host,
+// asynchronously, and records it as a spec every other host builds too
+// (placement only picks hosts where it's ready). Poll GET
+// /v1/templates/{id} or watch events.
 func (m *Manager) CreateTemplate(ctx context.Context, req api.CreateTemplateRequest) (*api.Template, error) {
+	m.tplMu.Lock()
+	defer m.tplMu.Unlock()
+	return m.startTemplate(ctx, req, true)
+}
+
+// startTemplate records a build on this host and starts it. With spec, the
+// request also becomes the cluster's spec for that name. Caller holds tplMu.
+func (m *Manager) startTemplate(ctx context.Context, req api.CreateTemplateRequest, spec bool) (*api.Template, error) {
 	if !templateNameRe.MatchString(req.Name) {
 		return nil, badRequest("name must match %s", templateNameRe)
 	}
@@ -57,13 +67,20 @@ func (m *Manager) CreateTemplate(ctx context.Context, req api.CreateTemplateRequ
 	if err := m.store.PutTemplate(ctx, t); err != nil {
 		return nil, err
 	}
-	m.bus.Publish(api.Event{Type: "template.status", Template: t.ID, Status: string(t.Status), At: time.Now().UTC()})
+	if spec {
+		if err := m.store.PutTemplateSpec(ctx, req, t.CreatedAt); err != nil {
+			return nil, err
+		}
+		m.publish(api.Event{Type: "template.spec", Template: req.Name, At: time.Now().UTC()})
+	}
+	m.publish(api.Event{Type: "template.status", Template: t.ID, Status: string(t.Status), At: time.Now().UTC()})
+	// Copy before the build goroutine starts updating t.
+	cp := *t
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
 		m.buildTemplate(t, req)
 	}()
-	cp := *t
 	return &cp, nil
 }
 
@@ -84,7 +101,7 @@ func (m *Manager) buildTemplate(t *api.Template, req api.CreateTemplateRequest) 
 		m.log.Error("template build failed", "template", t.ID, "err", err)
 		t.Status, t.Error = api.TemplateFailed, err.Error()
 		_ = m.store.PutTemplate(context.Background(), t)
-		m.bus.Publish(api.Event{Type: "template.status", Template: t.ID, Status: string(t.Status), Error: t.Error, At: time.Now().UTC()})
+		m.publish(api.Event{Type: "template.status", Template: t.ID, Status: string(t.Status), Error: t.Error, At: time.Now().UTC()})
 	}
 	vt := &vmm.Template{ID: t.ID, Dir: dir, VCPUs: t.VCPUs, MemoryMB: t.MemoryMB, DiskMB: t.DiskMB}
 	m.log.Info("building template", "template", t.ID, "image", t.Image)
@@ -108,7 +125,7 @@ func (m *Manager) buildTemplate(t *api.Template, req api.CreateTemplateRequest) 
 	}
 	fmt.Fprintf(logw, "template ready in %s\n", time.Since(start).Round(time.Second))
 	m.log.Info("template ready", "template", t.ID, "snapshot", t.HasSnapshot, "took", time.Since(start).Round(time.Second))
-	m.bus.Publish(api.Event{Type: "template.status", Template: t.ID, Status: string(t.Status), At: now})
+	m.publish(api.Event{Type: "template.status", Template: t.ID, Status: string(t.Status), At: now})
 }
 
 // bootTemplate boots the fresh template, runs setup commands and stores a
@@ -178,8 +195,9 @@ func (m *Manager) bootTemplate(ctx context.Context, t *api.Template, vt *vmm.Tem
 	return nil
 }
 
+// ListTemplates returns the builds on every host.
 func (m *Manager) ListTemplates(ctx context.Context) ([]api.Template, error) {
-	ts, err := m.store.ListTemplates(ctx)
+	ts, err := m.store.ListAllTemplates(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -190,22 +208,47 @@ func (m *Manager) ListTemplates(ctx context.Context) ([]api.Template, error) {
 	return out, nil
 }
 
-// GetTemplate looks up by id, or by name (latest ready build).
+// GetTemplate looks up a build by id (on any host), or a name: this host's
+// latest ready build, else the newest ready one on any host.
 func (m *Manager) GetTemplate(ctx context.Context, ref string) (*api.Template, error) {
 	t, err := m.store.GetTemplate(ctx, ref)
 	if errors.Is(err, store.ErrNotFound) {
 		t, err = m.store.LatestReadyTemplate(ctx, ref)
 	}
 	if errors.Is(err, store.ErrNotFound) {
+		all, lerr := m.store.ListAllTemplates(ctx)
+		if lerr != nil {
+			return nil, lerr
+		}
+		for _, x := range all { // newest first within a name
+			if x.Name == ref && x.Status == api.TemplateReady {
+				return x, nil
+			}
+		}
 		return nil, errf(404, "template_not_found", "template %q not found", ref)
 	}
 	return t, err
 }
 
-// DeleteTemplate deletes one build (by id) or every unused build of a name.
+// LocalTemplate reports whether a build id lives on this host.
+func (m *Manager) LocalTemplate(ctx context.Context, id string) (bool, string) {
+	t, err := m.store.GetTemplate(ctx, id)
+	if err != nil {
+		return true, "" // unknown: let the local handler answer (404)
+	}
+	return t.Host == m.host, t.Host
+}
+
+// DeleteTemplateSpec stops every host from building a name again.
+func (m *Manager) DeleteTemplateSpec(ctx context.Context, name string) error {
+	return m.store.DeleteTemplateSpec(ctx, name)
+}
+
+// DeleteTemplate deletes one of this host's builds (by id) or all of its
+// unused builds of a name.
 func (m *Manager) DeleteTemplate(ctx context.Context, ref string) ([]string, error) {
 	var targets []*api.Template
-	if t, err := m.store.GetTemplate(ctx, ref); err == nil {
+	if t, err := m.store.GetTemplate(ctx, ref); err == nil && t.Host == m.host {
 		targets = append(targets, t)
 	} else {
 		all, err := m.store.ListTemplates(ctx)
@@ -242,7 +285,7 @@ func (m *Manager) DeleteTemplate(ctx context.Context, ref string) ([]string, err
 			return deleted, err
 		}
 		deleted = append(deleted, t.ID)
-		m.bus.Publish(api.Event{Type: "template.status", Template: t.ID, Status: "deleted", At: time.Now().UTC()})
+		m.publish(api.Event{Type: "template.status", Template: t.ID, Status: "deleted", At: time.Now().UTC()})
 	}
 	if len(deleted) == 0 && len(inUse) > 0 {
 		return nil, conflict("template in use: %s", strings.Join(inUse, ", "))

@@ -24,6 +24,12 @@ egress:
   global_allow: ["registry.npmjs.org"]
 `), 0o644)
 	t.Setenv("FIRED_API_TOKEN", "tok")
+	if _, err := Load(p); err == nil {
+		t.Fatal("a missing database_url should be rejected")
+	}
+	t.Setenv("FIRED_DATABASE_URL", "postgres://db/fired")
+	t.Setenv("FIRED_HOST_ID", "node-a")
+	t.Setenv("FIRED_POOLS", "chat, artifacts")
 	c, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
@@ -33,6 +39,12 @@ egress:
 	}
 	if c.Defaults.TTL.IdleSuspend.D() != 5*time.Minute || c.Defaults.TTL.ArchiveAfter.D() != -time.Second {
 		t.Fatalf("ttl %+v", c.Defaults.TTL)
+	}
+	if c.DatabaseURL != "postgres://db/fired" || c.Cluster.HostID != "node-a" || c.Cluster.AdvertiseURL != "http://node-a:9000" {
+		t.Fatalf("cluster %+v", c.Cluster)
+	}
+	if !c.Cluster.ServesPool("chat") || !c.Cluster.ServesPool("artifacts") || c.Cluster.ServesPool("default") {
+		t.Fatalf("pools %v", c.Cluster.Pools)
 	}
 	if c.Defaults.TTL.DeleteAfter.D() != 7*24*time.Hour {
 		t.Fatal("unset fields should keep defaults")

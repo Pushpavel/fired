@@ -22,7 +22,7 @@ Docker must be using cgroup v2, which is the default on current distributions.
 | `/srv/fired/hot` | `/data/hot` | **tmpfs** (or SSD) | running sandbox disks, hot memory snapshots, jail roots, VM logs |
 | `/mnt/hdd/fired/cold` | `/data/cold` | HDD | `<id>.fired.zst` archives (sparse-aware, zstd) |
 | `/mnt/hdd/fired/templates` | `/data/templates` | HDD | `rootfs.ext4`, base snapshot (`base/`), build logs |
-| `/mnt/hdd/fired/state` | `/data/state` | HDD | `fired.db` (SQLite) |
+| `/mnt/hdd/fired/postgres` | (the `db` container) | HDD or SSD | Postgres: sandbox, template, host and quota records |
 | `/mnt/hdd/fired/kernels` | `/data/kernels` | HDD | `vmlinux` |
 
 Create the hot tier as a host tmpfs, not a container tmpfs. A host tmpfs
@@ -34,7 +34,7 @@ each jail.
 mkdir -p /srv/fired/hot
 echo 'tmpfs /srv/fired/hot tmpfs size=48g,mode=0755 0 0' >> /etc/fstab
 mount /srv/fired/hot
-mkdir -p /mnt/hdd/fired/{cold,templates,state,kernels}
+mkdir -p /mnt/hdd/fired/{cold,templates,postgres,kernels}
 ```
 
 **What a host reboot does:** it wipes the tmpfs. Any sandbox that was only
@@ -103,6 +103,7 @@ writable, and template builds log a warning.
 ```bash
 cd deploy
 export FIRED_API_TOKEN=$(openssl rand -hex 32)      # store it in your backend's secrets
+export FIRED_DB_PASSWORD=$(openssl rand -hex 16)
 FIRED_BIND=10.0.0.5 docker compose up -d --build
 docker compose exec fired fired check
 ```
@@ -141,6 +142,9 @@ curl -H "X-Fired-Token: $T" $U/v1/templates/node/logs
   then use `"image": "tar:/data/templates/img.tar"`.
 
 ## 7. Upgrades
+
+The database schema is migrated on startup (or run `fired migrate` first).
+With several hosts, see [cluster.md](cluster.md) for rolling upgrades.
 
 `docker compose up -d --build` replaces the container. On SIGTERM, fired
 snapshots every running sandbox (`shutdown_action: suspend`). The new

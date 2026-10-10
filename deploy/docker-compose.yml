@@ -1,6 +1,16 @@
 # Runs fired on the KVM workstation. See docs/operations.md for host setup
 # (tmpfs for the hot tier, firewall rule for the API port, kernel build).
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fired
+      POSTGRES_DB: fired
+      POSTGRES_PASSWORD: ${FIRED_DB_PASSWORD:?set FIRED_DB_PASSWORD}
+    volumes:
+      - /mnt/hdd/fired/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
   fired:
     build:
       context: ..
@@ -19,12 +29,13 @@ services:
       - "${FIRED_BIND:-0.0.0.0}:8443:8443"
     environment:
       FIRED_API_TOKEN: ${FIRED_API_TOKEN:?set FIRED_API_TOKEN}
+      FIRED_DATABASE_URL: postgres://fired:${FIRED_DB_PASSWORD}@db:5432/fired?sslmode=disable
+    depends_on: [db]
     volumes:
       - ./config.yaml:/etc/fired/config.yaml:ro
       - /srv/fired/hot:/data/hot                 # host tmpfs (survives container restarts)
       - /mnt/hdd/fired/cold:/data/cold
       - /mnt/hdd/fired/templates:/data/templates
-      - /mnt/hdd/fired/state:/data/state
       - /mnt/hdd/fired/kernels:/data/kernels:ro
     # Long enough to snapshot every running sandbox on shutdown.
     stop_grace_period: 3m
