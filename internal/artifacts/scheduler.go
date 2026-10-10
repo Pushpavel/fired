@@ -162,8 +162,10 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 }
 
 // dispatch starts pending runs while limits allow: one run at a time per
-// artifact, the quota key's concurrent runs and daily run minutes, and the
-// service-wide cap. Runs that can't start yet stay pending.
+// artifact and the service-wide cap. Per-user compute limits are fired's
+// (runner sandboxes carry the quota key): a run fired refuses goes back to
+// pending, and that key's runs wait (quotaBackoff) before trying again.
+// Runs that can't start yet stay pending.
 func (s *Service) dispatch(ctx context.Context) error {
 	pending, err := queryRuns(ctx, s.st.db, `status='pending' ORDER BY created_at`)
 	if err != nil {
@@ -212,27 +214,8 @@ func (s *Service) dispatch(ctx context.Context) error {
 			if j.OnBusy == pa.OnBusyQueue && j.Queue.MaxAge > 0 && now.Sub(cur.CreatedAt) > time.Duration(j.Queue.MaxAge) {
 				return drop("expired")
 			}
-			quota, err := s.effectiveQuota(ctx, q, a.QuotaKey)
-			if err != nil {
-				return err
-			}
-			if quota.MaxConcurrentRuns > 0 {
-				n, err := countRunning(ctx, q, a.QuotaKey)
-				if err != nil {
-					return err
-				}
-				if n >= quota.MaxConcurrentRuns {
-					return nil
-				}
-			}
-			if quota.RunMinutesPerDay > 0 {
-				used, err := runMillisSince(ctx, q, a.QuotaKey, now.Add(-24*time.Hour), now)
-				if err != nil {
-					return err
-				}
-				if used >= int64(quota.RunMinutesPerDay)*60000 {
-					return nil
-				}
+			if s.quotaWaiting(a.QuotaKey, now) {
+				return nil
 			}
 			cur.Status, cur.StartedAt, cur.Version = pa.RunRunning, &now, a.CurrentVersion
 			if err := putRun(ctx, q, cur); err != nil {

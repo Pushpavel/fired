@@ -336,22 +336,22 @@ type RunLogs struct {
 
 // ---- quotas
 
-// Quota limits everything that shares a quota key (typically one user).
-// Zero fields use the service default; negative disables the limit.
+// Quota limits what artifacts sharing a quota key (typically one user)
+// may store, and how often their schedules fire. Zero fields use the
+// service default; negative disables the limit.
+//
+// Compute (memory, running time) is limited by fired, per quota key in the
+// runner pool: runner sandboxes carry the artifact's quota key.
 type Quota struct {
-	MaxConcurrentRuns int      `json:"max_concurrent_runs,omitempty" yaml:"max_concurrent_runs"`
-	RunMinutesPerDay  int      `json:"run_minutes_per_day,omitempty" yaml:"run_minutes_per_day"`
-	MinInterval       Duration `json:"min_interval,omitempty" yaml:"min_interval"`
-	StorageBytes      int64    `json:"storage_bytes,omitempty" yaml:"storage_bytes"`
+	MinInterval  Duration `json:"min_interval,omitempty" yaml:"min_interval"`
+	StorageBytes int64    `json:"storage_bytes,omitempty" yaml:"storage_bytes"`
 }
 
 type QuotaStatus struct {
-	Key          string `json:"key"`
-	Quota        Quota  `json:"quota"`
-	Effective    Quota  `json:"effective"`
-	StorageUsed  int64  `json:"storage_used"`
-	RunsActive   int    `json:"runs_active"`
-	RunMinutes24 int    `json:"run_minutes_24h"`
+	Key         string `json:"key"`
+	Quota       Quota  `json:"quota"`
+	Effective   Quota  `json:"effective"`
+	StorageUsed int64  `json:"storage_used"`
 }
 
 // ---- credentials broker (implemented by your backend)

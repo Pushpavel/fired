@@ -1169,16 +1169,13 @@ async function quotaSection(box, key) {
     h("span", {}, h("b", {}, fmt(used)), max > 0 ? ` of ${fmt(max)}` : max < 0 ? ", no limit" : ""));
   const fld = (name, label, val, ph) => h("label", { class: "field" }, h("span", {}, label), h("input", { type: "text", name, value: val || "", placeholder: ph }));
   const form = h("div", { class: "cols" },
-    fld("max_concurrent_runs", "Runs at once", q.quota.max_concurrent_runs, `Default, ${S.info?.default_quota?.max_concurrent_runs ?? ""}`),
-    fld("run_minutes_per_day", "Run minutes a day", q.quota.run_minutes_per_day, `Default, ${S.info?.default_quota?.run_minutes_per_day ?? ""}`),
     fld("min_interval", "Shortest schedule interval", q.quota.min_interval && q.quota.min_interval !== "0s" ? fmtDur(q.quota.min_interval) : "", `Default, ${fmtDur(S.info?.default_quota?.min_interval) ?? ""}`),
     fld("storage_bytes", "Storage, bytes", q.quota.storage_bytes, `Default, ${fmtBytes(S.info?.default_quota?.storage_bytes)}`));
   box.replaceChildren(h("h3", {}, `Limits for “${key}”`),
     h("p", { class: "note" }, "Shared by every artifact with this quota key. Empty fields use the service default; -1 turns a limit off."),
     meter("Storage, deduplicated", q.storage_used, e.storage_bytes, fmtBytes),
-    meter("Runs going now", q.runs_active, e.max_concurrent_runs),
-    meter("Run minutes, last 24h", q.run_minutes_24h, e.run_minutes_per_day),
     h("p", { class: "note" }, `Schedules fire at most every ${fmtDur(e.min_interval) || "minute"}; closer firings are skipped.`),
+    h("p", { class: "note" }, `Runs use compute from this key's budget in fired's “${S.info?.runner_pool || "artifacts"}” pool (memory at once and GB-hours a day, across every host). fired sets those limits: PUT /v1/quotas/{key}/{pool} on fired. A run over them waits instead of failing.`),
     form,
     h("div", {}, h("button", { class: "btn", onclick: async () => {
       const body = {};

@@ -30,11 +30,11 @@ limits:
   default_active_for: 12h       # schedule window after a publish, without approval
   default_max_run: 30m          # longest run without approval
   default_quota:                # per quota key, unless PUT /v1/quotas/{key} says otherwise
-    max_concurrent_runs: 2
-    run_minutes_per_day: 240
     min_interval: 5m
     storage_bytes: 2147483648   # 2 GiB, deduplicated
-  max_concurrent_runs: 8        # whole service
+  # Compute per user (memory, GB-hours) is fired's: runners carry the
+  # artifact's quota key in runner.pool. See fired's `quotas` and docs/cluster.md.
+  max_concurrent_runs: 8        # runs this service drives at once
   min_interval: 1m              # shortest schedule interval for anyone
   serve_rps: 50                 # file reads per artifact per second
   serve_burst: 100
@@ -46,6 +46,8 @@ limits:
 
 runner:
   template: base                # fired template for jobs that don't name one
+  pool: artifacts               # fired pool for runners: hosts, and each user's compute budget
+  quota_backoff: 1m             # a key's runs wait this long after fired refuses one over its limits
   workdir: /artifact
   egress: []                    # allowlist for runner sandboxes, e.g. ["api.github.com"]
   ttl:                          # runner sandboxes are a cache; these are fired TTLs

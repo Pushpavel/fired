@@ -31,15 +31,18 @@ type Service struct {
 	broker *broker
 	now    func() time.Time
 
-	mu       sync.Mutex
-	running  map[string]string // artifact → run id
-	buckets  map[string]*bucket
-	touched  map[string]time.Time
-	wake     chan struct{}
-	runsWG   sync.WaitGroup
-	stopOnce sync.Once
-	stop     chan struct{}
-	bgWG     sync.WaitGroup
+	mu      sync.Mutex
+	running map[string]string // artifact → run id
+	buckets map[string]*bucket
+	touched map[string]time.Time
+	// quotaWait: until when a quota key's runs wait, after fired refused
+	// one for that key's limits.
+	quotaWait map[string]time.Time
+	wake      chan struct{}
+	runsWG    sync.WaitGroup
+	stopOnce  sync.Once
+	stop      chan struct{}
+	bgWG      sync.WaitGroup
 }
 
 // New opens the store under cfg.DataDir.
@@ -61,7 +64,8 @@ func New(cfg Config, log *slog.Logger) (*Service, error) {
 		broker:  newBroker(cfg.Broker),
 		now:     func() time.Time { return time.Now().UTC() },
 		running: map[string]string{}, buckets: map[string]*bucket{}, touched: map[string]time.Time{},
-		wake: make(chan struct{}, 1), stop: make(chan struct{}),
+		quotaWait: map[string]time.Time{},
+		wake:      make(chan struct{}, 1), stop: make(chan struct{}),
 	}
 	return s, nil
 }
@@ -785,12 +789,6 @@ func (s *Service) effectiveQuota(ctx context.Context, q querier, key string) (pa
 		return v, err
 	}
 	d := s.cfg.Limits.DefaultQuota
-	if v.MaxConcurrentRuns == 0 {
-		v.MaxConcurrentRuns = d.MaxConcurrentRuns
-	}
-	if v.RunMinutesPerDay == 0 {
-		v.RunMinutesPerDay = d.RunMinutesPerDay
-	}
 	if v.MinInterval == 0 {
 		v.MinInterval = d.MinInterval
 	}
@@ -820,14 +818,5 @@ func (s *Service) QuotaStatus(ctx context.Context, key string) (*pa.QuotaStatus,
 	if err != nil {
 		return nil, err
 	}
-	active, err := countRunning(ctx, s.st.db, key)
-	if err != nil {
-		return nil, err
-	}
-	now := s.now()
-	runMS, err := runMillisSince(ctx, s.st.db, key, now.Add(-24*time.Hour), now)
-	if err != nil {
-		return nil, err
-	}
-	return &pa.QuotaStatus{Key: key, Quota: raw, Effective: eff, StorageUsed: used, RunsActive: active, RunMinutes24: int(runMS / 60000)}, nil
+	return &pa.QuotaStatus{Key: key, Quota: raw, Effective: eff, StorageUsed: used}, nil
 }

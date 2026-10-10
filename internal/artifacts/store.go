@@ -511,47 +511,6 @@ func queryRuns(ctx context.Context, q querier, where string, args ...any) ([]*ru
 	return out, rows.Err()
 }
 
-// runMinutesSince sums run time (finished runs plus the elapsed time of
-// running ones) for a quota key since t.
-func runMillisSince(ctx context.Context, q querier, key string, since, now time.Time) (int64, error) {
-	rows, err := q.QueryContext(ctx, `
-SELECT r.started_at, r.finished_at FROM runs r JOIN artifacts a ON a.id=r.artifact
-WHERE a.quota_key=? AND r.started_at>0 AND (r.finished_at=0 OR r.finished_at>=?)`, key, ms(since))
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	var total int64
-	for rows.Next() {
-		var st, fi int64
-		if err := rows.Scan(&st, &fi); err != nil {
-			return 0, err
-		}
-		if fi == 0 {
-			fi = ms(now)
-		}
-		if st < ms(since) {
-			st = ms(since)
-		}
-		if fi > st {
-			total += fi - st
-		}
-	}
-	return total, rows.Err()
-}
-
-func countRunning(ctx context.Context, q querier, key string) (int, error) {
-	var n int
-	query := `SELECT COUNT(*) FROM runs r JOIN artifacts a ON a.id=r.artifact WHERE r.status='running'`
-	args := []any{}
-	if key != "" {
-		query += ` AND a.quota_key=?`
-		args = append(args, key)
-	}
-	err := q.QueryRowContext(ctx, query, args...).Scan(&n)
-	return n, err
-}
-
 // ---- run state
 
 func getRunState(ctx context.Context, q querier, id, job string) (string, error) {

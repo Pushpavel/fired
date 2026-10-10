@@ -457,3 +457,50 @@ func TestFromSandbox(t *testing.T) {
 		t.Fatalf("failed publishes made versions: %d", a.CurrentVersion)
 	}
 }
+
+// TestRunQuota: runner sandboxes are charged to the artifact's quota key in
+// the runner pool, so fired's per-user limits apply to runs. A run fired
+// refuses waits (pending) and that key backs off, instead of failing.
+func TestRunQuota(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts fired")
+	}
+	fc, firedURL := startFired(t)
+	h := newHarness(t, func(c *Config) {
+		c.Fired = FiredConfig{URL: firedURL, Token: firedToken}
+		c.SchedulerInterval = pa.Duration(100 * time.Millisecond)
+		c.Runner.QuotaBackoff = pa.Duration(300 * time.Millisecond)
+	})
+	h.svc.now = func() time.Time { return time.Now().UTC() }
+	if err := h.svc.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	c := h.c
+	spec := &pa.Spec{Jobs: map[string]pa.Job{"go": {Run: "echo ran", Writes: []string{"out"}}}}
+	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "quota-art", QuotaKey: "u9", Publish: &pa.PublishRequest{
+		Files: []pa.FileOp{pa.Text("a", "x")}, Spec: spec}}))(t)
+
+	// u9 may not run anything in the artifacts pool.
+	must(fc.SetQuota(ctx, "u9", "artifacts", api.Quota{MaxMemoryMB: 1}))(t)
+	run := must(c.Trigger(ctx, "quota-art", "go", nil))(t)
+	time.Sleep(time.Second)
+	if r := must(c.Run(ctx, "quota-art", run.ID))(t); r.Status != pa.RunPending {
+		t.Fatalf("over quota, the run should wait: %+v", r)
+	}
+	runners := must(fc.ListSandboxes(ctx, map[string]string{labelArtifact: "quota-art"}, ""))(t)
+	for _, sb := range runners {
+		if sb.QuotaKey != "u9" || sb.Pool != "artifacts" {
+			t.Fatalf("runner not charged to the artifact's key: %+v", sb)
+		}
+	}
+	// Lifting the limit lets it run.
+	must(fc.SetQuota(ctx, "u9", "artifacts", api.Quota{MaxMemoryMB: -1}))(t)
+	if r := waitRun(t, c, "quota-art", run.ID); r.Status != pa.RunSucceeded {
+		t.Fatalf("run: %+v", r)
+	}
+	q := must(fc.Quota(ctx, "u9", "artifacts"))(t)
+	if q.RunningMB == 0 {
+		t.Fatalf("the running runner should count for u9: %+v", q)
+	}
+}

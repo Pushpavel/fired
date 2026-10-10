@@ -43,10 +43,12 @@ type outcome struct {
 	reason   string
 	exitCode *int
 	logs     pa.RunLogs
-	// retry puts the run back to pending (fired had no capacity).
-	retry    bool
-	captured map[string]pa.File
-	state    string // new state blob ("" clears it)
+	// retry puts the run back to pending (fired had no capacity, or the
+	// quota key is over its limits: overQuota).
+	retry     bool
+	overQuota bool
+	captured  map[string]pa.File
+	state     string // new state blob ("" clears it)
 }
 
 // execute runs one job in the artifact's runner sandbox and records the
@@ -84,6 +86,36 @@ func unavailable(err error) bool {
 	return errors.As(err, &he) && he.Status == http.StatusServiceUnavailable
 }
 
+// overQuota reports fired refusing a start for the quota key's limits.
+func overQuota(err error) bool {
+	var he *client.HTTPError
+	return errors.As(err, &he) && he.Status == http.StatusTooManyRequests && he.Code() == "quota_exceeded"
+}
+
+// waitable turns fired refusing to start the runner into a retry.
+func waitable(err error) *outcome {
+	switch {
+	case overQuota(err):
+		return &outcome{retry: true, overQuota: true, reason: err.Error()}
+	case unavailable(err):
+		return &outcome{retry: true, reason: err.Error()}
+	}
+	return nil
+}
+
+// quotaWaiting reports whether key's runs are backing off after fired
+// refused one for the key's limits.
+func (s *Service) quotaWaiting(key string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	until, ok := s.quotaWait[key]
+	if ok && !now.Before(until) {
+		delete(s.quotaWait, key)
+		return false
+	}
+	return ok
+}
+
 func failed(reason string, err error) *outcome {
 	return &outcome{status: pa.RunFailed, reason: fmt.Sprintf("%s: %v", reason, err)}
 }
@@ -95,10 +127,18 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, timeout time.Durati
 	if err != nil {
 		return failed("credentials", err)
 	}
-	sb, err := s.ensureRunner(ctx, a.ID, j.Template)
+	sb, err := s.ensureRunner(ctx, a, j.Template)
 	if err != nil {
-		if unavailable(err) {
-			return &outcome{retry: true, reason: err.Error()}
+		if o := waitable(err); o != nil {
+			return o
+		}
+		return failed("runner sandbox", err)
+	}
+	// Wake it explicitly: a suspended runner is admitted against the quota
+	// key's limits here, and a refusal waits instead of failing the run.
+	if _, err := s.fired.Resume(ctx, sb); err != nil {
+		if o := waitable(err); o != nil {
+			return o
 		}
 		return failed("runner sandbox", err)
 	}
@@ -417,7 +457,12 @@ func (s *Service) finishRun(si *startInfo, out *outcome) error {
 	ctx := context.Background()
 	r, a, j := si.run, si.artifact, si.job
 	if out.retry {
-		s.log.Info("run waits for capacity", "run", r.ID, "reason", out.reason)
+		if out.overQuota {
+			s.mu.Lock()
+			s.quotaWait[a.QuotaKey] = s.now().Add(time.Duration(s.cfg.Runner.QuotaBackoff))
+			s.mu.Unlock()
+		}
+		s.log.Info("run waits for capacity", "run", r.ID, "quota_key", a.QuotaKey, "over_quota", out.overQuota, "reason", out.reason)
 		r.Status, r.StartedAt, r.Version = pa.RunPending, nil, 0
 		return putRun(ctx, s.st.db, r)
 	}
@@ -569,22 +614,26 @@ func (s *Service) pruneRunVersions(ctx context.Context, q querier, a *pa.Artifac
 }
 
 // ensureRunner returns the artifact's runner sandbox, creating it if it's
-// missing, broken or built from a different template.
-func (s *Service) ensureRunner(ctx context.Context, id, template string) (string, error) {
+// missing, broken, on a down host, or made for a different template, quota
+// key or pool.
+func (s *Service) ensureRunner(ctx context.Context, a pa.Artifact, template string) (string, error) {
+	id, pool := a.ID, s.cfg.Runner.Pool
 	list, err := s.fired.ListSandboxes(ctx, map[string]string{labelArtifact: id}, "")
 	if err != nil {
 		return "", err
 	}
 	for _, sb := range list {
-		if sb.State != api.StateError && sb.State != api.StateDeleting && sb.Labels[labelTemplate] == template {
+		if sb.State != api.StateError && sb.State != api.StateDeleting && !sb.HostDown &&
+			sb.Labels[labelTemplate] == template && sb.QuotaKey == a.QuotaKey && sb.Pool == pool {
 			return sb.ID, nil
 		}
 		_ = s.fired.DeleteSandbox(ctx, sb.ID)
 	}
 	req := api.CreateSandboxRequest{
 		Template: template, VCPUs: s.cfg.Runner.VCPUs, MemoryMB: s.cfg.Runner.MemoryMB, DiskMB: s.cfg.Runner.DiskMB,
-		Labels: map[string]string{labelRunner: "runner", labelArtifact: id, labelTemplate: template},
-		TTL:    s.cfg.Runner.TTL,
+		Labels:   map[string]string{labelRunner: "runner", labelArtifact: id, labelTemplate: template},
+		TTL:      s.cfg.Runner.TTL,
+		QuotaKey: a.QuotaKey, Pool: pool,
 	}
 	if len(s.cfg.Runner.Egress) > 0 {
 		req.Egress = &api.EgressPolicy{Allow: s.cfg.Runner.Egress}

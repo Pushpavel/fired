@@ -138,6 +138,7 @@ func (s *Service) handleUIInfo(w http.ResponseWriter, r *http.Request) {
 		"fired_url":          s.cfg.Fired.URL,
 		"broker":             s.cfg.Broker.URL != "",
 		"runner_template":    s.cfg.Runner.Template,
+		"runner_pool":        s.cfg.Runner.Pool,
 		"runner_workdir":     s.cfg.Runner.Workdir,
 		"default_active_for": l.DefaultActiveFor,
 		"default_max_run":    l.DefaultMaxRun,

@@ -279,22 +279,31 @@ slot.
 A pending run starts only when all of these allow it:
 
 - one run at a time per artifact;
-- the quota key's `max_concurrent_runs` and `run_minutes_per_day` (counted
-  over the last 24h);
-- `limits.max_concurrent_runs` for the whole service.
+- `limits.max_concurrent_runs`, the runs this service drives at once;
+- **fired admits the runner sandbox** against the quota key's compute
+  limits in `runner.pool` (default `artifacts`): memory at once and
+  GB-hours per day, counted across every fired host and separate from the
+  user's other sandboxes. See fired's [cluster.md](cluster.md). A refusal
+  (`429 quota_exceeded`) puts the run back to pending, and that key's runs
+  wait `runner.quota_backoff` (1m) before trying again; a full host
+  (`503`) is retried on the next tick.
 
 Separately, schedule firings closer together than the quota key's
 `min_interval` (and `limits.min_interval`) are skipped.
 
-Your backend sets per-key values with `PUT /v1/quotas/{key}`; zero fields
-use `limits.default_quota`, negative ones disable that limit.
-`GET /v1/quotas/{key}` shows current usage.
+This service's per-key limits are storage and `min_interval`. Your backend
+sets them with `PUT /v1/quotas/{key}`; zero fields use
+`limits.default_quota`, negative ones disable that limit. `GET
+/v1/quotas/{key}` shows storage used. Compute limits are set on fired, with
+`PUT /v1/quotas/{key}/{pool}` there.
 
 ### Runs
 
 Each artifact has one **runner sandbox** in fired, labelled
-`fired-artifacts.artifact=<id>`. It is only a cache: if it's gone, broken,
-or built from another template, a new one is created. A run:
+`fired-artifacts.artifact=<id>`, created in `runner.pool` and charged to the
+artifact's quota key. It is only a cache: if it's gone, broken, on a host
+that's down, or made for another template, quota key or pool, a new one is
+created. A run:
 
 1. **Gets credentials:** POSTs `{artifact, quota_key, labels, version, job,
    run_id}` to `broker.url`, and gets `{secret_env, secret_files}` back. A

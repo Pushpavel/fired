@@ -95,6 +95,13 @@ type LimitsConfig struct {
 type RunnerConfig struct {
 	// Template is the fired template for jobs that don't name one.
 	Template string `yaml:"template"`
+	// Pool is the fired pool runner sandboxes run in. They carry the
+	// artifact's quota key, so fired enforces each user's compute limits
+	// in this pool (separately from their other sandboxes).
+	Pool string `yaml:"pool"`
+	// QuotaBackoff is how long a quota key's runs wait after fired refused
+	// one for being over that key's limits.
+	QuotaBackoff api.Duration `yaml:"quota_backoff"`
 	// Workdir is where the artifact's files are placed in the sandbox.
 	Workdir  string `yaml:"workdir"`
 	VCPUs    int    `yaml:"vcpus"`
@@ -122,10 +129,8 @@ func DefaultConfig() Config {
 			DefaultActiveFor:   api.Duration(12 * time.Hour),
 			DefaultMaxRun:      api.Duration(30 * time.Minute),
 			DefaultQuota: pa.Quota{
-				MaxConcurrentRuns: 2,
-				RunMinutesPerDay:  240,
-				MinInterval:       api.Duration(5 * time.Minute),
-				StorageBytes:      2 << 30,
+				MinInterval:  api.Duration(5 * time.Minute),
+				StorageBytes: 2 << 30,
 			},
 			MaxConcurrentRuns: 8,
 			MinInterval:       api.Duration(time.Minute),
@@ -138,8 +143,10 @@ func DefaultConfig() Config {
 			MaxPayloadBytes:   1 << 20,
 		},
 		Runner: RunnerConfig{
-			Template: "base",
-			Workdir:  "/artifact",
+			Template:     "base",
+			Pool:         "artifacts",
+			QuotaBackoff: api.Duration(time.Minute),
+			Workdir:      "/artifact",
 			TTL: api.TTL{
 				IdleSuspend:  api.Duration(time.Minute),
 				ArchiveAfter: api.Duration(time.Hour),
@@ -210,6 +217,12 @@ func (c *Config) Validate() error {
 	}
 	if c.GCInterval <= 0 {
 		c.GCInterval = api.Duration(time.Hour)
+	}
+	if c.Runner.Pool == "" {
+		c.Runner.Pool = "artifacts"
+	}
+	if c.Runner.QuotaBackoff <= 0 {
+		c.Runner.QuotaBackoff = api.Duration(time.Minute)
 	}
 	if c.Runner.LogBytes <= 0 {
 		c.Runner.LogBytes = 256 << 10
