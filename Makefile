@@ -27,10 +27,10 @@ dev: build
 	  ./bin/fired serve -config deploy/dev.yaml
 
 # Run the artifact service against `make dev` (run that first, in another
-# terminal). Jobs use fired's "base" template: create it with
+# terminal), with its console on http://localhost:8444/ui/ (token "dev"). Jobs use fired's "base" template: create it with
 #   curl -H "X-Fired-Token: dev" -d '{"name":"base"}' http://127.0.0.1:8443/v1/templates
 dev-artifacts: build
-	FIRED_ARTIFACTS_TOKEN=dev FIRED_ARTIFACTS_DATA_DIR=$(CURDIR)/.dev/artifacts \
+	FIRED_ARTIFACTS_TOKEN=dev FIRED_ARTIFACTS_DATA_DIR=$(CURDIR)/.dev/artifacts FIRED_ARTIFACTS_UI=1 \
 	  FIRED_URL=http://127.0.0.1:8443 FIRED_API_TOKEN=dev \
 	  ./bin/fired-artifacts serve -config deploy/artifacts.yaml
 

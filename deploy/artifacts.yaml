@@ -1,7 +1,8 @@
 # fired-artifacts configuration. Every key is optional; the values shown are
 # the defaults unless noted. Env overrides: FIRED_ARTIFACTS_TOKEN,
 # FIRED_ARTIFACTS_LISTEN, FIRED_ARTIFACTS_DATA_DIR, FIRED_URL, FIRED_API_TOKEN,
-# FIRED_ARTIFACTS_BROKER_URL, FIRED_ARTIFACTS_BROKER_TOKEN.
+# FIRED_ARTIFACTS_BROKER_URL, FIRED_ARTIFACTS_BROKER_TOKEN, FIRED_ARTIFACTS_UI,
+# FIRED_ARTIFACTS_PREVIEW_DOMAIN.
 
 listen: ":8444"
 token: ""                       # required; prefer FIRED_ARTIFACTS_TOKEN
@@ -56,3 +57,9 @@ runner:
 scheduler_interval: 5s
 gc_interval: 1h
 log_level: info
+
+# Browser console at /ui/ (sign in with the token). Artifact files are shown
+# on their own origin, {id}-{version}-{sig}.<preview_domain>; empty uses
+# nip.io for the IP the console is reached on.
+ui: false
+preview_domain: ""

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>View</title>
+<!-- Served on an artifact's preview origin at /.fired/view?type=…&entry=…
+     It renders one view of the artifact's files; the files themselves are
+     fetched from this same origin. -->
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react/": "https://esm.sh/react@18.3.1/",
+    "react-dom": "https://esm.sh/react-dom@18.3.1",
+    "react-dom/": "https://esm.sh/react-dom@18.3.1/"
+  }
+}
+</script>
+<style>
+:root { --bg: #FFFFFF; --ink: #1F2328; --ink-2: #59636E; --rule: #D8DEE4; --code: #F3F5F7; --link: #1F55C9; --err: #B42318; color-scheme: light; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15191D; --ink: #E3E7EB; --ink-2: #98A2AD; --rule: #2C343C; --code: #1E242A; --link: #8DB2FF; --err: #FF8A80; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--link); }
+pre, code { font: 13px/1.55 ui-monospace, Menlo, Consolas, monospace; }
+#root { min-height: 100vh; }
+.doc { max-width: 72ch; margin: 0 auto; padding: 32px 20px 64px; }
+.doc h1, .doc h2, .doc h3 { line-height: 1.25; }
+.doc img { max-width: 100%; }
+.doc pre { background: var(--code); padding: 12px 14px; border-radius: 6px; overflow: auto; }
+.doc :not(pre) > code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+.doc table { border-collapse: collapse; }
+.doc th, .doc td { border: 1px solid var(--rule); padding: 4px 10px; }
+.doc blockquote { margin: 0; padding-left: 14px; border-left: 3px solid var(--rule); color: var(--ink-2); }
+.raw { margin: 0; padding: 16px 20px; white-space: pre-wrap; word-break: break-word; }
+.grid-wrap { overflow: auto; height: 100vh; }
+table.grid { border-collapse: separate; border-spacing: 0; font-size: 13.5px; min-width: 100%; }
+.grid th, .grid td { padding: 6px 12px; border-bottom: 1px solid var(--rule); white-space: nowrap; text-align: left; }
+.grid th { position: sticky; top: 0; background: var(--code); font-weight: 600; }
+.grid td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.grid tr > :first-child { padding-left: 20px; }
+.grid caption { caption-side: bottom; text-align: left; padding: 10px 20px; color: var(--ink-2); font-size: 12.5px; }
+.j-k { color: #8250DF; } .j-s { color: #0A7F5A; } .j-n { color: #B35900; } .j-b { color: #1F55C9; }
+@media (prefers-color-scheme: dark) { .j-k { color: #C9A2FF; } .j-s { color: #6FD3A8; } .j-n { color: #FFB86B; } .j-b { color: #8DB2FF; } }
+.media { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+.media img { max-width: 100%; max-height: calc(100vh - 32px); }
+embed { width: 100%; height: 100vh; display: block; border: 0; }
+.problem { margin: 24px 20px; padding: 14px 16px; border: 1px solid var(--err); border-radius: 6px; color: var(--err); white-space: pre-wrap; font: 13px/1.55 ui-monospace, Menlo, Consolas, monospace; }
+.problem strong { font-family: system-ui, sans-serif; display: block; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const type = q.get("type") || "html";
+const entry = (q.get("entry") || "index.html").replace(/^\/+/, "");
+const root = document.getElementById("root");
+const href = p => "/" + p.split("/").map(encodeURIComponent).join("/");
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+function problem(title, detail) {
+  const box = el("div", "problem");
+  box.append(el("strong", null, title), String(detail ?? ""));
+  root.replaceChildren(box);
+}
+async function text(p) {
+  const r = await fetch(href(p));
+  if (!r.ok) throw new Error(`${p}: ${r.status} ${r.statusText}`);
+  return r.text();
+}
+const load = src => new Promise((ok, fail) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = () => fail(new Error("Couldn't load " + src)); document.head.append(s); });
+
+// ---- csv: RFC 4180 quoting, rendered as a table
+function parseCSV(s) {
+  const rows = []; let row = [], f = "", i = 0, quoted = false;
+  while (i < s.length) {
+    const c = s[i];
+    if (quoted) {
+      if (c === '"' && s[i + 1] === '"') { f += '"'; i += 2; continue; }
+      if (c === '"') { quoted = false; i++; continue; }
+      f += c; i++; continue;
+    }
+    if (c === '"') { quoted = true; i++; continue; }
+    if (c === ",") { row.push(f); f = ""; i++; continue; }
+    if (c === "\n" || c === "\r") { row.push(f); rows.push(row); row = []; f = ""; i += c === "\r" && s[i + 1] === "\n" ? 2 : 1; continue; }
+    f += c; i++;
+  }
+  if (f !== "" || row.length) { row.push(f); rows.push(row); }
+  return rows;
+}
+function renderCSV(src) {
+  const rows = parseCSV(src).filter(r => r.length > 1 || r[0] !== "");
+  if (!rows.length) { problem("This CSV is empty", entry); return; }
+  const [head, ...body] = rows;
+  const numeric = head.map((_, c) => body.length > 0 && body.every(r => r[c] === undefined || r[c] === "" || !isNaN(+r[c])));
+  const t = el("table", "grid"), thead = el("thead"), tr = el("tr");
+  head.forEach(c => tr.append(el("th", null, c))); thead.append(tr); t.append(thead);
+  const tb = el("tbody");
+  for (const r of body) { const row = el("tr"); head.forEach((_, c) => row.append(el("td", numeric[c] ? "n" : null, r[c] ?? ""))); tb.append(row); }
+  t.append(tb, el("caption", null, `${body.length} rows, ${head.length} columns, ${entry}`));
+  const wrap = el("div", "grid-wrap"); wrap.append(t); root.replaceChildren(wrap);
+}
+
+// ---- json: pretty-printed and colored
+function renderJSON(src) {
+  let v;
+  try { v = JSON.parse(src); } catch (e) { problem("This file isn't valid JSON", e.message); return; }
+  const out = JSON.stringify(v, null, 2);
+  const pre = el("pre", "raw");
+  const re = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+  let last = 0;
+  for (const m of out.matchAll(re)) {
+    pre.append(out.slice(last, m.index));
+    const cls = m[1] ? (m[2] ? "j-k" : "j-s") : m[3] ? "j-b" : "j-n";
+    pre.append(el("span", cls, m[1] || m[3] || m[4]));
+    if (m[2]) pre.append(m[2]);
+    last = m.index + m[0].length;
+  }
+  pre.append(out.slice(last));
+  root.replaceChildren(pre);
+}
+
+// ---- react: a tiny in-browser bundler. Each .jsx/.tsx/.js/.ts file is
+// compiled with Babel; relative imports are compiled the same way and
+// linked as blob URLs; bare imports go to esm.sh (react via the import map).
+const EXT = ["", ".jsx", ".tsx", ".js", ".ts", "/index.jsx", "/index.tsx", "/index.js"];
+const compiled = new Map();
+function resolve(from, spec) {
+  const parts = from.split("/"); parts.pop();
+  for (const seg of spec.split("/")) {
+    if (seg === "..") parts.pop(); else if (seg !== "." && seg !== "") parts.push(seg);
+  }
+  return parts.join("/");
+}
+async function findFile(p) {
+  for (const ext of EXT) {
+    const r = await fetch(href(p + ext), { method: "HEAD" });
+    if (r.ok) return p + ext;
+  }
+  throw new Error(`Can't find ${p} (tried ${EXT.filter(Boolean).join(", ")})`);
+}
+const blobURL = code => URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+function compile(p) {
+  if (!compiled.has(p)) compiled.set(p, (async () => {
+    const src = await text(p);
+    if (p.endsWith(".css")) return blobURL(`const s = document.createElement("style"); s.textContent = ${JSON.stringify(src)}; document.head.append(s); export default ${JSON.stringify(src)};`);
+    if (p.endsWith(".json")) return blobURL(`export default ${src};`);
+    const ts = /\.tsx?$/.test(p);
+    let code;
+    try {
+      code = Babel.transform(src, { filename: p, sourceType: "module",
+        presets: [["react", { runtime: "automatic" }], ...(ts ? [["typescript", { isTSX: true, allExtensions: true }]] : [])] }).code;
+    } catch (e) { throw new Error(`${p}\n${e.message}`); }
+    const re = /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(["'])([^"']+)\2/g;
+    const subs = new Map();
+    for (const m of code.matchAll(re)) {
+      const spec = m[3];
+      if (subs.has(spec)) continue;
+      if (spec.startsWith("./") || spec.startsWith("../")) subs.set(spec, await compile(await findFile(resolve(p, spec))));
+      else if (/^(https?:|blob:|data:)/.test(spec) || spec === "react" || spec.startsWith("react/") || spec.startsWith("react-dom")) subs.set(spec, spec);
+      else subs.set(spec, `https://esm.sh/${spec}?external=react,react-dom`);
+    }
+    code = code.replace(re, (all, kw, qt, spec) => kw + qt + subs.get(spec) + qt);
+    return blobURL(code);
+  })());
+  return compiled.get(p);
+}
+async function renderReact() {
+  await load("https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js");
+  const mod = await import(await compile(entry));
+  const App = mod.default;
+  if (typeof App !== "function") throw new Error(`${entry} has no default export. Export the component to show: export default function App() { … }`);
+  const [{ createElement }, { createRoot }] = await Promise.all([import("react"), import("react-dom/client")]);
+  createRoot(root).render(createElement(App));
+}
+
+async function main() {
+  switch (type) {
+    case "html":
+      location.replace(href(entry)); return;
+    case "image": case "svg": {
+      const box = el("div", "media"), img = el("img"); img.src = href(entry); img.alt = entry; box.append(img); root.replaceChildren(box); return;
+    }
+    case "pdf": {
+      const e = el("embed"); e.src = href(entry); e.type = "application/pdf"; root.replaceChildren(e); return;
+    }
+    case "md": {
+      const [src] = await Promise.all([text(entry), load("https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js")]);
+      const base = document.createElement("base"); base.href = href(entry.includes("/") ? entry.slice(0, entry.lastIndexOf("/") + 1) : ""); document.head.append(base);
+      const doc = el("article", "doc"); doc.innerHTML = marked.parse(src); root.replaceChildren(doc); return;
+    }
+    case "csv": renderCSV(await text(entry)); return;
+    case "json": renderJSON(await text(entry)); return;
+    case "text": root.replaceChildren(el("pre", "raw", await text(entry))); return;
+    case "react": await renderReact(); return;
+    default: problem(`No viewer for "${type}"`, "Views can be html, react, md, csv, json, text, image, svg or pdf.");
+  }
+}
+window.addEventListener("error", e => problem("The view stopped with an error", e.message));
+main().catch(e => problem(`Couldn't show ${entry}`, e.message));
+</script>
+</body>
+</html>

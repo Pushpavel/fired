@@ -470,7 +470,7 @@ func TestGC(t *testing.T) {
 	if !h.svc.blobs.Has(dropHash) {
 		t.Fatal("blob removed inside the grace period")
 	}
-	old := time.Now().Add(-3 * time.Hour)
+	old := h.now.Add(-3 * time.Hour) // GC compares mtimes with the service clock
 	_ = os.Chtimes(h.svc.blobs.path(dropHash), old, old)
 	h.svc.GC(ctx)
 	if h.svc.blobs.Has(dropHash) {

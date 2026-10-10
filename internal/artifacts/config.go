@@ -40,6 +40,14 @@ type Config struct {
 	// unreferenced blobs are removed.
 	GCInterval api.Duration `yaml:"gc_interval"`
 	LogLevel   string       `yaml:"log_level"`
+	// UI serves a browser console at /ui/ for trying the API by hand.
+	// Login uses the API token. Env FIRED_ARTIFACTS_UI=1.
+	UI bool `yaml:"ui"`
+	// PreviewDomain is a wildcard DNS name pointing at this service; the
+	// console shows artifact files on {id}-{version}-{sig}.<domain>. Empty
+	// uses nip.io for the IP the console is reached on.
+	// Env FIRED_ARTIFACTS_PREVIEW_DOMAIN.
+	PreviewDomain string `yaml:"preview_domain"`
 }
 
 type FiredConfig struct {
@@ -171,6 +179,10 @@ func LoadConfig(path string) (Config, error) {
 	env("FIRED_API_TOKEN", &cfg.Fired.Token)
 	env("FIRED_ARTIFACTS_BROKER_URL", &cfg.Broker.URL)
 	env("FIRED_ARTIFACTS_BROKER_TOKEN", &cfg.Broker.Token)
+	env("FIRED_ARTIFACTS_PREVIEW_DOMAIN", &cfg.PreviewDomain)
+	if v := os.Getenv("FIRED_ARTIFACTS_UI"); v != "" {
+		cfg.UI = v == "1" || v == "true"
+	}
 	return cfg, cfg.Validate()
 }
 

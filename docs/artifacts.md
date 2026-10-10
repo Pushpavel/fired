@@ -343,6 +343,25 @@ curl -H "X-Fired-Token: dev" -d '{"name":"base"}' http://127.0.0.1:8443/v1/templ
 make dev-artifacts  # fired-artifacts on :8444, token "dev", in another
 ```
 
+`make dev-artifacts` turns on the console (`ui: true` or
+`FIRED_ARTIFACTS_UI=1`) at http://localhost:8444/ui/. Sign in with the token.
+It lists artifacts with their version history, edits and uploads files and
+publishes them, shows views, compares and restores versions, forks, runs jobs
+(with payloads), approves grants, shows runs with their logs, edits quotas, and
+follows `/v1/events` live. The home page has examples that cover each
+feature: views, scheduled jobs with state, a queue, approval and a failing job.
+
+The console shows artifact files on their own origin,
+`<id>-<version>-<sig>.<preview_domain>` (version 0 follows the current
+version), so pages run at `/` with working relative paths and can't reach the
+console's session. Without `preview_domain` (`FIRED_ARTIFACTS_PREVIEW_DOMAIN`)
+it uses nip.io for the IP you opened it on, as fired's console does. Preview
+origins also serve `/.fired/view`, a reference viewer that renders `md`,
+`csv`, `json`, `text` and `react` views in the browser. A `react` entry and
+the files it imports by relative path are compiled with Babel, and
+packages come from esm.sh. Your own viewer can do the same or something
+better.
+
 The production image contains the binary too:
 `docker run --entrypoint fired-artifacts fired:latest serve`. Configure it
 with `deploy/artifacts.yaml` (every key is documented there) and env
@@ -354,8 +373,8 @@ endpoint.
 
 These were discussed but are not settled enough to build:
 
-- **View rendering:** JSX compilation, markdown and CSV viewers. Views are
-  metadata today; files are served raw.
+- **View rendering in the service:** views are metadata, and the API serves
+  files raw. Only the console's reference viewer renders them (see above).
 - **Webhook triggers:** need a decision on how incoming requests are
   authenticated (a signing secret per job, and where it lives). The `queue`
   policy and trigger payloads are already in place for them.

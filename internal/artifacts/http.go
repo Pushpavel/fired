@@ -18,7 +18,8 @@ import (
 	pa "github.com/Pushpavel/fired/pkg/artifacts"
 )
 
-// Handler returns the HTTP API. Every route except /healthz needs the token.
+// Handler returns the HTTP API. Every route except /healthz (and the
+// console's login page) needs the token.
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	h := mux.HandleFunc
@@ -50,10 +51,17 @@ func (s *Service) Handler() http.Handler {
 
 	h("GET /v1/quotas/{key}", s.handleGetQuota)
 	h("PUT /v1/quotas/{key}", s.handlePutQuota)
+	if s.cfg.UI {
+		s.uiRoutes(mux)
+	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		if r.URL.Path != "/healthz" && !s.authorized(r) {
+		if id, n, ok := s.previewTarget(r.Host); ok {
+			s.servePreview(w, r, id, n)
+			return
+		}
+		if !s.public(r.URL.Path) && !s.authorized(r) {
 			writeErr(w, errf(http.StatusUnauthorized, "unauthorized", "missing or invalid API token"))
 			return
 		}
@@ -78,7 +86,10 @@ func (s *Service) authorized(r *http.Request) bool {
 			got = strings.TrimPrefix(a, "Bearer ")
 		}
 	}
-	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
+	if got != "" {
+		return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
+	}
+	return s.cfg.UI && s.uiSession(r)
 }
 
 type statusWriter struct {
@@ -364,12 +375,18 @@ func (s *Service) handleFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	s.serveFile(w, r, id, n, r.PathValue("path"))
+}
+
+// serveFile serves path p of version n (0 = current). An empty path or one
+// ending in "/" serves its index.html.
+func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n int, p string) {
 	pinned := n != 0
-	p := r.PathValue("path")
 	if p == "" || strings.HasSuffix(p, "/") {
 		p += "index.html"
 	}
-	if p, err = cleanPath(p); err != nil {
+	p, err := cleanPath(p)
+	if err != nil {
 		writeErr(w, badRequest("%v", err))
 		return
 	}

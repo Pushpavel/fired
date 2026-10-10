@@ -1,0 +1,1563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fired artifacts</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='1' width='3' height='14' fill='%232D49D2'/%3E%3Crect x='6.5' y='9' width='3' height='6' fill='%230F7C66'/%3E%3Crect x='12' y='5' width='3' height='10' fill='%23A87A0C'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,200..800&family=Martian+Mono:wdth,wght@75..112.5,300..600&display=swap">
+<style>
+/* Origin palette: color always says how a version was made.
+   Ultramarine = edited (a publish), verdigris = a job run wrote it,
+   ochre = restored from an older version, plum = forked. Fault is the only
+   other hue. Everything else is sage paper and spruce ink. */
+:root {
+  --ground: #E8EBE4; --surface: #F7F8F4; --sunk: #DCE1D8;
+  --ink: #1B241F; --ink-2: #59645D; --rule: #C8CFC5;
+  --edit: #2D49D2; --run: #0F7C66; --restore: #A87A0C; --fork: #93379A; --fault: #C2352B;
+  --edit-tint: #DFE4FA; --run-tint: #D5EDE6; --restore-tint: #F3E8CC; --fork-tint: #F0DEF1; --fault-tint: #F7DEDB;
+  --code-bg: #18201C; --code-ink: #D9E2DC;
+  --sans: "Bricolage Grotesque", system-ui, sans-serif;
+  --mono: "Martian Mono", ui-monospace, Menlo, Consolas, monospace;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px; --s8: 72px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #121815; --surface: #19211D; --sunk: #0E1411;
+    --ink: #E2E8E3; --ink-2: #93A099; --rule: #2A352F;
+    --edit: #8EA2FF; --run: #46C7A6; --restore: #E3B34A; --fork: #D68ADB; --fault: #FF7A6E;
+    --edit-tint: #1F2647; --run-tint: #12302A; --restore-tint: #33290F; --fork-tint: #33203A; --fault-tint: #3A1C1A;
+    --code-bg: #0B100D;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--ground); color: var(--ink);
+  font: 400 14px/1.5 var(--sans); font-variation-settings: "opsz" 14;
+  display: grid; grid-template-rows: auto 1fr auto;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+code, pre, .mono { font-family: var(--mono); font-size: 12px; font-variation-settings: "wdth" 87.5; }
+a { color: var(--edit); }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+/* Origin: one source of truth for version color */
+.o { --c: var(--ink-2); --t: var(--sunk); }
+.o-edit { --c: var(--edit); --t: var(--edit-tint); }
+.o-run { --c: var(--run); --t: var(--run-tint); }
+.o-restore { --c: var(--restore); --t: var(--restore-tint); }
+.o-fork { --c: var(--fork); --t: var(--fork-tint); }
+.o-fault { --c: var(--fault); --t: var(--fault-tint); }
+
+/* The spine: every version as a mark. Height and color say its origin. */
+.spine { display: flex; align-items: flex-end; gap: 3px; height: 76px; overflow-x: auto; overflow-y: hidden; padding: 6px 4px 12px; scrollbar-width: thin; background: linear-gradient(var(--rule), var(--rule)) bottom 11px left 0 / 100% 1px no-repeat; }
+.mark { flex: 0 0 auto; width: 10px; border: 0; padding: 0; background: var(--c); border-radius: 2px 2px 0 0; cursor: pointer; transform-origin: bottom; position: relative; }
+.mark.h-edit, .mark.h-fork { height: 100%; }
+.mark.h-restore { height: 70%; }
+.mark.h-run { height: 40%; }
+.mark:hover { filter: brightness(1.15); }
+.mark[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink); z-index: 1; }
+.mark.current::after { content: ""; position: absolute; left: 50%; bottom: -8px; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: var(--ink); }
+.mark.fresh { animation: grow .7s cubic-bezier(.2, .9, .3, 1.2); }
+@keyframes grow { from { transform: scaleY(0); } }
+.spine.mini { height: 18px; gap: 2px; overflow: hidden; pointer-events: none; padding: 0; background: none; }
+.spine.mini .mark { width: 3px; border-radius: 1px 1px 0 0; }
+.spine.hero { height: 132px; gap: 4px; padding-bottom: 12px; }
+.spine.hero .mark { width: 12px; }
+.spine.dense .mark { width: 5px; }
+.legend { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s5); font-size: 13px; color: var(--ink-2); margin: 0; padding: 0; list-style: none; }
+.legend li { display: inline-flex; align-items: flex-end; gap: var(--s2); }
+.legend i { display: inline-block; width: 6px; background: var(--c); border-radius: 1px 1px 0 0; }
+.legend .h-edit, .legend .h-fork { height: 16px; } .legend .h-restore { height: 11px; } .legend .h-run { height: 7px; }
+.legend b { color: var(--ink); font-weight: 600; }
+
+/* Top bar */
+header { display: flex; align-items: center; gap: var(--s5); padding: var(--s3) var(--s5); border-bottom: 1px solid var(--rule); background: var(--surface); flex-wrap: wrap; }
+.wordmark { display: flex; align-items: flex-end; gap: 10px; border: 0; background: none; padding: 0; cursor: pointer; }
+.wordmark .glyph { display: flex; align-items: flex-end; gap: 2px; height: 20px; }
+.wordmark .glyph i { width: 4px; background: var(--c); border-radius: 1px 1px 0 0; }
+.wordmark span { font-size: 24px; line-height: .8; font-weight: 800; font-variation-settings: "opsz" 96, "wdth" 75; letter-spacing: -.02em; }
+.status { display: flex; align-items: center; gap: var(--s5); margin-left: auto; font-size: 13px; color: var(--ink-2); flex-wrap: wrap; }
+.status b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--run); margin-right: 6px; vertical-align: 1px; }
+.live.off::before { background: var(--fault); }
+.offline { color: var(--fault); font-weight: 600; }
+
+/* Shell */
+.app { display: grid; grid-template-columns: 280px 1fr; min-height: 0; }
+aside { border-right: 1px solid var(--rule); overflow: auto; padding: var(--s4) 0; }
+main { overflow: auto; min-width: 0; display: flex; flex-direction: column; }
+.side-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 var(--s4) var(--s2); }
+.side-head h2 { margin: 0; font-size: 14px; font-weight: 700; }
+.item { display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s3); width: 100%; text-align: left; padding: var(--s2) var(--s4); border: 0; background: none; cursor: pointer; align-items: end; border-left: 3px solid transparent; }
+.item:hover { background: var(--sunk); }
+.item[aria-current="true"] { background: var(--surface); border-left-color: var(--ink); box-shadow: inset 0 1px 0 var(--rule), inset 0 -1px 0 var(--rule); }
+.item-name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-sub { grid-column: 1 / 3; font-size: 12.5px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-empty { padding: 0 var(--s4); color: var(--ink-2); font-size: 13px; margin: 0; }
+
+/* Controls */
+.btn { border: 1px solid var(--rule); background: var(--surface); padding: 6px 14px; border-radius: 6px; cursor: pointer; white-space: nowrap; font-weight: 550; }
+.btn:hover { border-color: var(--ink-2); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.btn.primary:hover { opacity: .88; }
+.btn.danger { color: var(--fault); }
+.btn.danger:hover { border-color: var(--fault); }
+.btn.small { padding: 3px 10px; font-size: 13px; }
+.btn.quiet { border-color: transparent; background: none; color: var(--ink-2); }
+.btn.quiet:hover { color: var(--ink); border-color: var(--rule); }
+.add { border: 0; background: none; cursor: pointer; color: var(--ink-2); font-weight: 600; padding: 2px 6px; border-radius: 4px; }
+.add:hover { color: var(--ink); background: var(--sunk); }
+input[type=text], input[type=number], input[type=password], input[type=datetime-local], select, textarea {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 7px 10px; width: 100%;
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; border-color: var(--ink); }
+textarea { font-family: var(--mono); font-size: 12px; font-variation-settings: "wdth" 87.5; resize: vertical; line-height: 1.6; }
+.field { display: flex; flex-direction: column; gap: var(--s1); font-size: 13px; }
+.field > span { color: var(--ink-2); }
+.field > span strong { color: var(--ink); font-weight: 600; }
+.check { display: inline-flex; align-items: center; gap: var(--s2); cursor: pointer; font-size: 13.5px; }
+.row { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s3) var(--s4); }
+.note { font-size: 13px; color: var(--ink-2); max-width: 72ch; margin: 0; }
+.spacer { flex: 1; }
+.err-text { color: var(--fault); }
+.ok-text { color: var(--run); }
+
+/* Artifact header */
+.top { padding: var(--s5) var(--s6) var(--s3); background: var(--surface); border-bottom: 1px solid var(--rule); }
+.title-row { display: flex; align-items: flex-start; gap: var(--s3); flex-wrap: wrap; }
+.title-row h1 { margin: 0; font-size: 36px; line-height: 1.05; font-weight: 800; font-variation-settings: "opsz" 96, "wdth" 80; letter-spacing: -.02em; overflow-wrap: anywhere; }
+.facts { display: flex; gap: var(--s1) var(--s5); flex-wrap: wrap; margin: var(--s2) 0 0; font-size: 13px; color: var(--ink-2); }
+.facts dt { display: inline; }
+.facts dd { display: inline; margin: 0 0 0 4px; color: var(--ink); }
+.facts button { border: 0; background: none; padding: 0; color: var(--edit); cursor: pointer; text-decoration: underline; }
+.top .spine { margin-top: var(--s5); }
+.picked { display: flex; align-items: baseline; gap: var(--s2) var(--s3); flex-wrap: wrap; margin-top: var(--s3); min-height: 30px; }
+.picked h2 { margin: 0; font-size: 17px; font-weight: 700; color: var(--c); }
+.picked p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+
+/* Tabs */
+.tabs { display: flex; gap: var(--s1); padding: 0 var(--s6); border-bottom: 1px solid var(--rule); overflow-x: auto; background: var(--surface); }
+.tab { padding: var(--s3); border: 0; background: none; border-bottom: 2px solid transparent; cursor: pointer; color: var(--ink-2); font-weight: 500; white-space: nowrap; }
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); font-weight: 650; }
+.tab .count { font-variant-numeric: tabular-nums; color: var(--ink-2); font-weight: 400; margin-left: 2px; }
+.pane { padding: var(--s5) var(--s6); display: flex; flex-direction: column; gap: var(--s4); flex: 1; min-height: 0; }
+.pane h3 { margin: 0; font-size: 17px; font-weight: 700; }
+
+/* View */
+.viewbar { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: var(--surface); padding: 5px 12px; cursor: pointer; font-size: 13px; }
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.seg code { font-size: 11px; }
+.frame { flex: 1; min-height: 520px; border: 1px solid var(--rule); border-radius: 6px; background: #fff; width: 100%; }
+.empty { padding: var(--s6) 0; max-width: 60ch; }
+.empty h3 { font-size: 20px; margin-bottom: var(--s2); }
+
+/* Files */
+.files { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: var(--s4); flex: 1; min-height: 480px; }
+.tree { border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); overflow: auto; display: flex; flex-direction: column; }
+.tree-tools { display: flex; gap: var(--s1); padding: var(--s2); border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+.tree ul { list-style: none; margin: 0; padding: var(--s1) 0; }
+.file { display: flex; gap: var(--s2); width: 100%; border: 0; background: none; text-align: left; padding: 3px var(--s3); cursor: pointer; align-items: baseline; font-family: var(--mono); font-size: 11.5px; font-variation-settings: "wdth" 87.5; }
+.file:hover { background: var(--sunk); }
+.file[aria-current="true"] { background: var(--ink); color: var(--surface); }
+.file .dir { color: var(--ink-2); }
+.file[aria-current="true"] .dir { color: inherit; opacity: .7; }
+.file .sz { margin-left: auto; color: var(--ink-2); font-family: var(--sans); font-size: 12px; white-space: nowrap; }
+.file[aria-current="true"] .sz { color: inherit; }
+.file.added .nm { color: var(--run); } .file.changed .nm { color: var(--edit); } .file.deleted .nm { color: var(--fault); text-decoration: line-through; }
+.file[aria-current="true"] .nm { color: inherit; }
+.editor { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.editor textarea { flex: 1; min-height: 420px; tab-size: 2; }
+.editor-head { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.editor-head code { font-size: 12.5px; overflow-wrap: anywhere; }
+.stagebar { position: sticky; bottom: 0; margin: 0 calc(-1 * var(--s6)) calc(-1 * var(--s5)); padding: var(--s3) var(--s6); background: var(--surface); border-top: 2px solid var(--edit); display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; z-index: 2; }
+.stagebar strong { font-weight: 650; }
+.stagebar input[type=text] { width: 260px; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--rule); font-size: 13.5px; vertical-align: middle; }
+th { color: var(--ink-2); font-weight: 500; font-size: 12.5px; }
+tbody tr.link { cursor: pointer; }
+tbody tr.link:hover td { background: var(--sunk); }
+tbody tr[aria-selected="true"] td { background: var(--surface); box-shadow: inset 0 1px 0 var(--ink), inset 0 -1px 0 var(--ink); }
+.num { font-variant-numeric: tabular-nums; }
+.tag { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; }
+.tag::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+.tag.busy::before { animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+.vnum { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--c); }
+.out { background: var(--code-bg); color: var(--code-ink); border-radius: 6px; padding: var(--s3) var(--s4); margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow: auto; min-height: 44px; line-height: 1.6; }
+.out .dim { color: #7C8A82; }
+
+/* Jobs */
+.job { border-top: 1px solid var(--rule); padding: var(--s4) 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s2) var(--s5); }
+.job:first-of-type { border-top: 0; padding-top: 0; }
+.job h3 { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; }
+.job h3 code { font-size: 16px; font-weight: 500; }
+.job .actions { display: flex; gap: var(--s2); align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; }
+.job pre.out { max-height: 160px; }
+.job dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--s4); margin: 0; font-size: 13px; }
+.job dt { color: var(--ink-2); }
+.job dd { margin: 0; }
+.needs { color: var(--fault); margin: 0; padding-left: 1.2em; font-size: 13px; }
+
+/* Diff */
+.diff { display: flex; flex-direction: column; gap: 2px; }
+.diff div { font-family: var(--mono); font-size: 11.5px; font-variation-settings: "wdth" 87.5; padding: 2px var(--s2); border-radius: 3px; }
+.diff .a { background: var(--run-tint); } .diff .d { background: var(--fault-tint); } .diff .c { background: var(--edit-tint); }
+
+/* Settings */
+.section { display: flex; flex-direction: column; gap: var(--s3); max-width: 760px; padding-bottom: var(--s5); border-bottom: 1px solid var(--rule); }
+.section:last-child { border-bottom: 0; }
+.meter { display: grid; grid-template-columns: 170px 1fr auto; gap: var(--s3); align-items: center; font-size: 13px; }
+.meter .bar { height: 6px; background: var(--sunk); border-radius: 3px; overflow: hidden; }
+.meter .bar i { display: block; height: 100%; background: var(--ink); }
+.meter b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Home */
+.home { padding: var(--s7) var(--s6) var(--s8); max-width: 1100px; display: flex; flex-direction: column; gap: var(--s5); }
+.home h1 { margin: 0; font-size: 60px; line-height: .95; font-weight: 800; font-variation-settings: "opsz" 96, "wdth" 75; letter-spacing: -.03em; max-width: 20ch; }
+.home .lede { margin: 0; color: var(--ink-2); max-width: 62ch; font-size: 16px; line-height: 1.55; }
+.home .spine.hero { margin-top: var(--s3); }
+.kits { margin-top: var(--s6); }
+.kits h2 { margin: 0 0 var(--s1); font-size: 22px; font-weight: 750; font-variation-settings: "opsz" 48; }
+.kits > p { margin: 0 0 var(--s4); color: var(--ink-2); }
+.kit { display: grid; grid-template-columns: 1fr auto; gap: var(--s1) var(--s5); padding: var(--s3) 0; border-top: 1px solid var(--rule); align-items: center; }
+.kit h3 { margin: 0; font-size: 16px; font-weight: 650; }
+.kit p { margin: 0; color: var(--ink-2); font-size: 13.5px; max-width: 70ch; }
+.kit .btn { grid-row: 1 / 3; grid-column: 2; }
+
+/* Login */
+.login { max-width: 400px; margin: 14vh auto; padding: 0 var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
+.login h1 { margin: 0 0 var(--s1); font-size: 40px; font-weight: 800; font-variation-settings: "opsz" 96, "wdth" 75; letter-spacing: -.02em; }
+
+/* Activity drawer */
+footer { border-top: 1px solid var(--rule); background: var(--surface); display: flex; flex-direction: column; min-height: 0; }
+.drawer-bar { display: flex; align-items: center; gap: var(--s1); padding: 0 var(--s4); }
+.drawer-bar .tab { padding: var(--s2) var(--s3); font-size: 13px; }
+.drawer-body { height: 210px; overflow: auto; font-size: 12.5px; padding: var(--s1) var(--s4) var(--s3); display: none; }
+footer.open .drawer-body { display: block; }
+.log-row { display: grid; grid-template-columns: 64px 52px 1fr auto; gap: var(--s3); padding: 3px 0; border-bottom: 1px solid var(--rule); align-items: center; }
+.ev-row { display: grid; grid-template-columns: 64px 130px 1fr; gap: var(--s3); padding: 3px 0; border-bottom: 1px solid var(--rule); align-items: center; }
+.ev-row button { border: 0; background: none; padding: 0; color: var(--edit); cursor: pointer; text-align: left; }
+.t { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.log-row .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Dialogs */
+dialog { border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); color: var(--ink); padding: 0; width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 40px); box-shadow: 0 24px 60px rgba(12, 22, 16, .3); }
+dialog::backdrop { background: rgba(14, 22, 18, .5); }
+dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 42px); }
+.d-head { padding: var(--s4) var(--s5); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--rule); }
+.d-head h2 { margin: 0; font-size: 22px; font-weight: 800; font-variation-settings: "opsz" 48, "wdth" 85; }
+.d-body { padding: var(--s5); display: flex; flex-direction: column; gap: var(--s4); overflow: auto; }
+.d-foot { padding: var(--s3) var(--s5); border-top: 1px solid var(--rule); display: flex; gap: var(--s2); justify-content: flex-end; }
+details summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; }
+details[open] summary { margin-bottom: var(--s3); }
+
+/* Toasts */
+#toasts { position: fixed; right: var(--s4); bottom: var(--s4); display: flex; flex-direction: column; gap: var(--s2); z-index: 1000; max-width: 440px; }
+.toast { background: var(--ink); color: var(--surface); padding: var(--s3) var(--s4); border-radius: 6px; font-size: 13.5px; box-shadow: 0 10px 30px rgba(12, 22, 16, .25); border-left: 4px solid var(--ink-2); }
+.toast.ok { border-left-color: var(--run); }
+.toast.err { border-left-color: var(--fault); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+@media (max-width: 860px) {
+  html, body { height: auto; }
+  body { display: block; }
+  .app { display: block; }
+  main { overflow: visible; }
+  header { gap: var(--s2) var(--s4); padding: var(--s3) var(--s4); }
+  .status { order: 3; width: 100%; margin-left: 0; gap: var(--s1) var(--s4); font-size: 12.5px; }
+  #btn-logout { margin-left: auto; }
+  aside { border-right: 0; border-bottom: 1px solid var(--rule); max-height: 40vh; }
+  .top, .pane, .home { padding-left: var(--s4); padding-right: var(--s4); }
+  .tabs { padding: 0 var(--s4); }
+  .stagebar { margin: 0 calc(-1 * var(--s4)) calc(-1 * var(--s5)); padding: var(--s3) var(--s4); }
+  .stagebar input[type=text] { width: 100%; }
+  .title-row h1 { font-size: 28px; }
+  .home h1 { font-size: 38px; }
+  .files { grid-template-columns: 1fr; }
+  .tree { max-height: 300px; }
+  .job { grid-template-columns: 1fr; }
+  .job .actions { justify-content: flex-start; }
+  .meter { grid-template-columns: 1fr auto; }
+  .meter .bar { grid-column: 1 / 3; grid-row: 2; }
+  .kit { grid-template-columns: 1fr; }
+  .kit .btn { grid-row: auto; grid-column: auto; justify-self: start; }
+  .drawer-body { height: 40vh; }
+  .frame { min-height: 70vh; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <button class="wordmark" id="home-link" title="Home" aria-label="fired artifacts home">
+    <span class="glyph" aria-hidden="true"><i class="o o-edit" style="height:100%"></i><i class="o o-run" style="height:40%"></i><i class="o o-run" style="height:40%"></i><i class="o o-restore" style="height:70%"></i><i class="o o-edit" style="height:100%"></i></span>
+    <span>fired artifacts</span>
+  </button>
+  <div class="status" id="status"></div>
+  <button class="btn small quiet" id="btn-logout" hidden>Sign out</button>
+</header>
+
+<div class="app">
+  <aside aria-label="Artifacts">
+    <div class="side-head"><h2>Artifacts</h2><button class="add" id="btn-new" title="Create an artifact">+ New</button></div>
+    <div id="list"></div>
+  </aside>
+  <main id="main"></main>
+</div>
+
+<footer id="drawer">
+  <div class="drawer-bar" role="tablist" aria-label="Activity">
+    <button class="tab" data-d="events" role="tab">Events <span id="ev-count" class="t"></span></button>
+    <button class="tab" data-d="api" role="tab">Requests <span id="api-count" class="t"></span></button>
+    <span class="spacer"></span>
+    <button class="btn small quiet" id="drawer-clear">Clear</button>
+    <button class="btn small quiet" id="drawer-toggle">Show activity</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</footer>
+
+<div id="toasts" role="status" aria-live="polite"></div>
+
+<!-- Create artifact -->
+<dialog id="dlg-new" aria-labelledby="dlg-new-title"><form method="dialog">
+  <div class="d-head"><h2 id="dlg-new-title">Create an artifact</h2><button type="button" class="btn small quiet" data-close>Close</button></div>
+  <div class="d-body">
+    <label class="field"><span><strong>Title</strong></span><input type="text" name="title" placeholder="Weekly report" required></label>
+    <div class="cols">
+      <label class="field"><span><strong>Quota key</strong>, usually a user</span><input type="text" name="quota_key" required></label>
+      <label class="field"><span><strong>ID</strong>, optional</span><input type="text" name="id" placeholder="Generated if empty" pattern="[a-z0-9\-]{3,44}" title="3 to 44 characters: a–z, 0–9 and -"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="starter" checked> Start with an index.html page</label>
+    <details><summary>Labels and retention</summary>
+      <div class="d-body" style="padding:0">
+        <label class="field"><span>Labels, one key=value per line</span><textarea name="labels" rows="2" placeholder="team=growth"></textarea></label>
+        <div class="cols">
+          <label class="field"><span>Delete after inactive for</span><input type="text" name="delete_after" placeholder="Service default"></label>
+          <label class="field"><span>Job-run versions to keep</span><input type="number" name="retain_runs" min="0" placeholder="Service default"></label>
+        </div>
+        <p class="note">Durations look like 30m, 12h or 720h. Use -1 to never delete.</p>
+      </div>
+    </details>
+  </div>
+  <div class="d-foot"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" value="ok">Create artifact</button></div>
+</form></dialog>
+
+<!-- Fork -->
+<dialog id="dlg-fork" aria-labelledby="dlg-fork-title"><form method="dialog">
+  <div class="d-head"><h2 id="dlg-fork-title">Fork</h2><button type="button" class="btn small quiet" data-close>Close</button></div>
+  <div class="d-body">
+    <p class="note" id="fork-note"></p>
+    <div class="cols">
+      <label class="field"><span><strong>Quota key</strong> of the new owner</span><input type="text" name="quota_key" required></label>
+      <label class="field"><span><strong>ID</strong>, optional</span><input type="text" name="id" placeholder="Generated if empty" pattern="[a-z0-9\-]{3,44}"></label>
+    </div>
+    <label class="field"><span><strong>Title</strong></span><input type="text" name="title"></label>
+  </div>
+  <div class="d-foot"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" value="ok">Fork</button></div>
+</form></dialog>
+
+<!-- Run with payload -->
+<dialog id="dlg-run" aria-labelledby="dlg-run-title"><form method="dialog">
+  <div class="d-head"><h2 id="dlg-run-title">Run</h2><button type="button" class="btn small quiet" data-close>Close</button></div>
+  <div class="d-body">
+    <label class="field"><span><strong>Payload</strong>, JSON. The run reads it from <code>$TRIGGER_FILE</code>.</span>
+      <textarea name="payload" rows="7" placeholder='{"from": "console"}'></textarea></label>
+    <label class="field"><span><strong>Times</strong>. Several triggers at once show how <code>on_busy</code> treats a backlog.</span><input type="number" name="times" min="1" max="50" value="1"></label>
+  </div>
+  <div class="d-foot"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" value="ok">Run</button></div>
+</form></dialog>
+
+<!-- Grant -->
+<dialog id="dlg-grant" aria-labelledby="dlg-grant-title"><form method="dialog">
+  <div class="d-head"><h2 id="dlg-grant-title">Approve</h2><button type="button" class="btn small quiet" data-close>Close</button></div>
+  <div class="d-body">
+    <p class="note">This is what your backend sends after the owner approves. Without a grant, schedules stay on for <span data-info="default_active_for"></span> after each publish and runs stop at <span data-info="default_max_run"></span>.</p>
+    <ul class="needs" id="grant-needs"></ul>
+    <div class="cols">
+      <label class="field"><span><strong>Keep the schedule on until</strong></span><input type="datetime-local" name="active_until"></label>
+      <label class="field"><span><strong>Longest run</strong></span><input type="text" name="max_run" placeholder="2h"></label>
+    </div>
+  </div>
+  <div class="d-foot"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" value="ok">Approve</button></div>
+</form></dialog>
+
+<script>
+"use strict";
+
+// ---------- helpers
+const $ = (s, el = document) => el.querySelector(s);
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "class") el.className = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) el.append(c.nodeType ? c : String(c));
+  return el;
+}
+const enc = encodeURIComponent;
+const encPath = p => p.split("/").map(enc).join("/");
+const fmtBytes = n => !n ? "0 B" : n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB" : n < 1073741824 ? (n / 1048576).toFixed(1) + " MB" : (n / 1073741824).toFixed(1) + " GB";
+function ago(t) {
+  if (!t) return "never";
+  const s = Math.round((Date.now() - new Date(t)) / 1000);
+  if (s < 5) return "just now";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+}
+function until(t) {
+  if (!t) return null;
+  const s = Math.round((new Date(t) - Date.now()) / 1000);
+  if (s <= 0) return "now";
+  if (s < 60) return "in " + s + "s";
+  if (s < 3600) return "in " + Math.round(s / 60) + "m";
+  if (s < 86400) return "in " + (s / 3600).toFixed(s < 36000 ? 1 : 0).replace(/\.0$/, "") + "h";
+  return "in " + Math.round(s / 86400) + "d";
+}
+const when = t => t ? new Date(t).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+// Go durations: "3m0s" → "3m", "12h0m0s" → "12h"
+const fmtDur = d => !d ? null : String(d).startsWith("-") ? "never" : String(d).replace(/(\D)0s$/, "$1").replace(/(\D)0m$/, "$1");
+const fmtMs = ms => ms == null ? "" : ms < 1000 ? ms + " ms" : ms < 60000 ? (ms / 1000).toFixed(1) + " s" : Math.floor(ms / 60000) + "m " + Math.round(ms % 60000 / 1000) + "s";
+const clock = () => new Date().toLocaleTimeString([], { hour12: false });
+function kvLines(text) {
+  const out = {};
+  for (const line of (text || "").split("\n")) {
+    const l = line.trim(); if (!l) continue;
+    const i = l.indexOf("=");
+    if (i < 1) throw new Error(`“${l}” needs to look like key=value.`);
+    out[l.slice(0, i).trim()] = l.slice(i + 1);
+  }
+  return out;
+}
+const kvText = o => Object.entries(o || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+const ORIGIN = { edit: "Edited", run: "Job run", restore: "Restored", fork: "Forked" };
+const meta = a => { try { return typeof a.meta === "string" ? JSON.parse(a.meta) : (a.meta || {}); } catch { return {}; } };
+const titleOf = a => meta(a).title || a.id;
+
+function toast(msg, kind = "") {
+  const t = h("div", { class: "toast " + kind }, msg);
+  $("#toasts").append(t);
+  setTimeout(() => t.remove(), kind === "err" ? 8000 : 3200);
+}
+
+// ---------- API; every call made by an action is recorded in the drawer
+const apiLog = [];
+async function api(method, path, body, opts = {}) {
+  const init = { method, headers: {} };
+  if (body !== undefined) {
+    if (body instanceof Blob || typeof body === "string") init.body = body;
+    else { init.body = JSON.stringify(body); init.headers["Content-Type"] = "application/json"; }
+  }
+  const t0 = performance.now();
+  let res, err;
+  try { res = await fetch(path.startsWith("/ui/") ? path : "/v1" + path, init); } catch (e) { err = e; }
+  if (!opts.quiet) {
+    apiLog.push({ at: clock(), method, path, status: res ? res.status : "failed", ms: Math.round(performance.now() - t0),
+      body: init.headers["Content-Type"] ? init.body : init.body ? "<file>" : null });
+    if (apiLog.length > 300) apiLog.shift();
+    drawerUpdate("api");
+  }
+  if (err) throw new Error("Can't reach fired-artifacts. Check that it's running.");
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`, code = "";
+    try { const j = await res.json(); if (j.error) { code = j.error.code; msg = j.error.message.charAt(0).toUpperCase() + j.error.message.slice(1) + (/[.!?]$/.test(j.error.message) ? "" : "."); } } catch {}
+    const e = new Error(msg); e.status = res.status; e.code = code;
+    if (res.status === 401 && S.view !== "login") showLogin();
+    throw e;
+  }
+  if (opts.raw) return res;
+  if (res.status === 204) return null;
+  return (res.headers.get("content-type") || "").includes("json") ? res.json() : res.text();
+}
+async function guard(fn, okMsg) {
+  try { const r = await fn(); if (okMsg) toast(typeof okMsg === "function" ? okMsg(r) : okMsg, "ok"); return r; }
+  catch (e) { toast(e.message, "err"); e.shown = true; throw e; }
+}
+function curlFor(e) {
+  let c = `curl -X ${e.method} -H "X-Fired-Token: $FIRED_ARTIFACTS_TOKEN"`;
+  if (e.body && e.body !== "<file>") c += ` -H 'Content-Type: application/json' -d '${e.body.replace(/'/g, "'\\''")}'`;
+  else if (e.body === "<file>") c += " --data-binary @FILE";
+  return c + ` "${location.origin}${e.path.startsWith("/ui/") ? e.path : "/v1" + e.path}"`;
+}
+
+// ---------- state
+const S = {
+  view: "home", info: null, online: true, live: false,
+  list: [], spines: {},          // artifact id → versions, oldest first
+  sel: null, art: null, versions: [], ver: null, jobs: [], runs: [],
+  tab: "view", viewIdx: 0, runSel: null, fresh: new Set(),
+  vcache: new Map(),             // "id:n" → version with files
+  links: new Map(),              // "id:n" → preview origin
+  stage: new Map(), mirror: [], fileSel: null, compare: null,
+};
+const vkey = (id, n) => id + ":" + n;
+const shownVersion = () => S.ver ?? S.art?.current_version ?? 0;
+const atCurrent = () => S.ver == null || S.ver === S.art?.current_version;
+
+async function loadVersion(id, n) {
+  const k = vkey(id, n);
+  if (!S.vcache.has(k)) S.vcache.set(k, await api("GET", `/artifacts/${enc(id)}/versions/${n}`, undefined, { quiet: true }));
+  return S.vcache.get(k);
+}
+async function previewOrigin(id, n) {
+  const k = vkey(id, n);
+  if (!S.links.has(k)) S.links.set(k, (await api("POST", "/ui/preview-link", { artifact: id, version: n }, { quiet: true })).url);
+  return S.links.get(k);
+}
+
+async function refreshList() {
+  if (S.view === "login") return;
+  try {
+    const r = await api("GET", "/artifacts", undefined, { quiet: true });
+    S.list = (r.artifacts || []).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    S.online = true;
+    await Promise.all(S.list.map(async a => {
+      const prev = S.spines[a.id];
+      if (prev && prev.length && prev[prev.length - 1].version === a.current_version) return;
+      try { S.spines[a.id] = ((await api("GET", `/artifacts/${enc(a.id)}/versions`, undefined, { quiet: true })).versions || []).sort((x, y) => x.version - y.version); } catch {}
+    }));
+    for (const id of Object.keys(S.spines)) if (!S.list.find(a => a.id === id)) delete S.spines[id];
+  } catch { S.online = false; }
+  renderStatus(); renderList();
+  if (S.view === "home") renderHome();
+}
+
+// ---------- top bar
+function renderStatus() {
+  const el = $("#status"); el.replaceChildren();
+  if (!S.online) { el.append(h("span", { class: "offline" }, "Service unreachable")); return; }
+  const versions = Object.values(S.spines).reduce((n, v) => n + v.length, 0);
+  el.append(h("span", {}, h("b", {}, S.list.length), S.list.length === 1 ? " artifact" : " artifacts"));
+  el.append(h("span", {}, h("b", {}, versions), versions === 1 ? " version" : " versions"));
+  if (S.info) el.append(h("span", { title: `Runner sandboxes are created from this fired template, at ${S.info.fired_url}` }, "Jobs run on ", h("b", {}, S.info.runner_template)));
+  if (S.info) el.append(h("span", { title: "Credentials broker" }, S.info.broker ? "Broker on" : "No broker"));
+  el.append(h("span", { class: "live" + (S.live ? "" : " off"), title: "Event stream" }, S.live ? "Live" : "Reconnecting"));
+}
+
+// ---------- the spine
+function spine(versions, o = {}) {
+  const el = h("div", { class: "spine" + (o.cls ? " " + o.cls : "") + (!o.cls && versions.length > 90 ? " dense" : ""), role: o.pick ? "group" : null, "aria-label": o.label || null });
+  for (const v of versions) {
+    const desc = `v${v.version}, ${ORIGIN[v.origin]?.toLowerCase() || v.origin}${v.job ? " of " + v.job : ""}${v.label ? ": " + v.label : ""}, ${ago(v.created_at)}`;
+    const m = h(o.pick ? "button" : "i", {
+      class: `mark o o-${v.origin} h-${v.origin}${o.current === v.version ? " current" : ""}${S.fresh.has(vkey(v.artifact, v.version)) ? " fresh" : ""}`,
+      title: (o.prefix ? o.prefix + ", " : "") + desc, "aria-label": o.pick ? desc : null,
+      "aria-pressed": o.pick ? String(o.selected === v.version) : null,
+      onclick: o.pick ? () => o.pick(v) : null,
+    });
+    el.append(m);
+  }
+  if (o.pick) requestAnimationFrame(() => { el.scrollLeft = el.scrollWidth; });
+  return el;
+}
+const legend = () => h("ul", { class: "legend", "aria-label": "Version origins" },
+  [["edit", "Edited", "a publish"], ["run", "Job run", "a job's output"], ["restore", "Restored", "an older version brought back"], ["fork", "Forked", "copied from another artifact"]]
+    .map(([o, name, about]) => h("li", { class: `o o-${o}` }, h("i", { class: `h-${o}` }), h("span", {}, h("b", {}, name), ", " + about))));
+
+// ---------- sidebar
+function renderList() {
+  const el = $("#list"); el.replaceChildren();
+  if (!S.list.length) el.append(h("p", { class: "side-empty" }, "None yet. Create one, or start from an example."));
+  for (const a of S.list) {
+    const vs = (S.spines[a.id] || []).slice(-60);
+    el.append(h("button", { class: "item", "aria-current": String(a.id === S.sel), onclick: () => openArtifact(a.id) },
+      h("span", { class: "item-name", title: a.id }, titleOf(a)), spine(vs, { cls: "mini", current: a.current_version }),
+      h("span", { class: "item-sub" }, `v${a.current_version}, ${a.quota_key}, ${ago(a.updated_at)}`)));
+  }
+}
+
+// ---------- home
+const KITS = []; // filled below
+function renderHome() {
+  const all = Object.values(S.spines).flat().sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).slice(-90);
+  const byId = Object.fromEntries(S.list.map(a => [a.id, a]));
+  $("#main").replaceChildren(h("div", { class: "home" },
+    h("h1", {}, "Every publish and every job run is a version"),
+    h("p", { class: "lede" }, "Artifacts are sets of files that agents publish and people view. Jobs run on a schedule in fired sandboxes and write their results back, so the history fills in on its own."),
+    all.length
+      ? spine(all, { cls: "hero", label: "Latest versions across all artifacts", pick: v => openArtifact(v.artifact, v.version) })
+      : null,
+    all.length ? h("p", { class: "note" }, `The latest ${all.length} versions across all artifacts, oldest first. Pick one to open it.`) : null,
+    legend(),
+    h("section", { class: "kits" },
+      h("h2", {}, "Start from an example"),
+      h("p", {}, `Each creates an artifact for the quota key “${quotaKey()}”. Together they cover views, jobs, state, queues, approvals and failures.`),
+      KITS.map(k => h("div", { class: "kit" }, h("h3", {}, k.title), h("p", {}, k.about),
+        h("button", { class: "btn", onclick: e => createKit(k, e.currentTarget) }, "Create"))))));
+  S.fresh.clear();
+}
+const quotaKey = () => { try { return localStorage.getItem("fa.quota") || "dev"; } catch { return "dev"; } };
+const setQuotaKey = k => { try { localStorage.setItem("fa.quota", k); } catch {} };
+
+async function createKit(k, btn) {
+  btn.disabled = true;
+  try {
+    const files = Object.entries(k.files).map(([path, f]) => typeof f === "string" ? { path, content: f } : { path, ...f });
+    const r = await guard(() => api("POST", "/artifacts", { quota_key: quotaKey(), meta: { title: k.title }, labels: { example: k.slug },
+      publish: { base_version: 0, files, label: "first version", run_now: k.run_now } }), `Created ${k.title}`);
+    for (const j of r.publish?.jobs || []) if (j.needs_approval?.length) toast(`${j.name} needs approval: ${j.needs_approval.join("; ")}`);
+    await refreshList(); openArtifact(r.artifact.id, null, k.tab);
+  } catch {} finally { btn.disabled = false; }
+}
+
+// ---------- artifact
+async function openArtifact(id, ver = null, tab) {
+  if (S.sel !== id) { S.stage.clear(); S.mirror = []; S.fileSel = null; S.runSel = null; S.compare = null; S.viewIdx = 0; S.tab = "view"; }
+  S.view = "artifact"; S.sel = id; S.ver = ver; if (tab) S.tab = tab;
+  try { localStorage.setItem("fa.sel", id); } catch {}
+  renderList();
+  await loadArtifact();
+}
+function closeArtifact() {
+  S.sel = null; S.art = null; S.view = "home";
+  try { localStorage.removeItem("fa.sel"); } catch {}
+  renderList(); renderHome();
+}
+async function loadArtifact(keepPane) {
+  const id = S.sel;
+  try {
+    const [a, vs, js, rs] = await Promise.all([
+      api("GET", `/artifacts/${enc(id)}`, undefined, { quiet: true }),
+      api("GET", `/artifacts/${enc(id)}/versions`, undefined, { quiet: true }),
+      api("GET", `/artifacts/${enc(id)}/jobs`, undefined, { quiet: true }).catch(() => ({ jobs: [] })),
+      api("GET", `/artifacts/${enc(id)}/runs?limit=100`, undefined, { quiet: true }).catch(() => ({ runs: [] })),
+    ]);
+    if (S.sel !== id) return;
+    S.art = a; S.versions = (vs.versions || []).sort((x, y) => x.version - y.version); S.jobs = js.jobs || []; S.runs = rs.runs || [];
+    S.spines[id] = S.versions;
+    if (S.ver != null && !S.versions.find(v => v.version === S.ver)) S.ver = null;
+  } catch (e) {
+    if (e.status === 404) { toast(`${id} no longer exists.`, "err"); closeArtifact(); refreshList(); }
+    else toast(e.message, "err");
+    return;
+  }
+  renderArtifact(keepPane);
+}
+
+// keepPane: rebuild the header and tabs but leave the current tab's content
+// (a live view frame, half-typed settings) in place.
+function renderArtifact(keepPane) {
+  const a = S.art; if (!a) return;
+  const m = meta(a);
+  const fact = (k, v) => v ? h("div", {}, h("dt", {}, k), h("dd", {}, v)) : null;
+  const n = shownVersion();
+  const v = S.versions.find(x => x.version === n);
+  const top = h("div", { class: "top" },
+    h("div", { class: "title-row" }, h("h1", {}, titleOf(a)), h("span", { class: "spacer" }),
+      h("button", { class: "btn", onclick: () => forkDialog(n) }, "Fork"),
+      h("a", { class: "btn", href: `/v1/artifacts/${enc(a.id)}/versions/${n}/export`, download: true, style: "text-decoration:none;color:inherit", hidden: !n }, "Download zip")),
+    h("dl", { class: "facts" },
+      fact("ID", h("code", {}, a.id)), fact("Quota key", a.quota_key),
+      Object.keys(a.labels || {}).length ? fact("Labels", kvText(a.labels).replace(/\n/g, ", ")) : null,
+      a.forked_from ? fact("Forked from", h("button", { onclick: () => openArtifact(a.forked_from.artifact, a.forked_from.version) }, `${a.forked_from.artifact} v${a.forked_from.version}`)) : null,
+      m.description ? fact("About", m.description) : null,
+      fact("Last active", ago(a.last_active_at))),
+    S.versions.length ? spine(S.versions, { label: "Versions", current: a.current_version, selected: n, pick: x => pickVersion(x.version) }) : null,
+    pickedLine(v));
+  S.fresh.clear();
+  const counts = { files: v?.file_count, versions: S.versions.length, jobs: S.jobs.length, runs: S.runs.length };
+  const tabs = h("div", { class: "tabs", role: "tablist" },
+    [["view", "View"], ["files", "Files"], ["versions", "Versions"], ["jobs", "Jobs"], ["runs", "Runs"], ["settings", "Settings"]].map(([k, label]) =>
+      h("button", { class: "tab", role: "tab", "aria-selected": String(S.tab === k), onclick: () => { S.tab = k; renderArtifact(); } },
+        label, counts[k] != null ? h("span", { class: "count" }, " " + counts[k]) : null,
+        k === "files" ? h("span", { class: "count", id: "staged-count", style: "color:var(--edit)" }, S.stage.size ? `, ${S.stage.size} staged` : "") : null)));
+  const pane = keepPane || h("div", { class: "pane", id: "pane" });
+  $("#main").replaceChildren(top, tabs, pane);
+  if (!keepPane) renderTab();
+}
+function pickedLine(v) {
+  const a = S.art;
+  if (!v) return h("div", { class: "picked" }, h("p", {}, "No versions yet. Add files and publish the first one."));
+  const cur = v.version === a.current_version;
+  const run = v.run_id ? S.runs.find(r => r.id === v.run_id) : null;
+  return h("div", { class: `picked o o-${v.origin}` },
+    h("h2", {}, `Version ${v.version}`),
+    h("p", {}, [
+      (ORIGIN[v.origin] || v.origin) + (v.job ? ` by ${v.job}` : ""),
+      v.label ? `, “${v.label}”` : "",
+      `, ${v.file_count} ${v.file_count === 1 ? "file" : "files"}, ${fmtBytes(v.size_bytes)}, ${ago(v.created_at)}`,
+      cur ? ". This is the current version." : ".",
+    ].join("")),
+    run ? h("button", { class: "btn small quiet", onclick: () => { S.runSel = run.id; S.tab = "runs"; renderArtifact(); } }, "Open its run") : null,
+    !cur ? h("button", { class: "btn small", onclick: () => restore(v.version) }, `Restore v${v.version}`) : null,
+    !cur ? h("button", { class: "btn small quiet", onclick: () => pickVersion(null) }, "Show the current version") : null);
+}
+function pickVersion(n) {
+  S.ver = n == null || n === S.art.current_version ? null : n;
+  renderArtifact();
+}
+
+// Each render gets a fresh pane, so an async tab that finishes late writes
+// into a detached element instead of on top of a newer render.
+function renderTab() {
+  const old = $("#pane"); if (!old) return;
+  const p = h("div", { class: "pane", id: "pane" });
+  old.replaceWith(p);
+  ({ view: tabView, files: tabFiles, versions: tabVersions, jobs: tabJobs, runs: tabRuns, settings: tabSettings })[S.tab](p);
+}
+
+// ---------- View tab
+async function tabView(p) {
+  const a = S.art, n = shownVersion();
+  if (!n) { p.append(emptyFirst()); return; }
+  let v;
+  try { v = await loadVersion(a.id, n); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
+  const views = v.spec?.views || [];
+  if (!views.length) {
+    p.append(h("div", { class: "empty" }, h("h3", {}, "Nothing to show in this version"),
+      h("p", { class: "note" }, "Add an index.html at the root, or list views in artifact.json, for example a md view of README.md."),
+      h("p", {}, h("button", { class: "btn", onclick: () => { S.tab = "files"; renderArtifact(); } }, "Open files"))));
+    return;
+  }
+  if (S.viewIdx >= views.length) S.viewIdx = 0;
+  const vw = views[S.viewIdx];
+  let origin;
+  try { origin = await previewOrigin(a.id, atCurrent() ? 0 : n); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
+  const src = `${origin}.fired/view?type=${enc(vw.type)}&entry=${enc(vw.entry)}`;
+  const frame = h("iframe", { class: "frame", id: "frame", title: `${vw.type} view of ${vw.entry}`, src: src + "&t=" + Date.now(),
+    sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads", referrerpolicy: "no-referrer" });
+  p.append(h("div", { class: "viewbar" },
+    views.length > 1 ? h("div", { class: "seg", role: "group", "aria-label": "Views" }, views.map((x, i) =>
+      h("button", { type: "button", "aria-pressed": String(i === S.viewIdx), onclick: () => { S.viewIdx = i; renderTab(); } }, x.type + " ", h("code", {}, x.entry))))
+      : h("span", { class: "note" }, `${vw.type} view of `, h("code", {}, vw.entry)),
+    h("span", { class: "spacer" }),
+    h("span", { class: "note" }, atCurrent() ? "Follows the current version" : `Pinned to v${n}`),
+    h("button", { class: "btn small", onclick: () => { frame.src = src + "&t=" + Date.now(); } }, "Reload"),
+    h("a", { class: "btn small", href: src, target: "_blank", rel: "noopener", style: "text-decoration:none;color:inherit" }, "Open in a new tab")),
+    frame);
+}
+function emptyFirst() {
+  return h("div", { class: "empty" }, h("h3", {}, "This artifact has no versions yet"),
+    h("p", { class: "note" }, "Add files, then publish to create version 1."),
+    h("p", {}, h("button", { class: "btn primary", onclick: () => { S.tab = "files"; renderArtifact(); } }, "Add files")));
+}
+// reload the live view after a new version, without rebuilding the tab
+function reloadFrame() {
+  const f = $("#frame"); if (f && atCurrent()) f.src = f.src.replace(/&t=\d+$/, "") + "&t=" + Date.now();
+}
+
+// ---------- Files tab: a working copy staged on top of the current version
+const TEXT_EXT = /\.(html?|css|m?js|jsx|tsx?|json|md|markdown|txt|csv|tsv|svg|xml|ya?ml|toml|ini|sh|py|rb|go|rs|java|c|h|cpp|sql|env|gitignore|lock|log)$/i;
+const isTextPath = p => TEXT_EXT.test(p) || !/\.[^/]+$/.test(p);
+const SPEC_TEMPLATE = JSON.stringify({ views: [{ type: "html", entry: "index.html" }], jobs: { refresh: { run: "sh refresh.sh", writes: ["data"], schedule: "*/15 * * * *" } } }, null, 2) + "\n";
+
+async function workingTree() {
+  const a = S.art, n = shownVersion();
+  const base = n ? await loadVersion(a.id, n) : { files: [] };
+  const tree = new Map((base.files || []).map(f => [f.path, { ...f, state: "" }]));
+  if (!atCurrent()) return tree;
+  for (const d of S.mirror) for (const p of [...tree.keys()]) if (p === d || p.startsWith(d + "/")) tree.set(p, { ...tree.get(p), state: "deleted" });
+  for (const [path, op] of S.stage) {
+    if (op.delete) { if (tree.has(path)) tree.set(path, { ...tree.get(path), state: "deleted" }); else tree.delete(path); continue; }
+    tree.set(path, { path, size: op.size, state: tree.has(path) ? "changed" : "added", staged: op });
+  }
+  return new Map([...tree].sort(([x], [y]) => x.localeCompare(y)));
+}
+
+async function tabFiles(p) {
+  const a = S.art, n = shownVersion(), editable = atCurrent();
+  const tree = await workingTree();
+  if (S.tab !== "files" || S.art !== a) return;
+  if (S.fileSel && !tree.has(S.fileSel)) S.fileSel = null;
+  if (!S.fileSel) S.fileSel = [...tree.keys()].find(k => k === "index.html") || [...tree.keys()][0] || null;
+
+  const list = h("ul", {});
+  for (const [path, f] of tree) {
+    const i = path.lastIndexOf("/");
+    list.append(h("li", {}, h("button", { class: `file ${f.state}`, "aria-current": String(path === S.fileSel), title: path, onclick: () => { S.fileSel = path; renderTab(); } },
+      h("span", { class: "nm" }, i >= 0 ? h("span", { class: "dir" }, path.slice(0, i + 1)) : null, path.slice(i + 1)),
+      h("span", { class: "sz" }, f.state === "deleted" ? "removed" : fmtBytes(f.size)))));
+  }
+  const upload = h("input", { type: "file", multiple: true, hidden: true, onchange: e => stageUploads([...e.target.files], false) });
+  const uploadDir = h("input", { type: "file", multiple: true, webkitdirectory: true, hidden: true, onchange: e => stageUploads([...e.target.files], true) });
+  const tools = editable ? h("div", { class: "tree-tools" },
+    h("button", { class: "btn small", onclick: newFile }, "New file"),
+    h("button", { class: "btn small", onclick: () => upload.click() }, "Upload files"),
+    h("button", { class: "btn small", onclick: () => uploadDir.click(), title: "Upload a folder. Files missing from it are removed from that folder in the artifact." }, "Upload folder"),
+    !tree.has("artifact.json") ? h("button", { class: "btn small quiet", onclick: () => { stagePut("artifact.json", SPEC_TEMPLATE); S.fileSel = "artifact.json"; renderArtifact(); } }, "Add artifact.json") : null,
+    upload, uploadDir)
+    : h("div", { class: "tree-tools" }, h("span", { class: "note" }, `Version ${n} is read-only. Restore it to make it current, or show the current version to edit.`));
+
+  const editor = h("div", { class: "editor" });
+  p.append(h("div", { class: "files" },
+    h("div", { class: "tree" }, tools, tree.size ? list : h("p", { class: "note", style: "padding:12px" }, editable ? "No files yet. Create or upload some." : "No files."))), stagebar());
+  p.firstChild.append(editor);
+  p.firstChild.addEventListener("dragover", e => { if (editable) e.preventDefault(); });
+  p.firstChild.addEventListener("drop", e => { if (!editable) return; e.preventDefault(); stageUploads([...e.dataTransfer.files], false); });
+  await fillEditor(editor, tree.get(S.fileSel), editable);
+}
+
+async function fillEditor(box, f, editable) {
+  if (!f) { box.append(h("p", { class: "note" }, "Pick a file on the left.")); return; }
+  const a = S.art, n = shownVersion(), path = f.path;
+  const head = h("div", { class: "editor-head" }, h("code", {}, path),
+    f.state ? h("span", { class: "note" }, { added: "new, not published", changed: "changed, not published", deleted: "will be removed" }[f.state]) : null,
+    h("span", { class: "spacer" }),
+    f.hash ? h("a", { class: "btn small quiet", href: `/v1/artifacts/${enc(a.id)}/files/${encPath(path)}?version=${n}`, target: "_blank", rel: "noopener", style: "text-decoration:none" }, "Raw") : null,
+    editable && f.state ? h("button", { class: "btn small quiet", onclick: () => { S.stage.delete(path); renderArtifact(); } }, "Undo") : null,
+    editable && f.state !== "deleted" ? h("button", { class: "btn small danger", onclick: () => { stageDelete(path); renderArtifact(); } }, "Remove") : null);
+  box.append(head);
+  if (f.state === "deleted") { box.append(h("p", { class: "note" }, "Publish to remove this file, or undo.")); return; }
+  const op = f.staged;
+  if (op && op.blob && !op.text) { box.append(h("p", { class: "note" }, `Uploaded file, ${fmtBytes(op.size)}. It goes up as a blob when you publish.`)); return; }
+  let content = op ? op.content : null;
+  if (content == null) {
+    if (!isTextPath(path) || f.size > 2 << 20) { box.append(h("p", { class: "note" }, `${fmtBytes(f.size)}, not shown as text. `, h("code", {}, (f.hash || "").slice(0, 16)))); return; }
+    try { content = await (await api("GET", `/artifacts/${enc(a.id)}/files/${encPath(path)}?version=${n}`, undefined, { quiet: true, raw: true })).text(); }
+    catch (e) { box.append(h("p", { class: "err-text" }, e.message)); return; }
+  }
+  const ta = h("textarea", { spellcheck: "false", "aria-label": `Contents of ${path}`, readonly: !editable });
+  ta.value = content;
+  let original = content;
+  ta.addEventListener("input", () => {
+    if (!op && ta.value === original) S.stage.delete(path); else stagePut(path, ta.value);
+    updateStagebar();
+  });
+  ta.addEventListener("keydown", e => {
+    if (e.key === "Tab" && !e.shiftKey && editable) { e.preventDefault(); ta.setRangeText("  ", ta.selectionStart, ta.selectionEnd, "end"); ta.dispatchEvent(new Event("input")); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); publish(); }
+  });
+  box.append(ta);
+  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "Views: html, react, md, csv, json, text, image, svg, pdf. Jobs take run, writes, state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
+}
+
+function stagePut(path, content) { S.stage.set(path, { content, size: new Blob([content]).size, text: true }); }
+function stageDelete(path) { S.stage.set(path, { delete: true }); }
+function newFile() {
+  const path = prompt("Path of the new file, for example data/notes.md");
+  if (!path) return;
+  const clean = path.trim().replace(/^\/+/, "");
+  if (!clean) return;
+  stagePut(clean, ""); S.fileSel = clean; renderArtifact();
+  setTimeout(() => $(".editor textarea")?.focus(), 50);
+}
+async function sha256(buf) {
+  if (!crypto.subtle) return null;
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", buf))].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+async function stageUploads(files, folder) {
+  if (!files.length) return;
+  let top = null;
+  for (const f of files) {
+    const path = folder && f.webkitRelativePath ? f.webkitRelativePath : f.name;
+    if (folder) top = path.split("/")[0];
+    const buf = await f.arrayBuffer();
+    const op = { blob: f, size: f.size, hash: await sha256(buf) };
+    if (isTextPath(path) && f.size < 1 << 20) { op.content = new TextDecoder().decode(buf); op.text = true; }
+    S.stage.set(path, op);
+  }
+  if (folder && top && !S.mirror.includes(top)) S.mirror.push(top);
+  toast(`Staged ${files.length} ${files.length === 1 ? "file" : "files"}${folder ? `; ${top}/ will match the upload exactly` : ""}`);
+  renderArtifact();
+}
+
+function stagebar() {
+  const bar = h("div", { class: "stagebar", id: "stagebar" });
+  fillStagebar(bar);
+  return bar;
+}
+function updateStagebar() {
+  const bar = $("#stagebar"); if (bar) fillStagebar(bar);
+  const t = $("#staged-count");
+  if (t) t.textContent = S.stage.size ? `, ${S.stage.size} staged` : "";
+}
+function fillStagebar(bar) {
+  bar.replaceChildren();
+  bar.hidden = !atCurrent() || (!S.stage.size && !S.mirror.length);
+  if (bar.hidden) return;
+  const jobs = stagedJobNames();
+  bar.append(...[h("strong", {}, `${S.stage.size} ${S.stage.size === 1 ? "change" : "changes"} on top of v${S.art.current_version}`),
+    h("input", { type: "text", id: "pub-label", placeholder: "Label, optional", "aria-label": "Version label" }),
+    jobs.length ? h("span", { class: "row", style: "gap:12px" }, h("span", { class: "note" }, "Run after publishing:"),
+      jobs.map(j => h("label", { class: "check" }, h("input", { type: "checkbox", name: "run_now", value: j }), h("code", {}, j)))) : null,
+    h("span", { class: "spacer" }),
+    h("button", { class: "btn quiet", onclick: () => { S.stage.clear(); S.mirror = []; renderArtifact(); } }, "Discard"),
+    h("button", { class: "btn primary", id: "btn-publish", onclick: publish }, `Publish v${S.art.current_version + 1}`)].filter(Boolean));
+}
+function stagedJobNames() {
+  const op = S.stage.get("artifact.json");
+  if (op && op.content != null) { try { return Object.keys(JSON.parse(op.content).jobs || {}); } catch { return []; } }
+  if (op && op.delete) return [];
+  const v = S.vcache.get(vkey(S.art.id, S.art.current_version));
+  return Object.keys(v?.spec?.jobs || {});
+}
+
+async function publish() {
+  if (!S.stage.size && !S.mirror.length) return;
+  const a = S.art, btn = $("#btn-publish");
+  if (btn) btn.disabled = true;
+  try {
+    const files = [];
+    const blobs = [];
+    for (const [path, op] of S.stage) {
+      if (op.delete) { files.push({ path, delete: true }); continue; }
+      // small text inline; other uploads go up as blobs (only the ones the
+      // store is missing), or base64 when this page can't hash them
+      if (op.content != null && (!op.hash || op.size <= 256 << 10)) { files.push({ path, content: op.content }); continue; }
+      if (op.hash) { files.push({ path, hash: op.hash }); blobs.push(op); continue; }
+      const buf = new Uint8Array(await op.blob.arrayBuffer());
+      let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      files.push({ path, content_base64: btoa(bin) });
+    }
+    if (blobs.length) {
+      const { missing } = await api("POST", "/blobs/missing", { hashes: blobs.map(b => b.hash) });
+      for (const b of blobs) if (missing.includes(b.hash)) await api("PUT", `/blobs/${b.hash}`, b.blob);
+    }
+    const req = { base_version: a.current_version, files };
+    if (S.mirror.length) req.replace_dirs = S.mirror;
+    const label = $("#pub-label")?.value.trim(); if (label) req.label = label;
+    const runNow = [...document.querySelectorAll("input[name=run_now]:checked")].map(x => x.value);
+    if (runNow.length) req.run_now = runNow;
+    const r = await api("POST", `/artifacts/${enc(a.id)}/versions`, req);
+    toast(`Published v${r.version.version}`, "ok");
+    for (const j of r.jobs || []) if (j.needs_approval?.length) toast(`${j.name} needs approval: ${j.needs_approval.join("; ")}`);
+    S.stage.clear(); S.mirror = []; S.ver = null;
+    if (runNow.length) { S.tab = "runs"; S.runSel = null; }
+    await loadArtifact();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    if (e.status === 409) {
+      await loadArtifact();
+      toast(`Someone published v${S.art.current_version} first. Your changes are still staged on top of it; check them and publish again.`, "err");
+    } else toast(e.message, "err");
+  }
+}
+
+// ---------- Versions tab
+function tabVersions(p) {
+  const a = S.art;
+  if (!S.versions.length) { p.append(emptyFirst()); return; }
+  const n = shownVersion();
+  const tb = h("tbody");
+  for (const v of [...S.versions].reverse()) {
+    const cur = v.version === a.current_version;
+    tb.append(h("tr", { class: `link o o-${v.origin}`, "aria-selected": String(v.version === n), onclick: () => pickVersion(v.version) },
+      h("td", {}, h("span", { class: "vnum" }, "v" + v.version), cur ? h("span", { class: "note" }, " current") : null),
+      h("td", {}, h("span", { class: "tag" }, ORIGIN[v.origin] || v.origin)),
+      h("td", {}, v.job ? h("code", {}, v.job) : null, v.label ? (v.job ? " " : "") + v.label : null),
+      h("td", { class: "num" }, v.file_count), h("td", { class: "num" }, fmtBytes(v.size_bytes)),
+      h("td", { title: when(v.created_at) }, ago(v.created_at)),
+      h("td", { style: "text-align:right;white-space:nowrap" },
+        !cur ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); compare(v.version); } }, "Compare") : null,
+        !cur ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); restore(v.version); } }, "Restore") : null,
+        h("a", { class: "btn small quiet", href: `/v1/artifacts/${enc(a.id)}/versions/${v.version}/export`, download: true, onclick: e => e.stopPropagation(), style: "text-decoration:none" }, "Zip"))));
+  }
+  p.append(h("p", { class: "note" }, `Job-run versions beyond the newest ${a.retain_runs || S.info?.retain_runs || 24} are removed by garbage collection. Edits, restores and forks are kept.`),
+    h("table", {}, h("thead", {}, h("tr", {}, ["Version", "Origin", "Label", "Files", "Size", "Created", ""].map(x => h("th", {}, x)))), tb));
+  if (S.compare) p.append(h("div", { id: "compare" }));
+  if (S.compare) showCompare();
+}
+function compare(n) { S.compare = n; renderTab(); }
+async function showCompare() {
+  const a = S.art, n = S.compare, box = $("#compare"); if (!box) return;
+  try {
+    const [x, y] = await Promise.all([loadVersion(a.id, n), loadVersion(a.id, a.current_version)]);
+    const old = new Map(x.files.map(f => [f.path, f])), cur = new Map(y.files.map(f => [f.path, f]));
+    const rows = [];
+    for (const [p, f] of cur) if (!old.has(p)) rows.push(["a", "added", p, f.size]); else if (old.get(p).hash !== f.hash) rows.push(["c", "changed", p, f.size]);
+    for (const [p, f] of old) if (!cur.has(p)) rows.push(["d", "removed", p, f.size]);
+    rows.sort((r1, r2) => r1[2].localeCompare(r2[2]));
+    box.replaceChildren(h("div", { class: "row" }, h("h3", {}, `From v${n} to v${a.current_version}`), h("span", { class: "spacer" }), h("button", { class: "btn small quiet", onclick: () => { S.compare = null; renderTab(); } }, "Close")),
+      rows.length ? h("div", { class: "diff" }, rows.map(([c, what, p, sz]) => h("div", { class: c }, `${what.padEnd(8)} ${p}  (${fmtBytes(sz)})`)))
+        : h("p", { class: "note" }, "Same files. Nothing changed between these versions."));
+  } catch (e) { box.replaceChildren(h("p", { class: "err-text" }, e.message)); }
+}
+async function restore(n) {
+  const a = S.art;
+  try {
+    const r = await guard(() => api("POST", `/artifacts/${enc(a.id)}/restore`, { version: n, base_version: a.current_version }), r => `Restored v${n} as v${r.version.version}`);
+    S.ver = null; S.compare = null; await loadArtifact();
+  } catch {}
+}
+
+// ---------- Jobs tab
+const JOBSTATE = { scheduled: ["o-run", "Scheduled"], manual: ["", "Runs when triggered"], expired: ["o-restore", "Schedule window closed"], blocked: ["o-fault", "Blocked until approved"] };
+async function tabJobs(p) {
+  const a = S.art;
+  const cur = a.current_version ? await loadVersion(a.id, a.current_version).catch(() => null) : null;
+  const specs = cur?.spec?.jobs || {};
+  if (!S.jobs.length) {
+    p.append(h("div", { class: "empty" }, h("h3", {}, "No jobs"),
+      h("p", { class: "note" }, "Jobs are commands in artifact.json. They run in a fired sandbox with the artifact's files, on a schedule or when triggered, and their writes become new versions."),
+      h("p", {}, h("button", { class: "btn", onclick: () => {
+        S.tab = "files"; if (!cur?.files?.some(f => f.path === "artifact.json")) stagePut("artifact.json", SPEC_TEMPLATE); S.fileSel = "artifact.json"; renderArtifact(); } }, "Edit artifact.json"))));
+    return;
+  }
+  for (const j of S.jobs) {
+    const s = specs[j.name] || {};
+    const [cls, label] = JOBSTATE[j.state] || ["", j.state];
+    const busy = S.runs.find(r => r.job === j.name && r.status === "running");
+    const dl = h("dl", {},
+      j.schedule ? [h("dt", {}, "Schedule"), h("dd", {}, h("code", {}, j.schedule), s.timezone ? ` in ${s.timezone}` : " in UTC")] : null,
+      j.next_run ? [h("dt", {}, "Next run"), h("dd", { title: when(j.next_run) }, until(j.next_run))] : null,
+      j.active_until ? [h("dt", {}, "Schedule on until"), h("dd", { title: when(j.active_until) }, when(j.active_until))] : null,
+      [h("dt", {}, "Longest run"), h("dd", {}, fmtDur(j.max_run) || "")],
+      s.writes?.length ? [h("dt", {}, "Writes"), h("dd", {}, s.writes.map((w, i) => [i ? ", " : "", h("code", {}, w)]))] : [h("dt", {}, "Writes"), h("dd", {}, "nothing, so runs never create versions")],
+      s.state ? [h("dt", {}, "Keeps state in"), h("dd", {}, h("code", {}, s.state))] : null,
+      [h("dt", {}, "When busy"), h("dd", {}, s.on_busy === "queue" ? `queue every trigger (up to ${s.queue?.max || 100}, ${fmtDur(s.queue?.max_age) || "24h"} old)` : "keep only the newest trigger")],
+      j.pending ? [h("dt", {}, "Waiting"), h("dd", {}, `${j.pending} ${j.pending === 1 ? "run" : "runs"}`)] : null,
+      s.template ? [h("dt", {}, "Template"), h("dd", {}, s.template)] : null);
+    p.append(h("section", { class: "job" },
+      h("div", { style: "display:flex;flex-direction:column;gap:10px;min-width:0" },
+        h("h3", {}, h("code", {}, j.name), h("span", { class: `tag o ${cls}${busy ? " busy" : ""}` }, busy ? "Running now" : label)),
+        h("pre", { class: "out" }, s.run || ""),
+        dl,
+        j.needs_approval?.length ? h("ul", { class: "needs" }, j.needs_approval.map(x => h("li", {}, x))) : null),
+      h("div", { class: "actions" },
+        h("button", { class: "btn" + (j.state === "blocked" ? "" : " primary"), disabled: j.state === "blocked", onclick: () => trigger(j.name) }, "Run now"),
+        h("button", { class: "btn", disabled: j.state === "blocked", onclick: () => runDialog(j.name) }, "Run with payload"),
+        h("button", { class: "btn" + (j.state === "blocked" ? " primary" : j.needs_approval?.length ? "" : " quiet"), onclick: () => grantDialog(j) }, "Approve"),
+        h("button", { class: "btn quiet", onclick: () => setGrant(j.name, { active_until: "0001-01-01T00:00:00Z" }, "Grant revoked") }, "Revoke"),
+        h("button", { class: "btn quiet", onclick: () => { S.tab = "runs"; S.runFilter = j.name; renderArtifact(); } }, "Show runs"))));
+  }
+}
+async function trigger(job, payload, times = 1) {
+  const a = S.art;
+  let last;
+  for (let i = 0; i < times; i++) {
+    try { last = await api("POST", `/artifacts/${enc(a.id)}/jobs/${enc(job)}/runs`, payload !== undefined ? { payload } : undefined); }
+    catch (e) { toast(e.code === "queue_full" ? `The queue for ${job} is full. ${e.message}` : e.message, "err"); break; }
+  }
+  if (last) { toast(times > 1 ? `Triggered ${job} ${times} times` : `Triggered ${job}`, "ok"); S.runSel = last.id; S.tab = "runs"; }
+  await loadArtifact();
+}
+const dlgRun = $("#dlg-run");
+function runDialog(job) {
+  dlgRun.querySelector("form").reset(); dlgRun.returnValue = ""; dlgRun.dataset.job = job;
+  $("#dlg-run-title").textContent = `Run ${job}`;
+  dlgRun.showModal();
+}
+dlgRun.addEventListener("close", () => {
+  if (dlgRun.returnValue !== "ok") return;
+  const f = dlgRun.querySelector("form").elements;
+  let payload;
+  if (f.payload.value.trim()) { try { payload = JSON.parse(f.payload.value); } catch (e) { toast("The payload isn't valid JSON: " + e.message, "err"); return; } }
+  trigger(dlgRun.dataset.job, payload, Math.max(1, Math.min(50, +f.times.value || 1)));
+});
+const dlgGrant = $("#dlg-grant");
+function grantDialog(j) {
+  const f = dlgGrant.querySelector("form"); f.reset(); dlgGrant.returnValue = ""; dlgGrant.dataset.job = j.name;
+  $("#dlg-grant-title").textContent = `Approve ${j.name}`;
+  $("#grant-needs").replaceChildren(...(j.needs_approval || []).map(x => h("li", {}, x)));
+  const d = new Date(Date.now() + 30 * 86400e3); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  f.elements.active_until.value = d.toISOString().slice(0, 16);
+  const m = (j.needs_approval || []).join(" ").match(/timeout (\S+)/); if (m) f.elements.max_run.value = m[1];
+  dlgGrant.showModal();
+}
+dlgGrant.addEventListener("close", () => {
+  if (dlgGrant.returnValue !== "ok") return;
+  const f = dlgGrant.querySelector("form").elements;
+  const g = { active_until: f.active_until.value ? new Date(f.active_until.value).toISOString() : "0001-01-01T00:00:00Z" };
+  if (f.max_run.value.trim()) g.max_run = f.max_run.value.trim();
+  setGrant(dlgGrant.dataset.job, g, "Approved");
+});
+async function setGrant(job, g, msg) {
+  try { await guard(() => api("PUT", `/artifacts/${enc(S.art.id)}/jobs/${enc(job)}/grant`, g), msg); await loadArtifact(); } catch {}
+}
+
+// ---------- Runs tab
+const RUNSTATE = { pending: "", running: "o-edit", succeeded: "o-run", failed: "o-fault", timed_out: "o-fault", dropped: "o-restore", superseded: "" };
+const RUNLABEL = { pending: "Waiting", running: "Running", succeeded: "Succeeded", failed: "Failed", timed_out: "Timed out", dropped: "Dropped", superseded: "Replaced by a newer trigger" };
+let logTimer = null;
+function tabRuns(p) {
+  clearTimeout(logTimer);
+  const jobs = [...new Set(S.runs.map(r => r.job))];
+  const runs = S.runs.filter(r => !S.runFilter || r.job === S.runFilter);
+  if (!S.runs.length) { p.append(h("div", { class: "empty" }, h("h3", {}, "No runs yet"), h("p", { class: "note" }, S.jobs.length ? "Start one from the Jobs tab, or wait for a schedule." : "Add a job to artifact.json to run something."))); return; }
+  if (!S.runSel && runs[0]) S.runSel = runs[0].id;
+  const tb = h("tbody");
+  for (const r of runs) {
+    tb.append(h("tr", { class: "link", "aria-selected": String(r.id === S.runSel), onclick: () => { S.runSel = r.id; renderTab(); } },
+      h("td", {}, h("span", { class: `tag o ${RUNSTATE[r.status] || ""}${r.status === "running" ? " busy" : ""}` }, RUNLABEL[r.status] || r.status)),
+      h("td", {}, h("code", {}, r.job)), h("td", {}, r.trigger),
+      h("td", { title: when(r.started_at || r.created_at) }, ago(r.started_at || r.created_at)),
+      h("td", { class: "num" }, fmtMs(r.duration_ms)),
+      h("td", {}, r.result_version ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); S.tab = "view"; pickVersion(r.result_version); } }, `v${r.result_version}`)
+        : ["succeeded"].includes(r.status) ? h("span", { class: "note" }, "no changes") : null),
+      h("td", { class: "note" }, r.reason || "")));
+  }
+  p.append(h("div", { class: "row" },
+    jobs.length > 1 ? h("div", { class: "seg", role: "group", "aria-label": "Filter by job" },
+      h("button", { type: "button", "aria-pressed": String(!S.runFilter), onclick: () => { S.runFilter = null; renderTab(); } }, "All jobs"),
+      jobs.map(j => h("button", { type: "button", "aria-pressed": String(S.runFilter === j), onclick: () => { S.runFilter = j; renderTab(); } }, j))) : null,
+    h("span", { class: "spacer" }), h("span", { class: "note" }, "Finished runs and their logs are kept for 30 days.")),
+    h("table", {}, h("thead", {}, h("tr", {}, ["Status", "Job", "Trigger", "Started", "Took", "Wrote", "Reason"].map(x => h("th", {}, x)))), tb),
+    h("div", { id: "run-detail", style: "display:flex;flex-direction:column;gap:12px" }));
+  showRun();
+}
+async function showRun() {
+  const box = $("#run-detail"); if (!box || !S.runSel) return;
+  const id = S.runSel, a = S.art;
+  let r, logs;
+  try {
+    [r, logs] = await Promise.all([api("GET", `/artifacts/${enc(a.id)}/runs/${enc(id)}`, undefined, { quiet: true }),
+      api("GET", `/artifacts/${enc(a.id)}/runs/${enc(id)}/logs`, undefined, { quiet: true }).catch(() => null)]);
+  } catch (e) { box.replaceChildren(h("p", { class: "err-text" }, e.message)); return; }
+  if (S.runSel !== id || S.tab !== "runs") return;
+  const facts = [`Run ${r.id}`, r.version ? `from v${r.version}` : null, r.exit_code != null ? `exit code ${r.exit_code}` : null].filter(Boolean).join(", ");
+  box.replaceChildren(...[
+    h("div", { class: "row" }, h("h3", {}, `${r.job}, ${RUNLABEL[r.status]?.toLowerCase() || r.status}`), h("span", { class: "note" }, facts)),
+    r.reason ? h("p", { class: "err-text", style: "margin:0" }, r.reason) : null,
+    h("pre", { class: "out", "aria-label": "Output" },
+      logs && (logs.stdout || logs.stderr) ? [logs.stdout ? logs.stdout : null, logs.stderr ? h("span", { style: "color:#FF9C8A" }, logs.stderr) : null, logs.truncated ? h("span", { class: "dim" }, "\n(earlier output dropped)") : null]
+        : h("span", { class: "dim" }, r.status === "pending" ? "Waiting to start." : r.status === "running" ? "No output yet." : "No output."))].filter(Boolean));
+  if (r.status === "running" || r.status === "pending") logTimer = setTimeout(showRun, 1500);
+}
+
+// ---------- Settings tab
+async function tabSettings(p) {
+  const a = S.art, m = meta(a);
+  const title = h("input", { type: "text", value: m.title || "", placeholder: a.id });
+  const desc = h("input", { type: "text", value: m.description || "" });
+  const labels = h("textarea", { rows: 2 }); labels.value = kvText(a.labels);
+  const qk = h("input", { type: "text", value: a.quota_key });
+  const da = h("input", { type: "text", value: a.delete_after && a.delete_after !== "0s" ? fmtDur(a.delete_after) === "never" ? "-1" : fmtDur(a.delete_after) : "", placeholder: "Service default" });
+  const rr = h("input", { type: "number", min: 0, value: a.retain_runs || "", placeholder: `Service default, ${S.info?.retain_runs ?? 24}` });
+  p.append(h("section", { class: "section" }, h("h3", {}, "Details"),
+    h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Title")), title), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Description")), desc)),
+    h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Labels"), ", one key=value per line"), labels), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Quota key")), qk)),
+    h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Delete after inactive for"), ", -1 for never"), da), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Job-run versions to keep")), rr)),
+    h("div", { class: "row" }, h("button", { class: "btn primary", onclick: async () => {
+      try {
+        const req = { meta: { ...m, title: title.value.trim() || undefined, description: desc.value.trim() || undefined }, labels: kvLines(labels.value), quota_key: qk.value.trim() };
+        req.delete_after = da.value.trim() || "0s";
+        req.retain_runs = +rr.value || 0;
+        await guard(() => api("PATCH", `/artifacts/${enc(a.id)}`, req), "Saved");
+        await loadArtifact(); refreshList();
+      } catch (e) { if (!e.shown) toast(e.message, "err"); }
+    } }, "Save"))));
+
+  const qbox = h("section", { class: "section" }, h("h3", {}, `Limits for “${a.quota_key}”`), h("p", { class: "note" }, "Loading…"));
+  p.append(qbox,
+    h("section", { class: "section" }, h("h3", {}, "Delete"),
+      h("p", { class: "note" }, "Deletes every version, run and its runner sandbox. Blobs shared with other artifacts stay."),
+      h("div", {}, h("button", { class: "btn danger", onclick: async () => {
+        if (!confirm(`Delete ${titleOf(a)} and all ${S.versions.length} versions?`)) return;
+        try { await guard(() => api("DELETE", `/artifacts/${enc(a.id)}`), "Deleted"); closeArtifact(); refreshList(); } catch {}
+      } }, "Delete artifact"))));
+  quotaSection(qbox, a.quota_key);
+}
+async function quotaSection(box, key) {
+  let q;
+  try { q = await api("GET", `/quotas/${enc(key)}`, undefined, { quiet: true }); } catch (e) { box.lastChild.textContent = e.message; return; }
+  const e = q.effective;
+  const meter = (label, used, max, fmt = x => x) => h("div", { class: "meter" }, h("span", {}, label),
+    h("span", { class: "bar" }, h("i", { style: `width:${max > 0 ? Math.min(100, 100 * used / max) : 0}%` })),
+    h("span", {}, h("b", {}, fmt(used)), max > 0 ? ` of ${fmt(max)}` : max < 0 ? ", no limit" : ""));
+  const fld = (name, label, val, ph) => h("label", { class: "field" }, h("span", {}, label), h("input", { type: "text", name, value: val || "", placeholder: ph }));
+  const form = h("div", { class: "cols" },
+    fld("max_concurrent_runs", "Runs at once", q.quota.max_concurrent_runs, `Default, ${S.info?.default_quota?.max_concurrent_runs ?? ""}`),
+    fld("run_minutes_per_day", "Run minutes a day", q.quota.run_minutes_per_day, `Default, ${S.info?.default_quota?.run_minutes_per_day ?? ""}`),
+    fld("min_interval", "Shortest schedule interval", q.quota.min_interval && q.quota.min_interval !== "0s" ? fmtDur(q.quota.min_interval) : "", `Default, ${fmtDur(S.info?.default_quota?.min_interval) ?? ""}`),
+    fld("storage_bytes", "Storage, bytes", q.quota.storage_bytes, `Default, ${fmtBytes(S.info?.default_quota?.storage_bytes)}`));
+  box.replaceChildren(h("h3", {}, `Limits for “${key}”`),
+    h("p", { class: "note" }, "Shared by every artifact with this quota key. Empty fields use the service default; -1 turns a limit off."),
+    meter("Storage, deduplicated", q.storage_used, e.storage_bytes, fmtBytes),
+    meter("Runs going now", q.runs_active, e.max_concurrent_runs),
+    meter("Run minutes, last 24h", q.run_minutes_24h, e.run_minutes_per_day),
+    h("p", { class: "note" }, `Schedules fire at most every ${fmtDur(e.min_interval) || "minute"}; closer firings are skipped.`),
+    form,
+    h("div", {}, h("button", { class: "btn", onclick: async () => {
+      const body = {};
+      for (const inp of form.querySelectorAll("input")) {
+        const v = inp.value.trim(); if (!v) continue;
+        body[inp.name] = inp.name === "min_interval" ? v : +v;
+        if (inp.name !== "min_interval" && isNaN(body[inp.name])) { toast(`${inp.previousSibling.textContent} needs a number.`, "err"); return; }
+      }
+      try { await guard(() => api("PUT", `/quotas/${enc(key)}`, body), "Limits saved"); quotaSection(box, key); } catch {}
+    } }, "Save limits")));
+}
+
+// ---------- dialogs
+for (const d of document.querySelectorAll("dialog")) d.querySelectorAll("[data-close]").forEach(b => b.onclick = () => d.close("cancel"));
+const dlgNew = $("#dlg-new");
+$("#btn-new").onclick = () => {
+  const f = dlgNew.querySelector("form"); f.reset(); dlgNew.returnValue = "";
+  f.elements.quota_key.value = quotaKey();
+  dlgNew.showModal();
+};
+dlgNew.addEventListener("close", async () => {
+  if (dlgNew.returnValue !== "ok") return;
+  const f = dlgNew.querySelector("form").elements;
+  try {
+    const title = f.title.value.trim();
+    const req = { quota_key: f.quota_key.value.trim(), meta: { title } };
+    setQuotaKey(req.quota_key);
+    if (f.id.value.trim()) req.id = f.id.value.trim();
+    const labels = kvLines(f.labels.value); if (Object.keys(labels).length) req.labels = labels;
+    if (f.delete_after.value.trim()) req.delete_after = f.delete_after.value.trim();
+    if (+f.retain_runs.value) req.retain_runs = +f.retain_runs.value;
+    if (f.starter.checked) req.publish = { base_version: 0, label: "first version", files: [{ path: "index.html", content: starterPage(title) }] };
+    const r = await guard(() => api("POST", "/artifacts", req), `Created ${title}`);
+    await refreshList(); openArtifact(r.artifact.id, null, f.starter.checked ? "view" : "files");
+  } catch (e) { if (!e.shown) toast(e.message, "err"); }
+});
+const dlgFork = $("#dlg-fork");
+function forkDialog(n) {
+  const f = dlgFork.querySelector("form"); f.reset(); dlgFork.returnValue = ""; dlgFork.dataset.version = n;
+  $("#dlg-fork-title").textContent = `Fork v${n}`;
+  $("#fork-note").textContent = "The fork starts with this version's files. Blobs are shared, not copied. Jobs come along but their schedules stay off until the new owner publishes, and run state isn't copied.";
+  f.elements.quota_key.value = S.art.quota_key; f.elements.title.value = titleOf(S.art) + " (fork)";
+  dlgFork.showModal();
+}
+dlgFork.addEventListener("close", async () => {
+  if (dlgFork.returnValue !== "ok") return;
+  const f = dlgFork.querySelector("form").elements;
+  const req = { quota_key: f.quota_key.value.trim(), version: +dlgFork.dataset.version, meta: { title: f.title.value.trim() } };
+  if (f.id.value.trim()) req.id = f.id.value.trim();
+  try { const a = await guard(() => api("POST", `/artifacts/${enc(S.art.id)}/fork`, req), "Forked"); await refreshList(); openArtifact(a.id); } catch {}
+});
+
+// ---------- activity drawer
+const events = [];
+let drawerTab = "events";
+const drawer = $("#drawer");
+function drawerUpdate(kind) {
+  $("#ev-count").textContent = events.length ? `(${events.length})` : "";
+  $("#api-count").textContent = apiLog.length ? `(${apiLog.length})` : "";
+  if (!drawer.classList.contains("open") || (kind && kind !== drawerTab)) return;
+  const body = $("#drawer-body"); const stick = body.scrollTop + body.clientHeight >= body.scrollHeight - 8;
+  body.replaceChildren();
+  if (drawerTab === "events") {
+    if (!events.length) body.append(h("p", { class: "note" }, "Events from GET /v1/events appear here as they happen: new versions, runs starting and finishing, drops."));
+    for (const e of events) body.append(h("div", { class: "ev-row" }, h("span", { class: "t" }, e.clock), h("code", {}, e.type),
+      h("span", {}, h("button", { onclick: () => openArtifact(e.artifact, e.version || null) }, e.artifact), " ", describe(e))));
+  } else {
+    if (!apiLog.length) body.append(h("p", { class: "note" }, "Requests made by your actions appear here, with a curl command for each."));
+    for (const e of apiLog) body.append(h("div", { class: "log-row" }, h("span", { class: "t" }, e.at),
+      h("span", { class: e.status >= 400 || e.status === "failed" ? "err-text" : "t" }, e.status),
+      h("span", { class: "mono", title: e.path }, `${e.method} ${e.path}`),
+      h("button", { class: "btn small quiet", onclick: () => navigator.clipboard?.writeText(curlFor(e)).then(() => toast("Copied as curl", "ok")) }, "Copy as curl")));
+  }
+  if (stick) body.scrollTop = body.scrollHeight;
+}
+function describe(e) {
+  switch (e.type) {
+    case "artifact.version": return `v${e.version}, ${ORIGIN[e.origin]?.toLowerCase() || e.origin}${e.job ? " by " + e.job : ""}`;
+    case "run.started": return `${e.job} started`;
+    case "run.finished": return `${e.job} ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.reason ? ": " + e.reason : ""}${e.notify ? `, notify ${e.notify}` : ""}`;
+    case "run.dropped": return `${e.job || "a run"} dropped: ${e.reason}`;
+    default: return "";
+  }
+}
+drawer.querySelectorAll("[data-d]").forEach(b => b.onclick = () => { drawerTab = b.dataset.d; drawer.classList.add("open"); syncDrawer(); });
+$("#drawer-toggle").onclick = () => { drawer.classList.toggle("open"); syncDrawer(); };
+$("#drawer-clear").onclick = () => { (drawerTab === "events" ? events : apiLog).length = 0; drawerUpdate(); };
+function syncDrawer() {
+  const open = drawer.classList.contains("open");
+  $("#drawer-toggle").textContent = open ? "Hide activity" : "Show activity";
+  drawer.querySelectorAll("[data-d]").forEach(b => b.setAttribute("aria-selected", String(open && b.dataset.d === drawerTab)));
+  drawerUpdate();
+}
+
+// ---------- live events
+let es = null, evTimer = null;
+function connectEvents() {
+  if (es) es.close();
+  es = new EventSource("/v1/events");
+  es.onopen = () => { S.live = true; renderStatus(); };
+  es.onerror = () => { S.live = false; renderStatus(); };
+  for (const t of ["artifact.created", "artifact.deleted", "artifact.version", "run.started", "run.finished", "run.dropped"]) {
+    es.addEventListener(t, m => {
+      let e; try { e = JSON.parse(m.data); } catch { return; }
+      e.clock = clock(); events.push(e); if (events.length > 500) events.shift();
+      drawerUpdate("events");
+      if (t === "artifact.version") S.fresh.add(vkey(e.artifact, e.version));
+      if (t === "run.finished" && e.artifact === S.sel) toast(`${e.job} ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.reason ? ": " + e.reason : ""}`, e.status === "succeeded" ? "ok" : "err");
+      clearTimeout(evTimer);
+      evTimer = setTimeout(() => onChange(e), 250);
+    });
+  }
+}
+async function onChange(e) {
+  await refreshList();
+  if (S.view !== "artifact" || !S.sel || (e.artifact && e.artifact !== S.sel)) return;
+  const before = S.art?.current_version;
+  const typing = S.tab === "files" && ["TEXTAREA", "INPUT"].includes(document.activeElement?.tagName);
+  if (typing) {
+    // leave the editor alone; publishing on a stale base would conflict
+    const a = await api("GET", `/artifacts/${enc(S.sel)}`, undefined, { quiet: true }).catch(() => null);
+    if (a && a.current_version !== before && S.stage.size) toast(`v${a.current_version} arrived while you were editing. Your changes stay staged; publish after showing the current version.`);
+    return;
+  }
+  const keep = (S.tab === "view" && $("#frame")) || S.tab === "settings" ? $("#pane") : null;
+  await loadArtifact(keep);
+  if (keep && S.tab === "view" && S.art && S.art.current_version !== before) reloadFrame();
+}
+
+// ---------- login
+function showLogin() {
+  S.view = "login"; if (es) es.close();
+  $("#btn-logout").hidden = true; $("#status").replaceChildren(); $("#list").replaceChildren();
+  const input = h("input", { type: "password", autocomplete: "current-password", "aria-label": "API token", placeholder: "API token" });
+  const err = h("p", { class: "err-text", style: "margin:0;min-height:1.5em" });
+  $("#main").replaceChildren(h("form", { class: "login", onsubmit: async ev => {
+    ev.preventDefault(); err.textContent = "";
+    try { await api("POST", "/ui/login", { token: input.value }, { quiet: true }); start(); }
+    catch (e) { err.textContent = e.status === 401 ? "That token doesn't match FIRED_ARTIFACTS_TOKEN." : e.message; }
+  } }, h("h1", {}, "fired artifacts"), h("p", { class: "note" }, "Sign in with the service's API token, the value of FIRED_ARTIFACTS_TOKEN."), input, err,
+    h("button", { class: "btn primary" }, "Sign in")));
+  input.focus();
+}
+$("#btn-logout").onclick = async () => { await api("POST", "/ui/logout", undefined, { quiet: true }).catch(() => {}); showLogin(); };
+$("#home-link").onclick = () => { if (S.view !== "login") closeArtifact(); };
+
+async function start() {
+  S.view = "home"; $("#btn-logout").hidden = false;
+  try { S.info = await api("GET", "/ui/info", undefined, { quiet: true }); } catch {}
+  for (const el of document.querySelectorAll("[data-info]")) el.textContent = fmtDur(S.info?.[el.dataset.info]) || "";
+  connectEvents();
+  await refreshList();
+  let last = null; try { last = localStorage.getItem("fa.sel"); } catch {}
+  if (last && S.list.find(a => a.id === last)) openArtifact(last); else renderHome();
+}
+setInterval(() => { if (S.view === "home") refreshList(); else if (S.view === "artifact" && S.tab === "jobs") loadArtifact(); }, 30000);
+
+function starterPage(title) {
+  const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title>
+<style>body { font: 16px/1.6 system-ui, sans-serif; max-width: 60ch; margin: 48px auto; padding: 0 20px; }</style>
+</head>
+<body>
+<h1>${esc(title)}</h1>
+<p>Edit this page in the Files tab, then publish a new version.</p>
+</body>
+</html>
+`;
+}
+
+// ---------- examples
+KITS.push(
+  { slug: "page", title: "A web page", tab: "view",
+    about: "index.html with a stylesheet and a script, and no artifact.json, so the default html view applies. Relative paths work because files are served at the root of their own origin.",
+    files: {
+      "index.html": `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Field notes</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>Field notes</h1>
+  <p>This page, its stylesheet and its script are three files in one version. Change any of them in the Files tab and publish to make the next one.</p>
+  <button id="b">Count clicks</button> <output id="n">0</output>
+</main>
+<script src="app.js"><\/script>
+</body>
+</html>
+`,
+      "style.css": `body { font: 17px/1.6 Georgia, serif; background: #f3f6f1; color: #1c2a22; margin: 0; }
+main { max-width: 56ch; margin: 64px auto; padding: 0 20px; }
+h1 { font-size: 44px; line-height: 1; letter-spacing: -.02em; }
+button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #1c2a22; background: none; cursor: pointer; }
+`,
+      "app.js": `let n = 0;
+document.getElementById("b").onclick = () => { document.getElementById("n").textContent = ++n; };
+`,
+    } },
+  { slug: "notes", title: "A note with two views", tab: "view",
+    about: "A Markdown document and an SVG, listed as two views in artifact.json. Shows how a spec tells the viewer what to render.",
+    files: {
+      "artifact.json": JSON.stringify({ views: [{ type: "md", entry: "notes/README.md" }, { type: "svg", entry: "notes/diagram.svg" }] }, null, 2) + "\n",
+      "notes/README.md": `# Release checklist
+
+A note kept as an artifact. Each edit is a version, so you can compare and restore.
+
+- [x] Draft the changelog
+- [ ] Tag the release
+- [ ] Announce it
+
+![Diagram](diagram.svg)
+
+| Step | Owner |
+|---|---|
+| Changelog | Docs |
+| Tag | Release |
+`,
+      "notes/diagram.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 120" width="360" height="120" font-family="sans-serif" font-size="14">
+  <rect x="10" y="40" width="90" height="40" rx="6" fill="#2D49D2"/><text x="55" y="65" fill="#fff" text-anchor="middle">publish</text>
+  <rect x="135" y="40" width="90" height="40" rx="6" fill="#0F7C66"/><text x="180" y="65" fill="#fff" text-anchor="middle">job run</text>
+  <rect x="260" y="40" width="90" height="40" rx="6" fill="#A87A0C"/><text x="305" y="65" fill="#fff" text-anchor="middle">restore</text>
+  <path d="M100 60h35M225 60h35" stroke="#59645D" stroke-width="2"/>
+</svg>
+`,
+    } },
+  { slug: "clock", title: "A page a job keeps fresh", tab: "runs", run_now: ["tick"],
+    about: "A scheduled job (every 5 minutes) writes data/now.json, and keeps a run counter in its state directory. Each run that changes the data adds a job-run version; the page shows it.",
+    files: {
+      "artifact.json": JSON.stringify({ views: [{ type: "html", entry: "index.html" }, { type: "json", entry: "data/now.json" }],
+        jobs: { tick: { run: "sh tick.sh", writes: ["data"], state: ".state", schedule: "*/5 * * * *", timeout: "2m" } } }, null, 2) + "\n",
+      "tick.sh": { content: `#!/bin/sh
+set -e
+mkdir -p data .state
+n=$(cat .state/count 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > .state/count
+printf '{"runs": %s, "at": "%s", "from_version": %s, "trigger": "%s"}\\n' \\
+  "$n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ARTIFACT_VERSION" "$TRIGGER" > data/now.json
+echo "run $n of $ARTIFACT_JOB, wrote data/now.json"
+`, mode: 493 },
+      "data/now.json": `{"runs": 0, "at": null}\n`,
+      "index.html": `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clock</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #0f1d18; color: #e2ece6; }
+  .n { font-size: 120px; font-weight: 800; line-height: 1; letter-spacing: -.04em; color: #46c7a6; }
+</style>
+</head>
+<body>
+<div>
+  <div class="n" id="n">0</div>
+  <p id="t">The job hasn't run yet.</p>
+</div>
+<script>
+fetch("data/now.json").then(r => r.json()).then(d => {
+  document.getElementById("n").textContent = d.runs;
+  if (d.at) document.getElementById("t").textContent = "runs so far. Last at " + new Date(d.at).toLocaleTimeString() + ", from version " + d.from_version + ".";
+});
+<\/script>
+</body>
+</html>
+`,
+    } },
+  { slug: "table", title: "A table a job rebuilds", tab: "runs", run_now: ["build"],
+    about: "An hourly job regenerates data/sales.csv with awk. Shown as a csv view, with a markdown view beside it. The build folder is mirrored on every run.",
+    files: {
+      "artifact.json": JSON.stringify({ views: [{ type: "csv", entry: "data/sales.csv" }, { type: "md", entry: "README.md" }],
+        jobs: { build: { run: "sh build.sh", writes: ["data"], schedule: "@hourly" } } }, null, 2) + "\n",
+      "build.sh": `#!/bin/sh
+set -e
+mkdir -p data
+awk -v seed="$(date +%s)" 'BEGIN {
+  srand(seed); print "region,orders,revenue"
+  split("North South East West Central", r, " ")
+  for (i = 1; i <= 5; i++) { o = int(50 + rand() * 450); printf "%s,%d,%.2f\\n", r[i], o, o * (18 + rand() * 12) }
+}' > data/sales.csv
+echo "wrote $(wc -l < data/sales.csv) lines to data/sales.csv"
+`,
+      "data/sales.csv": "region,orders,revenue\n",
+      "README.md": "# Sales\n\n`build.sh` rebuilds `data/sales.csv` every hour. Run it now from the Jobs tab to see a new version appear.\n",
+    } },
+  { slug: "inbox", title: "An inbox that queues triggers", tab: "jobs",
+    about: "A job with no schedule and on_busy set to queue. Run it with a payload several times at once: every trigger waits its turn and appends to inbox.md.",
+    files: {
+      "artifact.json": JSON.stringify({ views: [{ type: "md", entry: "inbox.md" }],
+        jobs: { handle: { run: "sh handle.sh", writes: ["inbox.md"], on_busy: "queue", queue: { max: 20, max_age: "1h" } } } }, null, 2) + "\n",
+      "handle.sh": `#!/bin/sh
+set -e
+# Under the fake driver, guest paths live under the sandbox's root folder.
+f="$TRIGGER_FILE"; [ -f "$f" ] || f="$PWD/..$TRIGGER_FILE"
+payload=$(tr -d '\\n' < "$f")
+echo "- \\\`$(date -u +%H:%M:%S)\\\` $payload" >> inbox.md
+echo "handled $ARTIFACT_RUN_ID"
+sleep 2
+`,
+      "inbox.md": "# Inbox\n\nEach run appends its trigger here.\n\n",
+    } },
+  { slug: "react", title: "A React component", tab: "view",
+    about: "app/App.jsx imports a second component and a stylesheet by relative path. The console's viewer compiles them in the browser.",
+    files: {
+      "artifact.json": JSON.stringify({ views: [{ type: "react", entry: "app/App.jsx" }] }, null, 2) + "\n",
+      "app/App.jsx": `import { useState } from "react";
+import Tally from "./Tally.jsx";
+import "./app.css";
+
+export default function App() {
+  const [marks, setMarks] = useState(["edit", "run", "run"]);
+  return (
+    <main>
+      <h1>Tally</h1>
+      <p>Each button adds a mark. Edit this file and publish to change the component.</p>
+      <div className="buttons">
+        {["edit", "run", "restore", "fork"].map(k => (
+          <button key={k} onClick={() => setMarks([...marks, k])}>{k}</button>
+        ))}
+      </div>
+      <Tally marks={marks} />
+    </main>
+  );
+}
+`,
+      "app/Tally.jsx": `const COLORS = { edit: "#2D49D2", run: "#0F7C66", restore: "#A87A0C", fork: "#93379A" };
+const HEIGHT = { edit: 64, run: 26, restore: 44, fork: 64 };
+
+export default function Tally({ marks }) {
+  return (
+    <div className="tally">
+      {marks.map((m, i) => <span key={i} title={m} style={{ background: COLORS[m], height: HEIGHT[m] }} />)}
+    </div>
+  );
+}
+`,
+      "app/app.css": `main { max-width: 640px; margin: 48px auto; padding: 0 20px; font-family: system-ui, sans-serif; }
+.buttons { display: flex; gap: 8px; }
+.buttons button { padding: 6px 12px; border-radius: 6px; border: 1px solid #999; background: none; cursor: pointer; font: inherit; color: inherit; }
+.tally { display: flex; align-items: flex-end; gap: 4px; height: 72px; margin-top: 24px; }
+.tally span { width: 10px; border-radius: 2px 2px 0 0; }
+`,
+    } },
+  { slug: "approval", title: "A job that needs approval", tab: "jobs",
+    about: "Asks for a 2h timeout and a 30-day schedule, more than the defaults allow. It's blocked until you approve it, which is what your backend does with a grant.",
+    files: {
+      "artifact.json": JSON.stringify({ views: [{ type: "md", entry: "README.md" }],
+        jobs: { nightly: { run: "echo long job; sleep 3; echo done", schedule: "@daily", timeout: "2h", active_for: "720h" } } }, null, 2) + "\n",
+      "README.md": "# Nightly\n\nThis job wants to run for up to 2 hours, every day for 30 days. Open the Jobs tab and approve it.\n",
+    } },
+  { slug: "failing", title: "A job that fails", tab: "runs", run_now: ["check"],
+    about: "Prints to stdout and stderr, then exits with status 3. A failed run creates no version and keeps no state; its logs say why.",
+    files: {
+      "artifact.json": JSON.stringify({ views: [{ type: "text", entry: "check.sh" }],
+        jobs: { check: { run: "sh check.sh", writes: ["report.txt"] } } }, null, 2) + "\n",
+      "check.sh": `#!/bin/sh
+echo "checking the report inputs"
+echo "report.txt would be written here" > report.txt
+echo "error: the upstream file is missing" >&2
+exit 3
+`,
+    } },
+);
+
+(async () => {
+  try {
+    const s = await api("GET", "/ui/session", undefined, { quiet: true });
+    if (s.authenticated) start(); else showLogin();
+  } catch (e) { $("#main").replaceChildren(h("p", { class: "err-text", style: "padding:24px" }, e.message)); }
+})();
+</script>
+</body>
+</html>
