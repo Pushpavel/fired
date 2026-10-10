@@ -4,8 +4,12 @@ Working notes from trying fired-artifacts one use case at a time: what we
 did, what the system did, and what we might change. Not product docs; the
 design is in [docs/artifacts.md](../docs/artifacts.md).
 
-Setup: `make dev` (fired, fake driver) and `make dev-artifacts` (console at
-http://127.0.0.1:8444/ui/, token `dev`).
+Setup (from 2026-10-10, real VMs): `make dev-vm` runs fired from its image
+with Firecracker (KVM in WSL2), on 127.0.0.1:8443 with its console at /ui/;
+`make dev-artifacts` runs fired-artifacts (console at
+http://127.0.0.1:8444/ui/). Token `dev` for both. fired's `base` template is
+`python:3.12-slim-bookworm`. (01 was done on the fake driver, where jobs
+couldn't open `$TRIGGER_FILE`; that quirk doesn't exist with real VMs.)
 
 Each use case gets its own file, `NN-name.md`, written as we go:
 

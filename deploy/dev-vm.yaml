@@ -1,0 +1,21 @@
+# Local development with real Firecracker VMs (needs /dev/kvm): make dev-vm
+listen: "127.0.0.1:8443"
+driver: firecracker
+capacity:
+  max_running_memory_mb: 8192
+defaults:
+  template: base
+  vcpus: 2
+  memory_mb: 1024
+  disk_mb: 4096
+  ttl:
+    idle_suspend: 10m
+    archive_after: 2h
+    delete_after: 168h
+egress:
+  enabled: true
+# archive on shutdown: the hot tier is a container tmpfs, so restarting
+# fired keeps sandboxes only if they're archived first.
+shutdown_action: archive
+ui: true
+log_level: info

@@ -7,7 +7,7 @@ DB_PORT ?= 5434
 DB_URL  ?= postgres://fired:fired@127.0.0.1:$(DB_PORT)/fired?sslmode=disable
 PG_IMAGE ?= postgres:16-alpine
 
-.PHONY: build test race lint docker db clean-db dev dev-artifacts clean try
+.PHONY: build test race lint docker db clean-db dev dev-vm dev-artifacts clean try
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/fired ./cmd/fired
@@ -44,6 +44,20 @@ clean-db:
 dev: build db
 	FIRED_API_TOKEN=dev FIRED_DRIVER=fake FIRED_DATA_DIR=$(CURDIR)/.dev FIRED_DATABASE_URL="$(DB_URL)" \
 	  ./bin/fired serve -config deploy/dev.yaml
+
+# Run the daemon locally with real Firecracker VMs (needs /dev/kvm), from the
+# image, on the host network (127.0.0.1:8443, token "dev", console at /ui/).
+# Templates and archives persist in docker volumes; the hot tier is a
+# tmpfs, so sandboxes are archived when it stops. Detached: `docker logs -f
+# fired-dev`, `docker stop fired-dev`.
+dev-vm: docker db
+	docker rm -f fired-dev >/dev/null 2>&1 || true
+	docker run -d --name fired-dev --privileged --cgroupns=private --network host \
+	  --tmpfs /data/hot:exec,dev,mode=0755,size=8g \
+	  -v fired-dev-cold:/data/cold -v fired-dev-templates:/data/templates \
+	  -v $(CURDIR)/deploy/dev-vm.yaml:/etc/fired/config.yaml:ro \
+	  -e FIRED_API_TOKEN=dev -e FIRED_HOST_ID=dev-vm -e FIRED_ADVERTISE_URL=http://127.0.0.1:8443 -e FIRED_DATABASE_URL="$(DB_URL)" \
+	  --stop-timeout 120 fired:latest
 
 # Run the artifact service against `make dev` (run that first, in another
 # terminal), with its console on http://127.0.0.1:8444/ui/ (token "dev").
