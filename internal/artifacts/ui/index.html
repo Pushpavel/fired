@@ -346,7 +346,7 @@ details[open] summary { margin-bottom: var(--s3); }
       <label class="field"><span><strong>Quota key</strong>, usually a user</span><input type="text" name="quota_key" required></label>
       <label class="field"><span><strong>ID</strong>, optional</span><input type="text" name="id" placeholder="Generated if empty" pattern="[a-z0-9\-]{3,44}" title="3 to 44 characters: a–z, 0–9 and -"></label>
     </div>
-    <label class="check"><input type="checkbox" name="starter" checked> Start with an index.html page</label>
+    <p class="note">It starts as version 1 with an index.html page. Edit or replace it in the Files tab.</p>
     <details><summary>Labels and retention</summary>
       <div class="d-body" style="padding:0">
         <label class="field"><span>Labels, one key=value per line</span><textarea name="labels" rows="2" placeholder="team=growth"></textarea></label>
@@ -617,7 +617,7 @@ async function createKit(k, btn) {
   try {
     const files = Object.entries(k.files).map(([path, f]) => typeof f === "string" ? { path, content: f } : { path, ...f });
     const r = await guard(() => api("POST", "/artifacts", { quota_key: quotaKey(), meta: { title: k.title }, labels: { example: k.slug },
-      publish: { base_version: 0, files, label: "first version", run_now: k.run_now } }), `Created ${k.title}`);
+      publish: { files, label: "first version", run_now: k.run_now } }), `Created ${k.title}`);
     for (const j of r.publish?.jobs || []) if (j.needs_approval?.length) toast(`${j.name} needs approval: ${j.needs_approval.join("; ")}`);
     await refreshList(); openArtifact(r.artifact.id, null, k.tab);
   } catch {} finally { btn.disabled = false; }
@@ -1210,9 +1210,9 @@ dlgNew.addEventListener("close", async () => {
     const labels = kvLines(f.labels.value); if (Object.keys(labels).length) req.labels = labels;
     if (f.delete_after.value.trim()) req.delete_after = f.delete_after.value.trim();
     if (+f.retain_runs.value) req.retain_runs = +f.retain_runs.value;
-    if (f.starter.checked) req.publish = { base_version: 0, label: "first version", files: [{ path: "index.html", content: starterPage(title) }] };
+    req.publish = { label: "first version", files: [{ path: "index.html", content: starterPage(title) }] };
     const r = await guard(() => api("POST", "/artifacts", req), `Created ${title}`);
-    await refreshList(); openArtifact(r.artifact.id, null, f.starter.checked ? "view" : "files");
+    await refreshList(); openArtifact(r.artifact.id, null, "view");
   } catch (e) { if (!e.shown) toast(e.message, "err"); }
 });
 const dlgFork = $("#dlg-fork");

@@ -83,9 +83,17 @@ func (s *Service) emit(e pa.Event) {
 
 // ---- artifacts
 
+// Create makes an artifact together with its first version, in one
+// transaction: an invalid publish leaves nothing behind.
 func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa.CreateArtifactResult, error) {
 	if req.QuotaKey == "" {
 		return nil, badRequest("quota_key is required")
+	}
+	if req.Publish == nil {
+		return nil, badRequest("publish is required: an artifact is created with its first version")
+	}
+	if req.Publish.BaseVersion != 0 {
+		return nil, badRequest("publish.base_version must be 0 (or left out) when creating an artifact")
 	}
 	id := req.ID
 	if id == "" {
@@ -96,32 +104,34 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 	if len(req.Meta) > 0 && !json.Valid(req.Meta) {
 		return nil, badRequest("meta must be valid JSON")
 	}
+	prep, err := s.preparePublish(*req.Publish)
+	if err != nil {
+		return nil, err
+	}
 	now := s.now()
 	a := &pa.Artifact{ID: id, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta, DeleteAfter: req.DeleteAfter,
 		RetainRuns: req.RetainRuns, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
-	err := s.st.tx(ctx, func(q querier) error {
+	var v *pa.Version
+	err = s.st.tx(ctx, func(q querier) error {
 		if _, err := getArtifact(ctx, q, id); err == nil {
 			return errf(http.StatusConflict, "exists", "artifact %s already exists", id)
 		}
-		return putArtifact(ctx, q, a)
+		if err := putArtifact(ctx, q, a); err != nil {
+			return err
+		}
+		var err error
+		v, err = s.commitEdit(ctx, q, a, *req.Publish, prep, now)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.emit(pa.Event{Type: "artifact.created", Artifact: id})
-	out := &pa.CreateArtifactResult{Artifact: *a}
-	if req.Publish != nil {
-		res, err := s.Publish(ctx, id, *req.Publish)
-		if err != nil {
-			_ = s.Delete(ctx, id)
-			return nil, err
-		}
-		out.Publish = res
-		if na, err := s.Get(ctx, id); err == nil {
-			out.Artifact = *na
-		}
+	res, err := s.afterPublish(ctx, id, v, *req.Publish)
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	return &pa.CreateArtifactResult{Artifact: *a, Publish: *res}, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (*pa.Artifact, error) {
@@ -434,13 +444,21 @@ func treesEqual(a, b map[string]pa.File) bool {
 }
 
 // Publish creates a new version on top of req.BaseVersion.
-func (s *Service) Publish(ctx context.Context, id string, req pa.PublishRequest) (*pa.PublishResult, error) {
+// publishPrep is a publish request checked and resolved outside the
+// transaction (blob lookups, the spec file).
+type publishPrep struct {
+	ops         []resolvedOp
+	specHash    string
+	specSize    int64
+	replaceDirs []string
+}
+
+func (s *Service) preparePublish(req pa.PublishRequest) (*publishPrep, error) {
 	ops, err := s.resolveOps(req)
 	if err != nil {
 		return nil, err
 	}
-	var specHash string
-	var specSize int64
+	p := &publishPrep{ops: ops, replaceDirs: make([]string, 0, len(req.ReplaceDirs))}
 	if req.Spec != nil {
 		for _, op := range ops {
 			if op.path == pa.SpecFile {
@@ -448,98 +466,121 @@ func (s *Service) Publish(ctx context.Context, id string, req pa.PublishRequest)
 			}
 		}
 		data := EncodeSpec(*req.Spec)
-		if specHash, err = s.blobs.PutBytes(data); err != nil {
+		if p.specHash, err = s.blobs.PutBytes(data); err != nil {
 			return nil, err
 		}
-		specSize = int64(len(data))
+		p.specSize = int64(len(data))
 	}
-	replaceDirs := make([]string, 0, len(req.ReplaceDirs))
 	for i, d := range req.ReplaceDirs {
 		c, err := cleanPath(d)
 		if err != nil {
 			return nil, badRequest("replace_dirs[%d]: %v", i, err)
 		}
-		replaceDirs = append(replaceDirs, c)
+		p.replaceDirs = append(p.replaceDirs, c)
 	}
 	for _, j := range req.RunNow {
 		if !jobNameRE.MatchString(j) {
 			return nil, badRequest("run_now: %q is not a job name", j)
 		}
 	}
+	return p, nil
+}
+
+func (s *Service) Publish(ctx context.Context, id string, req pa.PublishRequest) (*pa.PublishResult, error) {
+	prep, err := s.preparePublish(req)
+	if err != nil {
+		return nil, err
+	}
 	now := s.now()
 	var v *pa.Version
-	var a *pa.Artifact
 	err = s.st.tx(ctx, func(q querier) error {
-		var err error
-		a, err = getArtifact(ctx, q, id)
+		a, err := getArtifact(ctx, q, id)
 		if err != nil {
 			return s.notFound(err, id)
 		}
 		if req.BaseVersion != a.CurrentVersion {
 			return errf(http.StatusConflict, "conflict", "base_version %d is not the current version (current is %d); read it, merge your changes and publish again", req.BaseVersion, a.CurrentVersion)
 		}
-		tree := map[string]pa.File{}
-		if !req.Replace && a.CurrentVersion > 0 {
-			if tree, err = getTree(ctx, q, id, a.CurrentVersion); err != nil {
-				return err
-			}
-		}
-		for _, d := range replaceDirs {
-			for p := range tree {
-				if under(p, d) {
-					delete(tree, p)
-				}
-			}
-		}
-		for _, op := range ops {
-			if op.delete {
-				delete(tree, op.path)
-				continue
-			}
-			tree[op.path] = op.file
-		}
-		if specHash != "" {
-			tree[pa.SpecFile] = pa.File{Path: pa.SpecFile, Hash: specHash, Size: specSize, Mode: 0o644}
-		}
-		if err := checkNoFileDirClash(tree); err != nil {
-			return err
-		}
-		spec, err := s.specFor(tree)
-		if err != nil {
-			return err
-		}
-		size, err := s.checkTree(ctx, q, a.QuotaKey, tree)
-		if err != nil {
-			return err
-		}
-		n, err := maxVersion(ctx, q, id)
-		if err != nil {
-			return err
-		}
-		for _, j := range req.RunNow {
-			if _, ok := spec.Jobs[j]; !ok {
-				return badRequest("run_now: job %q is not defined in this version", j)
-			}
-		}
-		v = &pa.Version{Artifact: id, Version: n + 1, Parent: a.CurrentVersion, Origin: pa.OriginEdit, Label: req.Label,
-			Labels: req.Labels, FileCount: len(tree), SizeBytes: size, Spec: spec, CreatedAt: now}
-		if err := insertVersion(ctx, q, v, tree); err != nil {
-			return err
-		}
-		if req.Notify != "" {
-			if err := setNotify(ctx, q, id, v.Version, req.Notify); err != nil {
-				return err
-			}
-		}
-		a.CurrentVersion, a.UpdatedAt, a.LastActiveAt = v.Version, now, now
-		if err := putArtifact(ctx, q, a); err != nil {
-			return err
-		}
-		return s.syncJobs(ctx, q, id, spec, now, true)
+		v, err = s.commitEdit(ctx, q, a, req, prep, now)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
+	return s.afterPublish(ctx, id, v, req)
+}
+
+// commitEdit applies a prepared publish on top of a's current version and
+// makes it current. A version always has at least one file.
+func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req pa.PublishRequest, p *publishPrep, now time.Time) (*pa.Version, error) {
+	id := a.ID
+	tree := map[string]pa.File{}
+	if !req.Replace && a.CurrentVersion > 0 {
+		var err error
+		if tree, err = getTree(ctx, q, id, a.CurrentVersion); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range p.replaceDirs {
+		for path := range tree {
+			if under(path, d) {
+				delete(tree, path)
+			}
+		}
+	}
+	for _, op := range p.ops {
+		if op.delete {
+			delete(tree, op.path)
+			continue
+		}
+		tree[op.path] = op.file
+	}
+	if p.specHash != "" {
+		tree[pa.SpecFile] = pa.File{Path: pa.SpecFile, Hash: p.specHash, Size: p.specSize, Mode: 0o644}
+	}
+	if len(tree) == 0 {
+		return nil, badRequest("a version needs at least one file")
+	}
+	if err := checkNoFileDirClash(tree); err != nil {
+		return nil, err
+	}
+	spec, err := s.specFor(tree)
+	if err != nil {
+		return nil, err
+	}
+	size, err := s.checkTree(ctx, q, a.QuotaKey, tree)
+	if err != nil {
+		return nil, err
+	}
+	n, err := maxVersion(ctx, q, id)
+	if err != nil {
+		return nil, err
+	}
+	for _, j := range req.RunNow {
+		if _, ok := spec.Jobs[j]; !ok {
+			return nil, badRequest("run_now: job %q is not defined in this version", j)
+		}
+	}
+	v := &pa.Version{Artifact: id, Version: n + 1, Parent: a.CurrentVersion, Origin: pa.OriginEdit, Label: req.Label,
+		Labels: req.Labels, FileCount: len(tree), SizeBytes: size, Spec: spec, CreatedAt: now}
+	if err := insertVersion(ctx, q, v, tree); err != nil {
+		return nil, err
+	}
+	if req.Notify != "" {
+		if err := setNotify(ctx, q, id, v.Version, req.Notify); err != nil {
+			return nil, err
+		}
+	}
+	a.CurrentVersion, a.UpdatedAt, a.LastActiveAt = v.Version, now, now
+	if err := putArtifact(ctx, q, a); err != nil {
+		return nil, err
+	}
+	return v, s.syncJobs(ctx, q, id, spec, now, true)
+}
+
+// afterPublish announces a committed version, starts run_now jobs and
+// reports every job's status.
+func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, req pa.PublishRequest) (*pa.PublishResult, error) {
 	s.emit(pa.Event{Type: "artifact.version", Artifact: id, Version: v.Version, Origin: v.Origin})
 	for _, j := range req.RunNow {
 		if _, err := s.Trigger(ctx, id, j, pa.TriggerRequest{}, pa.TriggerManual); err != nil {

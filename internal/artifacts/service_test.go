@@ -480,3 +480,50 @@ func TestGC(t *testing.T) {
 		t.Fatal("referenced blob removed")
 	}
 }
+
+func TestCreateNeedsFirstVersion(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	c := h.c
+	events, cancel := h.svc.bus.subscribe()
+	defer cancel()
+
+	_, err := c.Create(ctx, pa.CreateArtifactRequest{ID: "empty", QuotaKey: "u"})
+	wantCode(t, err, 400, "invalid_request")
+	_, err = c.Create(ctx, pa.CreateArtifactRequest{ID: "empty", QuotaKey: "u", Publish: &pa.PublishRequest{}})
+	wantCode(t, err, 400, "invalid_request")
+	_, err = c.Create(ctx, pa.CreateArtifactRequest{ID: "empty", QuotaKey: "u", Publish: &pa.PublishRequest{BaseVersion: 3, Files: []pa.FileOp{pa.Text("a", "x")}}})
+	wantCode(t, err, 400, "invalid_request")
+	// A publish that fails validation inside the transaction leaves nothing.
+	_, err = c.Create(ctx, pa.CreateArtifactRequest{ID: "empty", QuotaKey: "u", Publish: &pa.PublishRequest{RunNow: []string{"nope"}, Files: []pa.FileOp{pa.Text("a", "x")}}})
+	wantCode(t, err, 400, "invalid_request")
+	if list := must(c.List(ctx, "", nil))(t); len(list) != 0 {
+		t.Fatalf("failed creates left artifacts: %+v", list)
+	}
+	select {
+	case e := <-events:
+		t.Fatalf("failed creates emitted %+v", e)
+	default:
+	}
+
+	res := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "one", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", "x")}}}))(t)
+	if res.Artifact.CurrentVersion != 1 || res.Publish.Version.Version != 1 {
+		t.Fatalf("create: %+v", res)
+	}
+	for _, want := range []string{"artifact.created", "artifact.version"} {
+		if e := <-events; e.Type != want {
+			t.Fatalf("event %s, want %s", e.Type, want)
+		}
+	}
+	_, err = c.Create(ctx, pa.CreateArtifactRequest{ID: "one", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", "y")}}})
+	wantCode(t, err, 409, "exists")
+
+	// No version may be empty: deleting the last file is refused.
+	_, err = c.Publish(ctx, "one", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{{Path: "a", Delete: true}}})
+	wantCode(t, err, 400, "invalid_request")
+	_, err = c.Publish(ctx, "one", pa.PublishRequest{BaseVersion: 1, Replace: true})
+	wantCode(t, err, 400, "invalid_request")
+	if a := must(c.Get(ctx, "one"))(t); a.CurrentVersion != 1 {
+		t.Fatalf("refused publishes changed the artifact: %+v", a)
+	}
+}

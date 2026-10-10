@@ -36,7 +36,8 @@ durable storage. Runs happen on whichever fired host it points at.
 ## Concepts
 
 - **Artifact**: an ID, a quota key, opaque `labels` and `meta` (title,
-  description, anything your backend wants), and a current version.
+  description, anything your backend wants), and a current version. It is
+  created together with its first version, so it always has files.
 - **Version**: an immutable file tree. Versions are numbered 1, 2, 3… and
   never change. Each has an `origin`:
   - `edit`: a publish
@@ -101,12 +102,22 @@ a JSX entry, showing a CSV as a table) is the viewer's job.
 
 ## Publishing
 
-Large files go up as blobs first, then one publish creates the version:
+An artifact is created with its first version, and each later publish adds
+one. Both are one call:
+
+```
+POST /v1/artifacts                {"id": "weekly-report", "quota_key": "u1", "meta": {...},
+                                   "publish": {"files": [...], ...}}          → v1
+POST /v1/artifacts/{id}/versions  {"base_version": 7, "files": [...], ...}   → v8
+```
+
+`id` is optional (one is generated). Your backend can choose it; an ID
+that's taken fails with `409 exists`. Large files go up as blobs first, so
+the publish refers to them by hash:
 
 ```
 POST /v1/blobs/missing  {"hashes": ["<sha256>", ...]}   → {"missing": [...]}
 PUT  /v1/blobs/<sha256>  (raw bytes, only the missing ones)
-POST /v1/artifacts/{id}/versions  {"base_version": 7, "files": [...], ...}
 ```
 
 `GET /v1/sandboxes/{id}/files/manifest?path=…` on fired returns the SHA-256 of
@@ -131,9 +142,11 @@ file changed downloads and uploads one file.
 }
 ```
 
-- **`base_version` must be the current version** (0 for the first publish),
-  or the publish fails with `409 conflict`. Read the latest, merge, publish
-  again.
+- **`base_version` must be the current version,** or the publish fails with
+  `409 conflict`. Read the latest, merge, publish again. In a create, leave
+  it out.
+- **A version always has at least one file.** A create without files, or a
+  publish that deletes every file, fails with `400`.
 - **Files are a patch:** listed files are added or replaced, the rest are
   kept, `delete` removes one. Later entries win for the same path.
   `replace: true` starts from an empty tree instead.
@@ -326,7 +339,7 @@ All endpoints are under `/v1`. They need `X-Fired-Token: <token>` or
 | | |
 |---|---|
 | Blobs | `POST /blobs/missing`, `PUT /blobs/{sha256}` |
-| Artifacts | `POST /artifacts` (optionally with `publish`), `GET /artifacts?quota_key=&label=k=v`, `GET/PATCH/DELETE /artifacts/{id}` |
+| Artifacts | `POST /artifacts` (with `publish`, the first version), `GET /artifacts?quota_key=&label=k=v`, `GET/PATCH/DELETE /artifacts/{id}` |
 | Versions | `POST /artifacts/{id}/versions` (publish), `GET /artifacts/{id}/versions`, `GET /artifacts/{id}/versions/{n\|current}` (with files), `GET …/versions/{n}/export` |
 | History | `POST /artifacts/{id}/restore`, `POST /artifacts/{id}/fork` |
 | Files | `GET /artifacts/{id}/files/{path}?version=` |

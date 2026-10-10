@@ -86,7 +86,8 @@ type Artifact struct {
 	Labels   map[string]string `json:"labels,omitempty"`
 	// Meta is opaque JSON owned by the caller (title, description, …).
 	Meta json.RawMessage `json:"meta,omitempty"`
-	// CurrentVersion is 0 until the first publish.
+	// CurrentVersion is the version files are served from. An artifact
+	// is created with version 1, so it is never 0.
 	CurrentVersion int `json:"current_version"`
 	// DeleteAfter deletes the artifact after this long without reads,
 	// publishes or runs. 0 = service default, negative = never.
@@ -153,7 +154,7 @@ type FileOp struct {
 }
 
 // PublishRequest creates a new version on top of BaseVersion, which must be
-// the artifact's current version (0 for the first publish).
+// the artifact's current version. Every version has at least one file.
 type PublishRequest struct {
 	BaseVersion int `json:"base_version"`
 	// Replace starts from an empty tree instead of the base version's files.
@@ -188,13 +189,14 @@ type CreateArtifactRequest struct {
 	Meta        json.RawMessage   `json:"meta,omitempty"`
 	DeleteAfter Duration          `json:"delete_after,omitempty"`
 	RetainRuns  int               `json:"retain_runs,omitempty"`
-	// Publish, when set, publishes the first version in the same call.
-	Publish *PublishRequest `json:"publish,omitempty"`
+	// Publish is the first version, required: an artifact never exists
+	// without files. Its BaseVersion is 0 (or left out).
+	Publish *PublishRequest `json:"publish"`
 }
 
 type CreateArtifactResult struct {
-	Artifact Artifact       `json:"artifact"`
-	Publish  *PublishResult `json:"publish,omitempty"`
+	Artifact Artifact      `json:"artifact"`
+	Publish  PublishResult `json:"publish"`
 }
 
 type UpdateArtifactRequest struct {
