@@ -1,6 +1,11 @@
 # Design: several fired hosts, per-user limits, Kubernetes
 
-Status: agreed direction, nothing built yet (2026-10-10). Came out of use
+Status: built (2026-10-10). Operator docs: [docs/cluster.md](../docs/cluster.md),
+[.k8s/README.md](../.k8s/README.md). Changes from this note while building:
+fired dropped SQLite entirely (Postgres only, also for dev and tests);
+DaemonSets are one per node group (each group runs its pools);
+fired-artifacts keeps `limits.max_concurrent_runs` as the runs it drives
+at once. Came out of use
 case 01, when publishing from sandboxes raised the question of several fired
 hosts.
 

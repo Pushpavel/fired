@@ -17,10 +17,18 @@ Each use case gets its own file, `NN-name.md`, written as we go:
 ## Where we left off
 
 **Paused after 01 (2026-10-10)** to build the cluster work in
-[design-cluster.md](design-cluster.md): several fired hosts behind one API
-on a shared Postgres, per-user GB-hour limits by pool, a Helm chart and CD.
-When that's done, resume here with **02, editing over time**. The
-`hello-page` artifact from 01 is still in the dev service.
+[design-cluster.md](design-cluster.md). That's built (2026-10-10):
+
+- fired on Postgres, any host answering for the cluster
+  ([docs/cluster.md](../docs/cluster.md));
+- per-user GB-hour and memory limits by pool;
+- fired-artifacts charging runs to the user's `artifacts` pool;
+- the Helm chart, Skaffold and CD in [.k8s/](../.k8s/README.md).
+
+**Next: resume with 02, editing over time.** The `hello-page` artifact from
+01 is still in the dev service (fired-artifacts keeps its own SQLite; fired's
+dev state moved to Postgres, so 01's runner sandbox and template are gone:
+recreate the `base` template before job use cases).
 
 ## Use cases
 
@@ -45,7 +53,7 @@ When that's done, resume here with **02, editing over time**. The
 
 - [design-cluster.md](design-cluster.md): several fired hosts behind one
   API, a shared Postgres private to fired, per-user GB-hour limits by pool,
-  Kubernetes deployment and CD. Agreed, not built.
+  Kubernetes deployment and CD. Built.
 
 ## Archive
 

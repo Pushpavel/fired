@@ -101,3 +101,10 @@ schema changes follow expand/contract:
   unknown fields.
 
 `GET /v1/hosts` shows each host's `version` and `schema`.
+
+## On Kubernetes
+
+[.k8s/](../.k8s/README.md) has a Helm chart: fired as a DaemonSet on the KVM
+nodes (one pod per node, `host_id` = node name, advertised by pod IP), a
+Service over all of them as the single endpoint, Postgres, fired-artifacts
+and NetworkPolicies, plus Skaffold and the CD job.

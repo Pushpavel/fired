@@ -80,7 +80,9 @@ Firecracker v1.x API and is unit-tested at the protocol level, but it has
   database act as one service: any host answers any request (forwarding to
   the host a sandbox lives on), places new sandboxes by pool and free
   memory, and enforces per-user memory and GB-hour limits across all of
-  them. See [docs/cluster.md](docs/cluster.md).
+  them. See [docs/cluster.md](docs/cluster.md). A Helm chart, Skaffold
+  config and CD for Kubernetes (KVM nodes as a DaemonSet) are in
+  [.k8s/](.k8s/README.md).
   It has its own console (`make dev-artifacts`, then
   http://127.0.0.1:8444/ui/) with example artifacts to start from.
 

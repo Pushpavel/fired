@@ -388,10 +388,10 @@ type HostList struct {
 // pool's default from the config; a negative value means no limit.
 type Quota struct {
 	// MaxMemoryMB caps the memory of the key's running sandboxes at once.
-	MaxMemoryMB int `json:"max_memory_mb"`
+	MaxMemoryMB int `json:"max_memory_mb" yaml:"max_memory_mb"`
 	// GBHoursPerDay caps memory × running time per UTC day: 2 GB for 2 h
 	// is 4 GB-hours, 100 MB for 48 h is 4.7.
-	GBHoursPerDay float64 `json:"gb_hours_per_day"`
+	GBHoursPerDay float64 `json:"gb_hours_per_day" yaml:"gb_hours_per_day"`
 }
 
 // QuotaStatus is a key's limits and usage in one pool.

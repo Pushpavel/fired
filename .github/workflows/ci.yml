@@ -13,6 +13,22 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # fired keeps its state in Postgres; tests create a database each.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fired
+          POSTGRES_PASSWORD: fired
+          POSTGRES_DB: fired
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fired"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FIRED_TEST_DATABASE_URL: postgres://fired:fired@127.0.0.1:5432/fired?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -31,6 +47,7 @@ jobs:
   image:
     runs-on: ubuntu-latest
     needs: test
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -47,3 +64,66 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           build-args: VERSION=${{ github.ref_name }}
           tags: ghcr.io/pushpavel/fired:${{ github.ref_name }}
+
+  # Every merge to main is deployed to the cluster (one environment). The
+  # GitHub environment "cluster" provides:
+  #   vars.REGISTRY        image repository, e.g. registry.example.com/team
+  #   vars.NAMESPACE       Kubernetes namespace (default: fired)
+  #   secrets.REGISTRY_USERNAME, secrets.REGISTRY_PASSWORD
+  #   secrets.KUBECONFIG   base64 of a kubeconfig for the cluster
+  #   secrets.VALUES_YAML  .k8s/values.yaml (tokens, passwords, node groups)
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: cluster
+    # Never interrupt a rollout: DaemonSets roll one node at a time.
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      IMAGE: ${{ vars.REGISTRY }}/fired:${{ github.sha }}
+      CACHE: ${{ vars.REGISTRY }}/fired:buildcache
+      NAMESPACE: ${{ vars.NAMESPACE || 'fired' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: registry host
+        id: reg
+        run: echo "host=${REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ vars.REGISTRY }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.reg.outputs.host }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      # The image compiles the guest kernel (10–20 min cold); the registry
+      # cache keeps every stage between runs.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: VERSION=${{ github.sha }}
+          tags: ${{ env.IMAGE }}
+          cache-from: type=registry,ref=${{ env.CACHE }}
+          cache-to: type=registry,ref=${{ env.CACHE }},mode=max
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - name: install skaffold
+        run: |
+          curl -fsSLo skaffold https://storage.googleapis.com/skaffold/releases/v2.13.2/skaffold-linux-amd64
+          sudo install -m 0755 skaffold /usr/local/bin/skaffold
+      - name: cluster access and values
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+          VALUES_YAML: ${{ secrets.VALUES_YAML }}
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          printf '%s\n' "$VALUES_YAML" > .k8s/values.yaml
+      - name: deploy
+        working-directory: .k8s
+        run: skaffold deploy -f skaffold.yaml --images "fired=$IMAGE"

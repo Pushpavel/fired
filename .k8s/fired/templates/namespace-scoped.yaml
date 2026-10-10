@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fired
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  token: {{ required "token is required" .Values.token | quote }}
+  database-url: {{ include "fired.dbURL" . | quote }}
+  {{- if .Values.postgres.enabled }}
+  postgres-password: {{ .Values.postgres.password | quote }}
+  {{- end }}
+  {{- if .Values.artifacts.enabled }}
+  artifacts-token: {{ required "artifacts.token is required" .Values.artifacts.token | quote }}
+  broker-token: {{ .Values.artifacts.broker.token | default "" | quote }}
+  {{- end }}
+---
+# Keeps fired hosts out of kubelet's memory-pressure eviction order: the
+# pod holds every VM's memory, and evicting it stops them all.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Release.Namespace }}-fired-host
+  labels: {{- include "fired.labels" . | nindent 4 }}
+value: 1000000
+globalDefault: false
+description: fired sandbox hosts (each pod holds the memory of its node's VMs)

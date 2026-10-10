@@ -1,0 +1,37 @@
+# Builds the fired image and deploys the chart in fired/.
+#
+#   skaffold run --default-repo "$REGISTRY"        (deploy.sh does this)
+#
+# The image is pushed to $REGISTRY/fired. The release goes to the namespace
+# in $NAMESPACE (default "fired"), with values.yaml (your settings, over the
+# chart's defaults in fired/values.yaml).
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: fired
+build:
+  local:
+    useBuildkit: true
+    push: true
+  tagPolicy:
+    gitCommit: {}
+  artifacts:
+    - image: fired
+      context: ..
+      docker:
+        dockerfile: Dockerfile
+manifests:
+  helm:
+    releases:
+      - name: fired
+        chartPath: fired
+        namespace: '{{ default "fired" .NAMESPACE }}'
+        createNamespace: true
+        valuesFiles:
+          - values.yaml
+        setValueTemplates:
+          image: "{{.IMAGE_FULLY_QUALIFIED_fired}}"
+deploy:
+  helm: {}
+  # DaemonSet rollouts go one node at a time and wait for each VM snapshot.
+  statusCheckDeadlineSeconds: 1800

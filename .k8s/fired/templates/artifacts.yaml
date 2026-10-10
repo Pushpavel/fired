@@ -1,0 +1,103 @@
+{{- if .Values.artifacts.enabled }}
+# fired-artifacts: one replica on a volume (its store is SQLite), calling
+# fired through the cluster Service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fired-artifacts
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+data:
+  artifacts.yaml: |
+    {{- toYaml (.Values.artifacts.config | default dict) | nindent 4 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fired-artifacts-data
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.artifacts.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.artifacts.storage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fired-artifacts
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fired-artifacts
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fired-artifacts
+      annotations:
+        checksum/config: {{ toYaml (.Values.artifacts.config | default dict) | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: fired-artifacts
+          image: {{ .Values.image }}
+          command: ["fired-artifacts"]
+          args: ["serve", "-config", "/etc/fired-artifacts/artifacts.yaml"]
+          env:
+            - {name: FIRED_ARTIFACTS_DATA_DIR, value: /data/artifacts}
+            - {name: FIRED_ARTIFACTS_UI, value: {{ ternary "1" "0" .Values.artifacts.ui | quote }}}
+            - {name: FIRED_URL, value: "http://fired.{{ .Release.Namespace }}.svc:8443"}
+            - name: FIRED_API_TOKEN
+              valueFrom: {secretKeyRef: {name: fired, key: token}}
+            - name: FIRED_ARTIFACTS_TOKEN
+              valueFrom: {secretKeyRef: {name: fired, key: artifacts-token}}
+            {{- with .Values.artifacts.broker.url }}
+            - {name: FIRED_ARTIFACTS_BROKER_URL, value: {{ . | quote }}}
+            - name: FIRED_ARTIFACTS_BROKER_TOKEN
+              valueFrom: {secretKeyRef: {name: fired, key: broker-token}}
+            {{- end }}
+          ports:
+            - name: api
+              containerPort: 8444
+          readinessProbe:
+            httpGet: {path: /healthz, port: api}
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/fired-artifacts
+              readOnly: true
+            - name: data
+              mountPath: /data/artifacts
+      volumes:
+        - name: config
+          configMap:
+            name: fired-artifacts
+        - name: data
+          persistentVolumeClaim:
+            claimName: fired-artifacts-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fired-artifacts
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: fired-artifacts
+  ports:
+    - name: api
+      port: 8444
+      targetPort: api
+{{- end }}

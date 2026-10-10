@@ -1,0 +1,96 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $allow := .Values.networkPolicy.allowFromNamespaces | default list }}
+# fired hosts run untrusted code (in VMs) in this cluster. fired already
+# blocks sandbox egress to private ranges; this is the second layer: the
+# pods may reach their database, each other, DNS and the internet, and only
+# this namespace (plus the allowed ones) may reach them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fired-host
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: fired
+      app.kubernetes.io/component: host
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+        {{- range $allow }}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ . }}}
+        {{- end }}
+      ports:
+        - {port: 8443, protocol: TCP}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: fired
+              app.kubernetes.io/component: host
+      ports:
+        - {port: 8443, protocol: TCP}
+    {{- if .Values.postgres.enabled }}
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: fired-db}
+      ports:
+        - {port: 5432, protocol: TCP}
+    {{- end }}
+    - ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+        {{- range .Values.networkPolicy.extraEgressCIDRs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+{{- if .Values.postgres.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fired-db
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: fired-db}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: fired
+              app.kubernetes.io/component: host
+      ports:
+        - {port: 5432, protocol: TCP}
+{{- end }}
+{{- if .Values.artifacts.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fired-artifacts
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: fired-artifacts}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+        {{- range $allow }}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ . }}}
+        {{- end }}
+      ports:
+        - {port: 8444, protocol: TCP}
+{{- end }}
+{{- end }}

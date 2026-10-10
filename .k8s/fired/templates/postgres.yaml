@@ -1,0 +1,66 @@
+{{- if .Values.postgres.enabled }}
+# fired's database: sandboxes, templates, hosts, quotas. Only fired reads it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: fired-db
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: fired-db
+  ports:
+    - name: postgres
+      port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: fired-db
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+spec:
+  serviceName: fired-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fired-db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fired-db
+    spec:
+      {{- with .Values.postgres.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          env:
+            - {name: POSTGRES_USER, value: fired}
+            - {name: POSTGRES_DB, value: fired}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: fired, key: postgres-password}}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "fired", "-d", "fired"]}
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.postgres.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage }}
+{{- end }}

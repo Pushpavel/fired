@@ -1,0 +1,90 @@
+# The chart's defaults. Put your settings in .k8s/values.yaml (gitignored;
+# only what differs from here: tokens, passwords, node groups, sizes). CD
+# writes that file from the VALUES_YAML secret. The image is set by skaffold.
+
+image: fired
+imagePullSecrets: []        # e.g. [{name: registry-creds}]
+
+# API token shared by every fired host, fired-artifacts and your backend.
+token: ""                   # required: openssl rand -hex 32
+
+fired:
+  # One DaemonSet per group: each runs on the nodes matching its
+  # nodeSelector and serves its pools. Nodes are dedicated KVM workstations:
+  # label them (e.g. fired-pool=chat) and taint them fired=true:NoSchedule.
+  groups:
+    - name: main
+      nodeSelector: {fired: "true"}
+      pools: ["*"]          # e.g. ["chat"] or ["artifacts"]
+      config: {}            # overrides of `config` below for this group (e.g. capacity)
+  tolerations:
+    - {key: fired, operator: Exists, effect: NoSchedule}
+  # Node directories. The hot tier is a tmpfs the pod mounts on the node if
+  # it isn't mounted yet; it survives pod restarts and upgrades (suspended
+  # sandboxes stay hot) but not node reboots.
+  hostPaths:
+    root: /srv/fired        # hot tier at <root>/hot
+    hotTmpfsSize: 48g
+    cold: /var/lib/fired/cold
+    templates: /var/lib/fired/templates
+  # Long enough to snapshot every running sandbox of a node on SIGTERM.
+  terminationGracePeriodSeconds: 300
+  resources: {}             # no memory limit: VM memory is charged to this pod
+  # fired's config.yaml (see deploy/config.yaml). database_url, host_id,
+  # advertise_url and pools are set by the chart.
+  config:
+    capacity:
+      max_running_memory_mb: 32768
+      evict_idle: true
+    defaults:
+      template: base
+      vcpus: 2
+      memory_mb: 2048
+      disk_mb: 10240
+    egress:
+      enabled: true
+      allow_private_cidrs: []
+    quotas: {}
+    #   chat:      {max_memory_mb: 4096, gb_hours_per_day: 48}
+    #   artifacts: {max_memory_mb: 2048, gb_hours_per_day: 24}
+    cluster:
+      default_pool: default
+    ui: false
+    preview_domain: ""
+    shutdown_action: suspend
+    log_level: info
+
+postgres:
+  # true: run Postgres here (a StatefulSet). false: use externalURL.
+  enabled: true
+  image: postgres:16-alpine
+  password: ""              # required when enabled
+  storage: 20Gi
+  storageClass: ""
+  # nodeSelector: {}
+  externalURL: ""           # postgres://user:pass@host:5432/fired?sslmode=require
+
+artifacts:
+  enabled: true
+  token: ""                 # API token for fired-artifacts (callers use it)
+  storage: 50Gi
+  storageClass: ""
+  ui: false
+  broker:
+    url: ""                 # your backend's credentials endpoint
+    token: ""
+  # fired-artifacts' artifacts.yaml (see deploy/artifacts.yaml); fired.url,
+  # tokens and data_dir are set by the chart.
+  config:
+    runner:
+      template: base
+      pool: artifacts
+
+networkPolicy:
+  enabled: true
+  # Namespaces whose pods may call fired and fired-artifacts (your backend,
+  # the ingress controller for previews). Pods in this namespace always can.
+  allowFromNamespaces: []
+  # Where sandboxes' egress (and template image pulls) may go besides the
+  # internet. Private ranges are blocked unless listed, e.g. a LAN registry.
+  extraEgressCIDRs: []

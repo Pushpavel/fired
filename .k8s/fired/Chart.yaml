@@ -1,0 +1,5 @@
+apiVersion: v2
+name: fired
+description: fired sandbox hosts (one per KVM node), their Postgres, and fired-artifacts
+type: application
+version: 0.1.0

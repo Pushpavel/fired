@@ -22,6 +22,8 @@ defaults:
 egress:
   enabled: true
   global_allow: ["registry.npmjs.org"]
+quotas:
+  chat: {max_memory_mb: 4096, gb_hours_per_day: 48}
 `), 0o644)
 	t.Setenv("FIRED_API_TOKEN", "tok")
 	if _, err := Load(p); err == nil {
@@ -42,6 +44,9 @@ egress:
 	}
 	if c.DatabaseURL != "postgres://db/fired" || c.Cluster.HostID != "node-a" || c.Cluster.AdvertiseURL != "http://node-a:9000" {
 		t.Fatalf("cluster %+v", c.Cluster)
+	}
+	if q := c.Quotas["chat"]; q.MaxMemoryMB != 4096 || q.GBHoursPerDay != 48 {
+		t.Fatalf("quotas %+v", c.Quotas)
 	}
 	if !c.Cluster.ServesPool("chat") || !c.Cluster.ServesPool("artifacts") || c.Cluster.ServesPool("default") {
 		t.Fatalf("pools %v", c.Cluster.Pools)

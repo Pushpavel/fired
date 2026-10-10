@@ -1,0 +1,151 @@
+{{- /*
+fired runs as one DaemonSet per group: one pod per KVM node, bound to that
+node's disks. Hosts share the Postgres database and answer for each other;
+the Service in front of all of them is the single API endpoint.
+*/ -}}
+{{- range .Values.fired.groups }}
+{{- $group := . }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fired-{{ $group.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "fired.labels" $ | nindent 4 }}
+data:
+  config.yaml: |
+    {{- include "fired.config" (dict "root" $ "group" $group) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fired-{{ $group.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels: {{- include "fired.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: fired
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fired
+      app.kubernetes.io/component: host
+      fired/group: {{ $group.name }}
+  # One node at a time: on SIGTERM fired snapshots its running sandboxes to
+  # the node's hot tier, and the new pod resumes them on demand.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fired
+        app.kubernetes.io/component: host
+        fired/group: {{ $group.name }}
+      annotations:
+        checksum/config: {{ include "fired.config" (dict "root" $ "group" $group) | sha256sum }}
+    spec:
+      priorityClassName: {{ $.Release.Namespace }}-fired-host
+      terminationGracePeriodSeconds: {{ $.Values.fired.terminationGracePeriodSeconds }}
+      nodeSelector: {{- toYaml $group.nodeSelector | nindent 8 }}
+      {{- with $.Values.fired.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # The hot tier is a tmpfs on the node (allowing exec and devices, for
+        # the jailer). Mounted here once, it outlives pod restarts.
+        - name: hot-tier
+          image: {{ $.Values.image }}
+          command:
+            - sh
+            - -ec
+            - |
+              mkdir -p /host/hot
+              if ! mountpoint -q /host/hot; then
+                mount -t tmpfs -o size={{ $.Values.fired.hostPaths.hotTmpfsSize }},mode=0755 tmpfs /host/hot
+              fi
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: root
+              mountPath: /host
+              mountPropagation: Bidirectional
+      containers:
+        - name: fired
+          image: {{ $.Values.image }}
+          args: ["serve", "-config", "/etc/fired/config.yaml"]
+          # Firecracker and the jailer need /dev/kvm, mounts, chroot and
+          # cgroups. Untrusted code runs inside the VMs, not in this container.
+          securityContext:
+            privileged: true
+          env:
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: POD_IP
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - name: FIRED_HOST_ID
+              value: $(NODE_NAME)
+            - name: FIRED_ADVERTISE_URL
+              value: http://$(POD_IP):8443
+            - name: FIRED_POOLS
+              value: {{ join "," $group.pools | quote }}
+            - name: FIRED_API_TOKEN
+              valueFrom: {secretKeyRef: {name: fired, key: token}}
+            - name: FIRED_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: fired, key: database-url}}
+          ports:
+            - name: api
+              containerPort: 8443
+          readinessProbe:
+            httpGet: {path: /healthz, port: api}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: api}
+            periodSeconds: 20
+            failureThreshold: 6
+          {{- with $.Values.fired.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/fired
+              readOnly: true
+            - name: hot
+              mountPath: /data/hot
+              mountPropagation: HostToContainer
+            - name: cold
+              mountPath: /data/cold
+            - name: templates
+              mountPath: /data/templates
+      volumes:
+        - name: config
+          configMap:
+            name: fired-{{ $group.name }}
+        - name: root
+          hostPath: {path: {{ $.Values.fired.hostPaths.root }}, type: DirectoryOrCreate}
+        - name: hot
+          hostPath: {path: {{ $.Values.fired.hostPaths.root }}/hot, type: DirectoryOrCreate}
+        - name: cold
+          hostPath: {path: {{ $.Values.fired.hostPaths.cold }}, type: DirectoryOrCreate}
+        - name: templates
+          hostPath: {path: {{ $.Values.fired.hostPaths.templates }}, type: DirectoryOrCreate}
+{{- end }}
+---
+# Every host answers for the whole cluster, so the API is one Service over
+# all of them.
+apiVersion: v1
+kind: Service
+metadata:
+  name: fired
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "fired.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: fired
+    app.kubernetes.io/component: host
+  ports:
+    - name: api
+      port: 8443
+      targetPort: api
