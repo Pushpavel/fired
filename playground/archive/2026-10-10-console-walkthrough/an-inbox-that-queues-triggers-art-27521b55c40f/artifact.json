@@ -1,0 +1,16 @@
+{
+  "id": "art-27521b55c40f",
+  "quota_key": "dev",
+  "labels": {
+    "example": "inbox"
+  },
+  "meta": {
+    "title": "An inbox that queues triggers"
+  },
+  "current_version": 1,
+  "delete_after": "0s",
+  "retain_runs": 0,
+  "created_at": "2026-10-10T12:16:24.858Z",
+  "updated_at": "2026-10-10T12:16:24.888Z",
+  "last_active_at": "2026-10-10T13:07:04.204Z"
+}

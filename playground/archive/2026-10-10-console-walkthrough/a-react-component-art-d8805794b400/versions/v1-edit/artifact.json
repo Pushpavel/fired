@@ -1,0 +1,8 @@
+{
+  "views": [
+    {
+      "type": "react",
+      "entry": "app/App.jsx"
+    }
+  ]
+}

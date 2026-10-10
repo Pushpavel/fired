@@ -1,0 +1,17 @@
+{
+  "id": "art-96a10b883457",
+  "quota_key": "alice",
+  "meta": {
+    "title": "A web page (fork)"
+  },
+  "current_version": 1,
+  "delete_after": "0s",
+  "retain_runs": 0,
+  "forked_from": {
+    "artifact": "art-a3a90c890371",
+    "version": 2
+  },
+  "created_at": "2026-10-10T12:21:42.735Z",
+  "updated_at": "2026-10-10T12:21:42.735Z",
+  "last_active_at": "2026-10-10T12:21:42.894Z"
+}

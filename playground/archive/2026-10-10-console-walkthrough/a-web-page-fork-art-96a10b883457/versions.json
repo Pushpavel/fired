@@ -1,0 +1,19 @@
+[
+  {
+    "artifact": "art-96a10b883457",
+    "version": 1,
+    "origin": "fork",
+    "label": "fork of art-a3a90c890371 v2",
+    "file_count": 3,
+    "size_bytes": 954,
+    "spec": {
+      "views": [
+        {
+          "type": "html",
+          "entry": "index.html"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:21:42.735Z"
+  }
+]

@@ -1,0 +1,5 @@
+main { max-width: 640px; margin: 48px auto; padding: 0 20px; font-family: system-ui, sans-serif; }
+.buttons { display: flex; gap: 8px; }
+.buttons button { padding: 6px 12px; border-radius: 6px; border: 1px solid #999; background: none; cursor: pointer; font: inherit; color: inherit; }
+.tally { display: flex; align-items: flex-end; gap: 4px; height: 72px; margin-top: 24px; }
+.tally span { width: 10px; border-radius: 2px 2px 0 0; }

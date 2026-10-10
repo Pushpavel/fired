@@ -1,0 +1,27 @@
+[
+  {
+    "artifact": "art-271bf0893b97",
+    "version": 1,
+    "origin": "edit",
+    "label": "first version",
+    "file_count": 2,
+    "size_bytes": 357,
+    "spec": {
+      "views": [
+        {
+          "type": "md",
+          "entry": "README.md"
+        }
+      ],
+      "jobs": {
+        "nightly": {
+          "run": "echo long job; sleep 3; echo done",
+          "schedule": "@daily",
+          "timeout": "2h0m0s",
+          "active_for": "720h0m0s"
+        }
+      }
+    },
+    "created_at": "2026-10-10T12:16:39.865Z"
+  }
+]

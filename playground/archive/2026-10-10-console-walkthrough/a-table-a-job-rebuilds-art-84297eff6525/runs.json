@@ -1,0 +1,30 @@
+[
+  {
+    "id": "run-5414c193f2f6",
+    "artifact": "art-84297eff6525",
+    "job": "build",
+    "status": "succeeded",
+    "trigger": "schedule",
+    "version": 2,
+    "result_version": 3,
+    "exit_code": 0,
+    "created_at": "2026-10-10T13:02:34.232Z",
+    "started_at": "2026-10-10T13:02:34.236Z",
+    "finished_at": "2026-10-10T13:02:34.335Z",
+    "duration_ms": 99
+  },
+  {
+    "id": "run-64cf0d1931d1",
+    "artifact": "art-84297eff6525",
+    "job": "build",
+    "status": "succeeded",
+    "trigger": "manual",
+    "version": 1,
+    "result_version": 2,
+    "exit_code": 0,
+    "created_at": "2026-10-10T12:16:17.147Z",
+    "started_at": "2026-10-10T12:16:17.15Z",
+    "finished_at": "2026-10-10T12:16:17.384Z",
+    "duration_ms": 233
+  }
+]

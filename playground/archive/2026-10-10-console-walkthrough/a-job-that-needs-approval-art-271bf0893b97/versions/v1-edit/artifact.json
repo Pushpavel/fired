@@ -1,0 +1,16 @@
+{
+  "views": [
+    {
+      "type": "md",
+      "entry": "README.md"
+    }
+  ],
+  "jobs": {
+    "nightly": {
+      "run": "echo long job; sleep 3; echo done",
+      "schedule": "@daily",
+      "timeout": "2h",
+      "active_for": "720h"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+[
+  {
+    "artifact": "art-d8805794b400",
+    "version": 1,
+    "origin": "edit",
+    "label": "first version",
+    "file_count": 4,
+    "size_bytes": 1434,
+    "spec": {
+      "views": [
+        {
+          "type": "react",
+          "entry": "app/App.jsx"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:16:32.438Z"
+  }
+]

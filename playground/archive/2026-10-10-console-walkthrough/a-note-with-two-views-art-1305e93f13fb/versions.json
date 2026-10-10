@@ -1,0 +1,23 @@
+[
+  {
+    "artifact": "art-1305e93f13fb",
+    "version": 1,
+    "origin": "edit",
+    "label": "first version",
+    "file_count": 3,
+    "size_bytes": 1035,
+    "spec": {
+      "views": [
+        {
+          "type": "md",
+          "entry": "notes/README.md"
+        },
+        {
+          "type": "svg",
+          "entry": "notes/diagram.svg"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:16:01.495Z"
+  }
+]

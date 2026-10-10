@@ -1,0 +1,21 @@
+{
+  "views": [
+    {
+      "type": "csv",
+      "entry": "data/sales.csv"
+    },
+    {
+      "type": "md",
+      "entry": "README.md"
+    }
+  ],
+  "jobs": {
+    "build": {
+      "run": "sh build.sh",
+      "writes": [
+        "data"
+      ],
+      "schedule": "@hourly"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "art-777fd23a812d",
+  "quota_key": "dev",
+  "labels": {
+    "example": "failing"
+  },
+  "meta": {
+    "title": "A job that fails"
+  },
+  "current_version": 1,
+  "delete_after": "0s",
+  "retain_runs": 0,
+  "created_at": "2026-10-10T12:16:47.273Z",
+  "updated_at": "2026-10-10T12:16:47.278Z",
+  "last_active_at": "2026-10-10T12:16:51.138Z"
+}

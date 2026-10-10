@@ -1,0 +1,16 @@
+{
+  "id": "art-7a5ffb1dc3a5",
+  "quota_key": "dev",
+  "labels": {
+    "example": "clock"
+  },
+  "meta": {
+    "title": "A page a job keeps fresh"
+  },
+  "current_version": 8,
+  "delete_after": "0s",
+  "retain_runs": 0,
+  "created_at": "2026-10-10T12:16:09.279Z",
+  "updated_at": "2026-10-10T13:10:02.393Z",
+  "last_active_at": "2026-10-10T13:10:02.393Z"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "art-d8805794b400",
+  "quota_key": "dev",
+  "labels": {
+    "example": "react"
+  },
+  "meta": {
+    "title": "A React component"
+  },
+  "current_version": 1,
+  "delete_after": "0s",
+  "retain_runs": 0,
+  "created_at": "2026-10-10T12:16:32.423Z",
+  "updated_at": "2026-10-10T12:16:32.438Z",
+  "last_active_at": "2026-10-10T13:06:46.252Z"
+}

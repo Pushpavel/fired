@@ -1,0 +1,16 @@
+{
+  "views": [
+    {
+      "type": "text",
+      "entry": "check.sh"
+    }
+  ],
+  "jobs": {
+    "check": {
+      "run": "sh check.sh",
+      "writes": [
+        "report.txt"
+      ]
+    }
+  }
+}

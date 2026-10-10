@@ -1,0 +1,76 @@
+[
+  {
+    "artifact": "art-a49e9503897f",
+    "version": 1,
+    "origin": "fork",
+    "label": "fork of art-a2c7532876ad v2",
+    "file_count": 3,
+    "size_bytes": 934,
+    "spec": {
+      "views": [
+        {
+          "type": "html",
+          "entry": "index.html"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:18:14.027Z"
+  },
+  {
+    "artifact": "art-a49e9503897f",
+    "version": 2,
+    "parent": 1,
+    "origin": "edit",
+    "label": "dark theme",
+    "file_count": 3,
+    "size_bytes": 954,
+    "spec": {
+      "views": [
+        {
+          "type": "html",
+          "entry": "index.html"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:20:26.001Z"
+  },
+  {
+    "artifact": "art-a49e9503897f",
+    "version": 3,
+    "parent": 2,
+    "origin": "restore",
+    "label": "restore v1",
+    "labels": {
+      "restored_from": "1"
+    },
+    "file_count": 3,
+    "size_bytes": 934,
+    "spec": {
+      "views": [
+        {
+          "type": "html",
+          "entry": "index.html"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:20:31.881Z"
+  },
+  {
+    "artifact": "art-a49e9503897f",
+    "version": 4,
+    "parent": 3,
+    "origin": "edit",
+    "label": "dark theme",
+    "file_count": 3,
+    "size_bytes": 954,
+    "spec": {
+      "views": [
+        {
+          "type": "html",
+          "entry": "index.html"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:21:16.805Z"
+  }
+]

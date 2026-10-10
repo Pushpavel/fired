@@ -1,0 +1,23 @@
+{
+  "views": [
+    {
+      "type": "html",
+      "entry": "index.html"
+    },
+    {
+      "type": "json",
+      "entry": "data/now.json"
+    }
+  ],
+  "jobs": {
+    "tick": {
+      "run": "sh tick.sh",
+      "writes": [
+        "data"
+      ],
+      "state": ".state",
+      "schedule": "*/5 * * * *",
+      "timeout": "2m"
+    }
+  }
+}

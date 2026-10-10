@@ -1,0 +1,4 @@
+== stdout
+
+== stderr
+handle.sh: 3: cannot open /tmp/fired-artifacts/trigger.json: No such file

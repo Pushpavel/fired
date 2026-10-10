@@ -1,0 +1,11 @@
+[
+  {
+    "name": "nightly",
+    "state": "scheduled",
+    "schedule": "@daily",
+    "active_until": "2026-11-09T12:22:00Z",
+    "max_run": "2h0m0s",
+    "next_run": "2026-10-11T00:00:00Z",
+    "pending": 0
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "id": "art-1305e93f13fb",
+  "quota_key": "dev",
+  "labels": {
+    "example": "notes"
+  },
+  "meta": {
+    "title": "A note with two views"
+  },
+  "current_version": 1,
+  "delete_after": "0s",
+  "retain_runs": 0,
+  "created_at": "2026-10-10T12:16:01.471Z",
+  "updated_at": "2026-10-10T12:16:01.495Z",
+  "last_active_at": "2026-10-10T13:05:56.049Z"
+}

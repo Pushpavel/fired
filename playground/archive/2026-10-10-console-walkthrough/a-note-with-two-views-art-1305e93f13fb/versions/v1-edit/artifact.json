@@ -1,0 +1,12 @@
+{
+  "views": [
+    {
+      "type": "md",
+      "entry": "notes/README.md"
+    },
+    {
+      "type": "svg",
+      "entry": "notes/diagram.svg"
+    }
+  ]
+}

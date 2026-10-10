@@ -1,0 +1,58 @@
+[
+  {
+    "artifact": "art-a3a90c890371",
+    "version": 1,
+    "origin": "edit",
+    "label": "first version",
+    "file_count": 3,
+    "size_bytes": 967,
+    "spec": {
+      "views": [
+        {
+          "type": "html",
+          "entry": "index.html"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:21:30.95Z"
+  },
+  {
+    "artifact": "art-a3a90c890371",
+    "version": 2,
+    "parent": 1,
+    "origin": "edit",
+    "label": "dark theme",
+    "file_count": 3,
+    "size_bytes": 954,
+    "spec": {
+      "views": [
+        {
+          "type": "html",
+          "entry": "index.html"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:21:33.799Z"
+  },
+  {
+    "artifact": "art-a3a90c890371",
+    "version": 3,
+    "parent": 2,
+    "origin": "restore",
+    "label": "restore v1",
+    "labels": {
+      "restored_from": "1"
+    },
+    "file_count": 3,
+    "size_bytes": 967,
+    "spec": {
+      "views": [
+        {
+          "type": "html",
+          "entry": "index.html"
+        }
+      ]
+    },
+    "created_at": "2026-10-10T12:21:39.709Z"
+  }
+]

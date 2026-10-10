@@ -1,0 +1,98 @@
+[
+  {
+    "artifact": "art-84297eff6525",
+    "version": 1,
+    "origin": "edit",
+    "label": "first version",
+    "file_count": 4,
+    "size_bytes": 777,
+    "spec": {
+      "views": [
+        {
+          "type": "csv",
+          "entry": "data/sales.csv"
+        },
+        {
+          "type": "md",
+          "entry": "README.md"
+        }
+      ],
+      "jobs": {
+        "build": {
+          "run": "sh build.sh",
+          "writes": [
+            "data"
+          ],
+          "schedule": "@hourly"
+        }
+      }
+    },
+    "created_at": "2026-10-10T12:16:17.143Z"
+  },
+  {
+    "artifact": "art-84297eff6525",
+    "version": 2,
+    "parent": 1,
+    "origin": "run",
+    "label": "run build",
+    "run_id": "run-64cf0d1931d1",
+    "job": "build",
+    "file_count": 4,
+    "size_bytes": 868,
+    "spec": {
+      "views": [
+        {
+          "type": "csv",
+          "entry": "data/sales.csv"
+        },
+        {
+          "type": "md",
+          "entry": "README.md"
+        }
+      ],
+      "jobs": {
+        "build": {
+          "run": "sh build.sh",
+          "writes": [
+            "data"
+          ],
+          "schedule": "@hourly"
+        }
+      }
+    },
+    "created_at": "2026-10-10T12:16:17.384Z"
+  },
+  {
+    "artifact": "art-84297eff6525",
+    "version": 3,
+    "parent": 2,
+    "origin": "run",
+    "label": "run build",
+    "run_id": "run-5414c193f2f6",
+    "job": "build",
+    "file_count": 4,
+    "size_bytes": 867,
+    "spec": {
+      "views": [
+        {
+          "type": "csv",
+          "entry": "data/sales.csv"
+        },
+        {
+          "type": "md",
+          "entry": "README.md"
+        }
+      ],
+      "jobs": {
+        "build": {
+          "run": "sh build.sh",
+          "writes": [
+            "data"
+          ],
+          "schedule": "@hourly"
+        }
+      }
+    },
+    "created_at": "2026-10-10T13:02:34.335Z"
+  }
+]

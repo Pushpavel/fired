@@ -1,0 +1,16 @@
+{
+  "id": "art-84297eff6525",
+  "quota_key": "dev",
+  "labels": {
+    "example": "table"
+  },
+  "meta": {
+    "title": "A table a job rebuilds"
+  },
+  "current_version": 3,
+  "delete_after": "0s",
+  "retain_runs": 0,
+  "created_at": "2026-10-10T12:16:17.085Z",
+  "updated_at": "2026-10-10T13:02:34.335Z",
+  "last_active_at": "2026-10-10T13:07:49.592Z"
+}

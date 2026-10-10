@@ -1,0 +1,4 @@
+body { font: 17px/1.6 Georgia, serif; background: #f3f6f1; color: #1c2a22; margin: 0; }
+main { max-width: 56ch; margin: 64px auto; padding: 0 20px; }
+h1 { font-size: 44px; line-height: 1; letter-spacing: -.02em; }
+button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #1c2a22; background: none; cursor: pointer; }

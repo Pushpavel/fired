@@ -1,0 +1,27 @@
+[
+  {
+    "artifact": "art-777fd23a812d",
+    "version": 1,
+    "origin": "edit",
+    "label": "first version",
+    "file_count": 2,
+    "size_bytes": 345,
+    "spec": {
+      "views": [
+        {
+          "type": "text",
+          "entry": "check.sh"
+        }
+      ],
+      "jobs": {
+        "check": {
+          "run": "sh check.sh",
+          "writes": [
+            "report.txt"
+          ]
+        }
+      }
+    },
+    "created_at": "2026-10-10T12:16:47.278Z"
+  }
+]

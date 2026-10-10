@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clock</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #0f1d18; color: #e2ece6; }
+  .n { font-size: 120px; font-weight: 800; line-height: 1; letter-spacing: -.04em; color: #46c7a6; }
+</style>
+</head>
+<body>
+<div>
+  <div class="n" id="n">0</div>
+  <p id="t">The job hasn't run yet.</p>
+</div>
+<script>
+fetch("data/now.json").then(r => r.json()).then(d => {
+  document.getElementById("n").textContent = d.runs;
+  if (d.at) document.getElementById("t").textContent = "runs so far. Last at " + new Date(d.at).toLocaleTimeString() + ", from version " + d.from_version + ".";
+});
+</script>
+</body>
+</html>

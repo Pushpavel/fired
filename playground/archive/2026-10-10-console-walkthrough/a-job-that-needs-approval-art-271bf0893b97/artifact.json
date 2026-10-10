@@ -1,0 +1,16 @@
+{
+  "id": "art-271bf0893b97",
+  "quota_key": "dev",
+  "labels": {
+    "example": "approval"
+  },
+  "meta": {
+    "title": "A job that needs approval"
+  },
+  "current_version": 1,
+  "delete_after": "0s",
+  "retain_runs": 0,
+  "created_at": "2026-10-10T12:16:39.856Z",
+  "updated_at": "2026-10-10T12:16:39.865Z",
+  "last_active_at": "2026-10-10T12:22:07.367Z"
+}

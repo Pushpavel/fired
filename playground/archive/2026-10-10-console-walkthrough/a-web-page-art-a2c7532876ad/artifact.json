@@ -1,0 +1,16 @@
+{
+  "id": "art-a2c7532876ad",
+  "quota_key": "dev",
+  "labels": {
+    "example": "page"
+  },
+  "meta": {
+    "title": "A web page"
+  },
+  "current_version": 3,
+  "delete_after": "0s",
+  "retain_runs": 0,
+  "created_at": "2026-10-10T12:15:53.636Z",
+  "updated_at": "2026-10-10T12:18:11.003Z",
+  "last_active_at": "2026-10-10T13:07:10.867Z"
+}
