@@ -1,0 +1,625 @@
+package artifacts
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	pa "github.com/Pushpavel/fired/pkg/artifacts"
+)
+
+// store persists artifacts, versions, file trees, jobs, runs and quotas in
+// SQLite. File contents live in Blobs; rows only hold hashes.
+type store struct {
+	db *sql.DB
+}
+
+type querier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+var errNotFound = errors.New("not found")
+
+func openStore(dir string) (*store, error) {
+	dsn := "file:" + filepath.Join(dir, "artifacts.db") +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	// SQLite allows one writer; a single connection avoids SQLITE_BUSY churn.
+	// Never call a non-tx store method while holding a tx: it would wait
+	// for the connection the tx holds.
+	db.SetMaxOpenConns(1)
+	s := &store{db: db}
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+const schema = `
+CREATE TABLE IF NOT EXISTS artifacts (
+	id              TEXT PRIMARY KEY,
+	quota_key       TEXT NOT NULL,
+	current_version INTEGER NOT NULL DEFAULT 0,
+	data            TEXT NOT NULL,
+	created_at      INTEGER NOT NULL,
+	updated_at      INTEGER NOT NULL,
+	last_active_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS artifacts_quota ON artifacts(quota_key);
+CREATE TABLE IF NOT EXISTS versions (
+	artifact   TEXT NOT NULL,
+	version    INTEGER NOT NULL,
+	origin     TEXT NOT NULL,
+	data       TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (artifact, version)
+);
+CREATE TABLE IF NOT EXISTS files (
+	artifact TEXT NOT NULL,
+	version  INTEGER NOT NULL,
+	path     TEXT NOT NULL,
+	hash     TEXT NOT NULL,
+	size     INTEGER NOT NULL,
+	mode     INTEGER NOT NULL,
+	PRIMARY KEY (artifact, version, path)
+);
+CREATE INDEX IF NOT EXISTS files_hash ON files(hash);
+CREATE TABLE IF NOT EXISTS jobs (
+	artifact      TEXT NOT NULL,
+	job           TEXT NOT NULL,
+	armed_until   INTEGER NOT NULL DEFAULT 0,
+	grant_until   INTEGER NOT NULL DEFAULT 0,
+	grant_max_run INTEGER NOT NULL DEFAULT 0,
+	sched_key     TEXT NOT NULL DEFAULT '',
+	next_at       INTEGER NOT NULL DEFAULT 0,
+	last_fire_at  INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (artifact, job)
+);
+CREATE TABLE IF NOT EXISTS runs (
+	id          TEXT PRIMARY KEY,
+	artifact    TEXT NOT NULL,
+	job         TEXT NOT NULL,
+	status      TEXT NOT NULL,
+	trigger     TEXT NOT NULL,
+	payload     BLOB,
+	logs        TEXT NOT NULL DEFAULT '',
+	data        TEXT NOT NULL,
+	created_at  INTEGER NOT NULL,
+	started_at  INTEGER NOT NULL DEFAULT 0,
+	finished_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS runs_status ON runs(status, created_at);
+CREATE INDEX IF NOT EXISTS runs_artifact ON runs(artifact, created_at);
+CREATE TABLE IF NOT EXISTS run_state (
+	artifact   TEXT NOT NULL,
+	job        TEXT NOT NULL,
+	hash       TEXT NOT NULL,
+	updated_at INTEGER NOT NULL,
+	PRIMARY KEY (artifact, job)
+);
+CREATE TABLE IF NOT EXISTS notify (
+	artifact TEXT NOT NULL,
+	version  INTEGER NOT NULL,
+	target   TEXT NOT NULL,
+	PRIMARY KEY (artifact, version)
+);
+CREATE TABLE IF NOT EXISTS quotas (
+	key  TEXT PRIMARY KEY,
+	data TEXT NOT NULL
+);
+`
+
+func (s *store) close() error { return s.db.Close() }
+
+func ms(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
+func fromMS(v int64) time.Time {
+	if v == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(v).UTC()
+}
+
+func (s *store) tx(ctx context.Context, fn func(q querier) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// ---- artifacts
+
+type artifactData struct {
+	Labels      map[string]string `json:"labels,omitempty"`
+	Meta        json.RawMessage   `json:"meta,omitempty"`
+	DeleteAfter pa.Duration       `json:"delete_after,omitempty"`
+	RetainRuns  int               `json:"retain_runs,omitempty"`
+	ForkedFrom  *pa.VersionRef    `json:"forked_from,omitempty"`
+}
+
+func putArtifact(ctx context.Context, q querier, a *pa.Artifact) error {
+	d, _ := json.Marshal(artifactData{Labels: a.Labels, Meta: a.Meta, DeleteAfter: a.DeleteAfter, RetainRuns: a.RetainRuns, ForkedFrom: a.ForkedFrom})
+	_, err := q.ExecContext(ctx, `
+INSERT INTO artifacts(id, quota_key, current_version, data, created_at, updated_at, last_active_at) VALUES(?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET quota_key=excluded.quota_key, current_version=excluded.current_version,
+	data=excluded.data, updated_at=excluded.updated_at, last_active_at=excluded.last_active_at`,
+		a.ID, a.QuotaKey, a.CurrentVersion, string(d), ms(a.CreatedAt), ms(a.UpdatedAt), ms(a.LastActiveAt))
+	return err
+}
+
+func scanArtifact(sc interface{ Scan(...any) error }) (*pa.Artifact, error) {
+	var a pa.Artifact
+	var data string
+	var c, u, l int64
+	if err := sc.Scan(&a.ID, &a.QuotaKey, &a.CurrentVersion, &data, &c, &u, &l); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errNotFound
+		}
+		return nil, err
+	}
+	var d artifactData
+	_ = json.Unmarshal([]byte(data), &d)
+	a.Labels, a.Meta, a.DeleteAfter, a.RetainRuns, a.ForkedFrom = d.Labels, d.Meta, d.DeleteAfter, d.RetainRuns, d.ForkedFrom
+	a.CreatedAt, a.UpdatedAt, a.LastActiveAt = fromMS(c), fromMS(u), fromMS(l)
+	return &a, nil
+}
+
+const artifactCols = `id, quota_key, current_version, data, created_at, updated_at, last_active_at`
+
+func getArtifact(ctx context.Context, q querier, id string) (*pa.Artifact, error) {
+	return scanArtifact(q.QueryRowContext(ctx, `SELECT `+artifactCols+` FROM artifacts WHERE id=?`, id))
+}
+
+func listArtifacts(ctx context.Context, q querier, quotaKey string) ([]pa.Artifact, error) {
+	query := `SELECT ` + artifactCols + ` FROM artifacts`
+	var args []any
+	if quotaKey != "" {
+		query += ` WHERE quota_key=?`
+		args = append(args, quotaKey)
+	}
+	rows, err := q.QueryContext(ctx, query+` ORDER BY created_at`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []pa.Artifact
+	for rows.Next() {
+		a, err := scanArtifact(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+func touchArtifact(ctx context.Context, q querier, id string, t time.Time) error {
+	_, err := q.ExecContext(ctx, `UPDATE artifacts SET last_active_at=? WHERE id=? AND last_active_at<?`, ms(t), id, ms(t))
+	return err
+}
+
+func deleteArtifactRows(ctx context.Context, q querier, id string) error {
+	for _, t := range []string{"files", "versions", "jobs", "runs", "run_state", "notify"} {
+		if _, err := q.ExecContext(ctx, `DELETE FROM `+t+` WHERE artifact=?`, id); err != nil {
+			return err
+		}
+	}
+	_, err := q.ExecContext(ctx, `DELETE FROM artifacts WHERE id=?`, id)
+	return err
+}
+
+// ---- versions
+
+type versionData struct {
+	Parent    int               `json:"parent,omitempty"`
+	Label     string            `json:"label,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	RunID     string            `json:"run_id,omitempty"`
+	Job       string            `json:"job,omitempty"`
+	FileCount int               `json:"file_count"`
+	SizeBytes int64             `json:"size_bytes"`
+	Spec      pa.Spec           `json:"spec"`
+}
+
+func insertVersion(ctx context.Context, q querier, v *pa.Version, tree map[string]pa.File) error {
+	d, _ := json.Marshal(versionData{Parent: v.Parent, Label: v.Label, Labels: v.Labels, RunID: v.RunID, Job: v.Job,
+		FileCount: v.FileCount, SizeBytes: v.SizeBytes, Spec: v.Spec})
+	if _, err := q.ExecContext(ctx, `INSERT INTO versions(artifact, version, origin, data, created_at) VALUES(?,?,?,?,?)`,
+		v.Artifact, v.Version, v.Origin, string(d), ms(v.CreatedAt)); err != nil {
+		return err
+	}
+	for _, f := range tree {
+		if _, err := q.ExecContext(ctx, `INSERT INTO files(artifact, version, path, hash, size, mode) VALUES(?,?,?,?,?,?)`,
+			v.Artifact, v.Version, f.Path, f.Hash, f.Size, f.Mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func scanVersion(sc interface{ Scan(...any) error }) (*pa.Version, error) {
+	var v pa.Version
+	var data string
+	var c int64
+	if err := sc.Scan(&v.Artifact, &v.Version, &v.Origin, &data, &c); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errNotFound
+		}
+		return nil, err
+	}
+	var d versionData
+	_ = json.Unmarshal([]byte(data), &d)
+	v.Parent, v.Label, v.Labels, v.RunID, v.Job = d.Parent, d.Label, d.Labels, d.RunID, d.Job
+	v.FileCount, v.SizeBytes, v.Spec = d.FileCount, d.SizeBytes, d.Spec
+	v.CreatedAt = fromMS(c)
+	return &v, nil
+}
+
+func getVersion(ctx context.Context, q querier, id string, n int) (*pa.Version, error) {
+	return scanVersion(q.QueryRowContext(ctx, `SELECT artifact, version, origin, data, created_at FROM versions WHERE artifact=? AND version=?`, id, n))
+}
+
+func listVersions(ctx context.Context, q querier, id string) ([]pa.Version, error) {
+	rows, err := q.QueryContext(ctx, `SELECT artifact, version, origin, data, created_at FROM versions WHERE artifact=? ORDER BY version`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []pa.Version
+	for rows.Next() {
+		v, err := scanVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, rows.Err()
+}
+
+func maxVersion(ctx context.Context, q querier, id string) (int, error) {
+	var n sql.NullInt64
+	err := q.QueryRowContext(ctx, `SELECT MAX(version) FROM versions WHERE artifact=?`, id).Scan(&n)
+	return int(n.Int64), err
+}
+
+func getTree(ctx context.Context, q querier, id string, n int) (map[string]pa.File, error) {
+	rows, err := q.QueryContext(ctx, `SELECT path, hash, size, mode FROM files WHERE artifact=? AND version=?`, id, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tree := map[string]pa.File{}
+	for rows.Next() {
+		var f pa.File
+		if err := rows.Scan(&f.Path, &f.Hash, &f.Size, &f.Mode); err != nil {
+			return nil, err
+		}
+		tree[f.Path] = f
+	}
+	return tree, rows.Err()
+}
+
+func getFile(ctx context.Context, q querier, id string, n int, p string) (*pa.File, error) {
+	var f pa.File
+	err := q.QueryRowContext(ctx, `SELECT path, hash, size, mode FROM files WHERE artifact=? AND version=? AND path=?`, id, n, p).
+		Scan(&f.Path, &f.Hash, &f.Size, &f.Mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errNotFound
+	}
+	return &f, err
+}
+
+func deleteVersion(ctx context.Context, q querier, id string, n int) error {
+	if _, err := q.ExecContext(ctx, `DELETE FROM files WHERE artifact=? AND version=?`, id, n); err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(ctx, `DELETE FROM notify WHERE artifact=? AND version=?`, id, n); err != nil {
+		return err
+	}
+	_, err := q.ExecContext(ctx, `DELETE FROM versions WHERE artifact=? AND version=?`, id, n)
+	return err
+}
+
+// storageUsed is the size of the distinct blobs referenced by all versions
+// of all artifacts with this quota key (deduplicated, like the store).
+func storageUsed(ctx context.Context, q querier, key string) (int64, error) {
+	var n sql.NullInt64
+	err := q.QueryRowContext(ctx, `
+SELECT SUM(size) FROM (SELECT DISTINCT f.hash, f.size FROM files f JOIN artifacts a ON a.id=f.artifact WHERE a.quota_key=?)`, key).Scan(&n)
+	return n.Int64, err
+}
+
+// knownHashes returns which of hashes are already referenced under key.
+func knownHashes(ctx context.Context, q querier, key string, hashes map[string]int64) (map[string]bool, error) {
+	out := map[string]bool{}
+	for h := range hashes {
+		var one int
+		err := q.QueryRowContext(ctx, `SELECT 1 FROM files f JOIN artifacts a ON a.id=f.artifact WHERE a.quota_key=? AND f.hash=? LIMIT 1`, key, h).Scan(&one)
+		if err == nil {
+			out[h] = true
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// ---- notify
+
+func setNotify(ctx context.Context, q querier, id string, n int, target string) error {
+	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO notify(artifact, version, target) VALUES(?,?,?)`, id, n, target)
+	return err
+}
+
+// takeNotify returns and clears the notify target of a version.
+func takeNotify(ctx context.Context, q querier, id string, n int) (string, error) {
+	var t string
+	err := q.QueryRowContext(ctx, `SELECT target FROM notify WHERE artifact=? AND version=?`, id, n).Scan(&t)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	_, err = q.ExecContext(ctx, `DELETE FROM notify WHERE artifact=? AND version=?`, id, n)
+	return t, err
+}
+
+// ---- jobs
+
+type jobRow struct {
+	Artifact    string
+	Job         string
+	ArmedUntil  time.Time
+	GrantUntil  time.Time
+	GrantMaxRun time.Duration
+	SchedKey    string
+	NextAt      time.Time
+	LastFireAt  time.Time
+}
+
+func (j jobRow) activeUntil() time.Time {
+	if j.GrantUntil.After(j.ArmedUntil) {
+		return j.GrantUntil
+	}
+	return j.ArmedUntil
+}
+
+func getJob(ctx context.Context, q querier, id, job string) (jobRow, error) {
+	r := jobRow{Artifact: id, Job: job}
+	var a, g, gm, n, l int64
+	err := q.QueryRowContext(ctx, `SELECT armed_until, grant_until, grant_max_run, sched_key, next_at, last_fire_at FROM jobs WHERE artifact=? AND job=?`, id, job).
+		Scan(&a, &g, &gm, &r.SchedKey, &n, &l)
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, nil
+	}
+	if err != nil {
+		return r, err
+	}
+	r.ArmedUntil, r.GrantUntil, r.GrantMaxRun, r.NextAt, r.LastFireAt = fromMS(a), fromMS(g), time.Duration(gm), fromMS(n), fromMS(l)
+	return r, nil
+}
+
+func putJob(ctx context.Context, q querier, r jobRow) error {
+	_, err := q.ExecContext(ctx, `
+INSERT INTO jobs(artifact, job, armed_until, grant_until, grant_max_run, sched_key, next_at, last_fire_at) VALUES(?,?,?,?,?,?,?,?)
+ON CONFLICT(artifact, job) DO UPDATE SET armed_until=excluded.armed_until, grant_until=excluded.grant_until,
+	grant_max_run=excluded.grant_max_run, sched_key=excluded.sched_key, next_at=excluded.next_at, last_fire_at=excluded.last_fire_at`,
+		r.Artifact, r.Job, ms(r.ArmedUntil), ms(r.GrantUntil), int64(r.GrantMaxRun), r.SchedKey, ms(r.NextAt), ms(r.LastFireAt))
+	return err
+}
+
+// ---- runs
+
+type runData struct {
+	Version       int    `json:"version,omitempty"`
+	ResultVersion int    `json:"result_version,omitempty"`
+	ExitCode      *int   `json:"exit_code,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	DurationMS    int64  `json:"duration_ms,omitempty"`
+}
+
+type runRow struct {
+	pa.Run
+	Payload []byte
+	Logs    string
+}
+
+func putRun(ctx context.Context, q querier, r *runRow) error {
+	d, _ := json.Marshal(runData{Version: r.Version, ResultVersion: r.ResultVersion, ExitCode: r.ExitCode, Reason: r.Reason, DurationMS: r.DurationMS})
+	var started, finished int64
+	if r.StartedAt != nil {
+		started = ms(*r.StartedAt)
+	}
+	if r.FinishedAt != nil {
+		finished = ms(*r.FinishedAt)
+	}
+	_, err := q.ExecContext(ctx, `
+INSERT INTO runs(id, artifact, job, status, trigger, payload, logs, data, created_at, started_at, finished_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET status=excluded.status, payload=excluded.payload, logs=excluded.logs, data=excluded.data,
+	started_at=excluded.started_at, finished_at=excluded.finished_at`,
+		r.ID, r.Artifact, r.Job, r.Status, r.Trigger, r.Payload, r.Logs, string(d), ms(r.CreatedAt), started, finished)
+	return err
+}
+
+const runCols = `id, artifact, job, status, trigger, payload, logs, data, created_at, started_at, finished_at`
+
+func scanRun(sc interface{ Scan(...any) error }) (*runRow, error) {
+	var r runRow
+	var data string
+	var c, st, fi int64
+	if err := sc.Scan(&r.ID, &r.Artifact, &r.Job, &r.Status, &r.Trigger, &r.Payload, &r.Logs, &data, &c, &st, &fi); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errNotFound
+		}
+		return nil, err
+	}
+	var d runData
+	_ = json.Unmarshal([]byte(data), &d)
+	r.Version, r.ResultVersion, r.ExitCode, r.Reason, r.DurationMS = d.Version, d.ResultVersion, d.ExitCode, d.Reason, d.DurationMS
+	r.CreatedAt = fromMS(c)
+	if st != 0 {
+		t := fromMS(st)
+		r.StartedAt = &t
+	}
+	if fi != 0 {
+		t := fromMS(fi)
+		r.FinishedAt = &t
+	}
+	return &r, nil
+}
+
+func getRun(ctx context.Context, q querier, id string) (*runRow, error) {
+	return scanRun(q.QueryRowContext(ctx, `SELECT `+runCols+` FROM runs WHERE id=?`, id))
+}
+
+func queryRuns(ctx context.Context, q querier, where string, args ...any) ([]*runRow, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+runCols+` FROM runs WHERE `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*runRow
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// runMinutesSince sums run time (finished runs plus the elapsed time of
+// running ones) for a quota key since t.
+func runMillisSince(ctx context.Context, q querier, key string, since, now time.Time) (int64, error) {
+	rows, err := q.QueryContext(ctx, `
+SELECT r.started_at, r.finished_at FROM runs r JOIN artifacts a ON a.id=r.artifact
+WHERE a.quota_key=? AND r.started_at>0 AND (r.finished_at=0 OR r.finished_at>=?)`, key, ms(since))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var total int64
+	for rows.Next() {
+		var st, fi int64
+		if err := rows.Scan(&st, &fi); err != nil {
+			return 0, err
+		}
+		if fi == 0 {
+			fi = ms(now)
+		}
+		if st < ms(since) {
+			st = ms(since)
+		}
+		if fi > st {
+			total += fi - st
+		}
+	}
+	return total, rows.Err()
+}
+
+func countRunning(ctx context.Context, q querier, key string) (int, error) {
+	var n int
+	query := `SELECT COUNT(*) FROM runs r JOIN artifacts a ON a.id=r.artifact WHERE r.status='running'`
+	args := []any{}
+	if key != "" {
+		query += ` AND a.quota_key=?`
+		args = append(args, key)
+	}
+	err := q.QueryRowContext(ctx, query, args...).Scan(&n)
+	return n, err
+}
+
+// ---- run state
+
+func getRunState(ctx context.Context, q querier, id, job string) (string, error) {
+	var h string
+	err := q.QueryRowContext(ctx, `SELECT hash FROM run_state WHERE artifact=? AND job=?`, id, job).Scan(&h)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return h, err
+}
+
+func putRunState(ctx context.Context, q querier, id, job, hash string, t time.Time) error {
+	if hash == "" {
+		_, err := q.ExecContext(ctx, `DELETE FROM run_state WHERE artifact=? AND job=?`, id, job)
+		return err
+	}
+	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO run_state(artifact, job, hash, updated_at) VALUES(?,?,?,?)`, id, job, hash, ms(t))
+	return err
+}
+
+// ---- quotas
+
+func getQuota(ctx context.Context, q querier, key string) (pa.Quota, error) {
+	var data string
+	var out pa.Quota
+	err := q.QueryRowContext(ctx, `SELECT data FROM quotas WHERE key=?`, key).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	_ = json.Unmarshal([]byte(data), &out)
+	return out, nil
+}
+
+func putQuota(ctx context.Context, q querier, key string, v pa.Quota) error {
+	d, _ := json.Marshal(v)
+	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO quotas(key, data) VALUES(?,?)`, key, string(d))
+	return err
+}
+
+// ---- garbage collection
+
+// referencedBlobs returns every hash still in use.
+func referencedBlobs(ctx context.Context, q querier) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, query := range []string{
+		`SELECT DISTINCT hash FROM files`,
+		`SELECT DISTINCT hash FROM run_state`,
+		`SELECT DISTINCT logs FROM runs WHERE logs<>''`,
+	} {
+		rows, err := q.QueryContext(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var h string
+			if err := rows.Scan(&h); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[h] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}

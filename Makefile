@@ -1,11 +1,12 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test race lint docker dev clean try
+.PHONY: build test race lint docker dev dev-artifacts clean try
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/fired ./cmd/fired
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/fired-agent ./cmd/fired-agent
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/fired-artifacts ./cmd/fired-artifacts
 
 test:
 	go test ./...
@@ -24,6 +25,14 @@ docker:
 dev: build
 	FIRED_API_TOKEN=dev FIRED_DRIVER=fake FIRED_DATA_DIR=$(CURDIR)/.dev \
 	  ./bin/fired serve -config deploy/dev.yaml
+
+# Run the artifact service against `make dev` (run that first, in another
+# terminal). Jobs use fired's "base" template: create it with
+#   curl -H "X-Fired-Token: dev" -d '{"name":"base"}' http://127.0.0.1:8443/v1/templates
+dev-artifacts: build
+	FIRED_ARTIFACTS_TOKEN=dev FIRED_ARTIFACTS_DATA_DIR=$(CURDIR)/.dev/artifacts \
+	  FIRED_URL=http://127.0.0.1:8443 FIRED_API_TOKEN=dev \
+	  ./bin/fired-artifacts serve -config deploy/artifacts.yaml
 
 clean:
 	rm -rf bin .dev

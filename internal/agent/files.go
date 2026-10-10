@@ -3,6 +3,8 @@ package agent
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -231,18 +233,7 @@ func (a *Agent) handleGetArchive(w http.ResponseWriter, r *http.Request) {
 		fsErr(w, err)
 		return
 	}
-	excludes := r.URL.Query()["exclude"]
-	excluded := func(rel string) bool {
-		for _, ex := range excludes {
-			if ok, _ := path.Match(ex, path.Base(rel)); ok {
-				return true
-			}
-			if ok, _ := path.Match(ex, rel); ok {
-				return true
-			}
-		}
-		return false
-	}
+	excluded := excludeMatcher(r.URL.Query()["exclude"])
 	w.Header().Set("Content-Type", "application/gzip")
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
@@ -303,6 +294,86 @@ func (a *Agent) handleGetArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = tw.Close()
 	_ = gz.Close()
+}
+
+// excludeMatcher matches a slash-separated relative path against glob
+// patterns, by base name or by the whole path.
+func excludeMatcher(excludes []string) func(rel string) bool {
+	return func(rel string) bool {
+		for _, ex := range excludes {
+			if ok, _ := path.Match(ex, path.Base(rel)); ok {
+				return true
+			}
+			if ok, _ := path.Match(ex, rel); ok {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// GET /manifest?path=P[&exclude=node_modules&exclude=.git]
+// Lists the regular files under P (or P itself) with size, mode and SHA-256,
+// so a caller can work out which files it already has before downloading.
+// Paths are relative to P (for a single file, its base name).
+func (a *Agent) handleManifest(w http.ResponseWriter, r *http.Request) {
+	g, h, err := a.resolve(r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	root, err := os.Stat(h)
+	if err != nil {
+		fsErr(w, err)
+		return
+	}
+	excluded := excludeMatcher(r.URL.Query()["exclude"])
+	base := h
+	if !root.IsDir() {
+		base = filepath.Dir(h)
+	}
+	out := api.FileManifest{Path: g, Files: []api.ManifestEntry{}}
+	walkErr := filepath.WalkDir(h, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(base, p)
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil
+		}
+		if excluded(rel) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return nil
+		}
+		sum := sha256.New()
+		_, err = io.Copy(sum, f)
+		f.Close()
+		if err != nil {
+			return nil
+		}
+		out.Files = append(out.Files, api.ManifestEntry{Path: rel, Size: info.Size(),
+			Mode: fmt.Sprintf("%04o", info.Mode().Perm()), SHA256: hex.EncodeToString(sum.Sum(nil))})
+		return nil
+	})
+	if walkErr != nil {
+		fsErr(w, walkErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // PUT /archive?path=P  body: tar.gz, extracted into directory P.

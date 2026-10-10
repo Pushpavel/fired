@@ -54,3 +54,24 @@ func TestStreamFlushesHeldBytes(t *testing.T) {
 		t.Fatal("held bytes were never flushed")
 	}
 }
+
+func TestFind(t *testing.T) {
+	s := NewSet()
+	s.Add("GH_TOKEN", "ghp_secretvalue")
+	if name, ok := s.Find([]byte("token: ghp_secretvalue\n")); !ok || name != "GH_TOKEN" {
+		t.Fatalf("raw: %q %v", name, ok)
+	}
+	if _, ok := s.Find([]byte("Z2hwX3NlY3JldHZhbHVl")); !ok {
+		t.Fatal("base64 encoding not found")
+	}
+	if _, ok := s.Find([]byte("nothing here")); ok {
+		t.Fatal("false positive")
+	}
+	if s.MaxLen() < len("ghp_secretvalue") {
+		t.Fatalf("max len %d", s.MaxLen())
+	}
+	var nilSet *Set
+	if _, ok := nilSet.Find([]byte("x")); ok || nilSet.MaxLen() != 0 {
+		t.Fatal("nil set")
+	}
+}

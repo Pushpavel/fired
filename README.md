@@ -71,6 +71,11 @@ Firecracker v1.x API and is unit-tested at the protocol level, but it has
 - **Operations:** survives restarts (snapshot on SIGTERM, reconcile on
   start). Also provides an SSE event stream, Prometheus metrics,
   per-sandbox VMM logs and a Go client (`pkg/client`).
+- **Artifacts (separate service):** `fired-artifacts` stores versioned file
+  trees that agents publish from sandboxes or from inline content, serves
+  them, and runs their scheduled jobs in fired sandboxes, writing the results
+  back as new versions. It is a separate binary meant to run next to your
+  backend on durable storage; see [docs/artifacts.md](docs/artifacts.md).
 
 ## Quick start (development, no KVM)
 
@@ -152,7 +157,7 @@ or `Authorization: Bearer <token>`. The full reference is
 | Lifecycle | `POST /sandboxes/{id}/resume`, `/suspend`, `/archive`; `GET /sandboxes/{id}/logs` |
 | Exec | `POST /sandboxes/{id}/exec`, `GET /sandboxes/{id}/exec/stream` (WebSocket) |
 | Processes | `GET /sandboxes/{id}/processes[/{pid}[/output]]`, `DELETE /sandboxes/{id}/processes/{pid}` |
-| Files | `GET/PUT/DELETE /sandboxes/{id}/files?path=`, `POST /files/mkdir`, `POST /files/move`, `GET/PUT /files/archive` |
+| Files | `GET/PUT/DELETE /sandboxes/{id}/files?path=`, `POST /files/mkdir`, `POST /files/move`, `GET/PUT /files/archive`, `GET /files/manifest` |
 | Ports | `GET/POST /sandboxes/{id}/ports`, `DELETE /ports/{port}`, `ANY /ports/{port}/proxy/{path}` |
 | Ops | `GET /host`, `GET /events` (SSE), `GET /metrics`, `GET /healthz` |
 
@@ -171,6 +176,7 @@ See [docs/integration.md](docs/integration.md) for:
 ```
 cmd/fired          daemon (serve, check, version)
 cmd/fired-agent    guest agent: PID 1 init (overlay root) + API server on vsock
+cmd/fired-artifacts  artifact service (versions, serving, scheduled jobs)
 internal/sandbox   lifecycle manager, reaper, memory budget, templates
 internal/server    HTTP API, port proxy, exec stream bridge
 internal/vmm       driver interface; firecracker/ (jailer, snapshots); fake/
@@ -179,5 +185,7 @@ internal/egress    allowlisting egress proxy
 internal/rootfs    OCI image → ext4 root filesystem
 internal/fsutil    sparse copies and the cold-tier archive format
 internal/redact    secret redaction
+internal/artifacts artifact service: blob store, versions, jobs, runner
 pkg/api, pkg/client  wire types and Go client
+pkg/artifacts      artifact service wire types and Go client
 ```

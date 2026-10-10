@@ -18,6 +18,7 @@ import (
 const MinSecretLen = 6
 
 type secret struct {
+	name string
 	val  []byte
 	repl []byte
 }
@@ -53,10 +54,39 @@ func (s *Set) Add(name, value string) {
 			continue
 		}
 		s.seen[v] = true
-		s.secrets = append(s.secrets, secret{val: []byte(v), repl: repl})
+		s.secrets = append(s.secrets, secret{name: name, val: []byte(v), repl: repl})
 	}
 	// Longest first so a value that contains another is replaced whole.
 	sort.Slice(s.secrets, func(i, j int) bool { return len(s.secrets[i].val) > len(s.secrets[j].val) })
+}
+
+// Find reports the name of a known secret (or an encoding of it) that b
+// contains.
+func (s *Set) Find(b []byte) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, sec := range s.secrets {
+		if bytes.Contains(b, sec.val) {
+			return sec.name, true
+		}
+	}
+	return "", false
+}
+
+// MaxLen is the length of the longest registered value or encoding.
+func (s *Set) MaxLen() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.secrets) == 0 {
+		return 0
+	}
+	return len(s.secrets[0].val)
 }
 
 func (s *Set) Empty() bool {
