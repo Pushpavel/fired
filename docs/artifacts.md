@@ -344,7 +344,7 @@ make dev-artifacts  # fired-artifacts on :8444, token "dev", in another
 ```
 
 `make dev-artifacts` turns on the console (`ui: true` or
-`FIRED_ARTIFACTS_UI=1`) at http://localhost:8444/ui/. Sign in with the token.
+`FIRED_ARTIFACTS_UI=1`) at http://127.0.0.1:8444/ui/. Sign in with the token.
 It lists artifacts with their version history, edits and uploads files and
 publishes them, shows views, compares and restores versions, forks, runs jobs
 (with payloads), approves grants, shows runs with their logs, edits quotas, and

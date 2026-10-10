@@ -77,7 +77,7 @@ Firecracker v1.x API and is unit-tested at the protocol level, but it has
   back as new versions. It is a separate binary meant to run next to your
   backend on durable storage; see [docs/artifacts.md](docs/artifacts.md).
   It has its own console (`make dev-artifacts`, then
-  http://localhost:8444/ui/) with example artifacts to start from.
+  http://127.0.0.1:8444/ui/) with example artifacts to start from.
 
 ## Quick start (development, no KVM)
 
