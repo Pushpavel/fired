@@ -211,6 +211,18 @@ Runs).
 
 ## Serving, versions, forks
 
+- **Viewing through your domain (header routing):** your backend owns the
+  domain artifacts are viewed on and decides who may see what. It forwards
+  a viewer's request unchanged (same path and query) with the API token
+  and `X-Artifact: <id>`, plus optionally `X-Artifact-Version: <n>` (absent
+  or `current` follows the current version). The path is a file of the
+  artifact (`/` serves `index.html`), or `/.fired/view?type=…&entry=…` for
+  the view renderer (md, csv, json, text, react). Responses are the same as
+  the file API (ETag, `X-Artifact-Version`, cache headers); only GET and
+  HEAD are allowed. Strip these headers from what the viewer's browser
+  sends, and set your own security headers (such as `frame-ancestors`) at
+  your edge.
+
 - **Files:** `GET /v1/artifacts/{id}/files/{path}?version=N` serves one file,
   current version by default. A path that is empty or ends in `/` serves its
   `index.html`. Responses carry `ETag` (the blob hash) and
@@ -413,7 +425,8 @@ publishes them, shows views, compares and restores versions, forks, runs jobs
 follows `/v1/events` live. The home page has examples that cover each
 feature: views, scheduled jobs with state, a queue, approval and a failing job.
 
-The console shows artifact files on their own origin,
+The console shows artifact files on their own origin (for the console only;
+in production your backend serves them with header routing, above),
 `<id>-<version>-<sig>.<preview_domain>` (version 0 follows the current
 version), so pages run at `/` with working relative paths and can't reach the
 console's session. Without `preview_domain` (`FIRED_ARTIFACTS_PREVIEW_DOMAIN`)

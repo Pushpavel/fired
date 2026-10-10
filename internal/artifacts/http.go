@@ -65,12 +65,19 @@ func (s *Service) Handler() http.Handler {
 			s.servePreview(w, r, id, n)
 			return
 		}
-		if !s.public(r.URL.Path) && !s.authorized(r) {
+		// Header-routed requests always need the token: "/" is otherwise
+		// public (the console's redirect).
+		routed := r.Header.Get("X-Artifact") != ""
+		if (routed || !s.public(r.URL.Path)) && !s.authorized(r) {
 			writeErr(w, errf(http.StatusUnauthorized, "unauthorized", "missing or invalid API token"))
 			return
 		}
 		sw := &statusWriter{ResponseWriter: w, status: 200}
-		mux.ServeHTTP(sw, r)
+		if routed {
+			s.handleRouted(sw, r, r.Header.Get("X-Artifact"))
+		} else {
+			mux.ServeHTTP(sw, r)
+		}
 		lvl := slog.LevelInfo
 		if r.URL.Path == "/healthz" || strings.Contains(r.URL.Path, "/files/") {
 			lvl = slog.LevelDebug
@@ -453,6 +460,22 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 		return
 	}
 	_, _ = io.Copy(w, rc)
+}
+
+// handleRouted serves a request routed by headers, for a front proxy that
+// owns the domain artifacts are viewed on (and decides who may see them):
+// it resolves the hostname to an artifact and forwards the request unchanged
+// (same path and query) with X-Artifact, optionally X-Artifact-Version
+// (a number, or "current" / absent to follow the current version), and the
+// API token. The path is a file of the artifact ("/" serves index.html), or
+// /.fired/view for the view renderer.
+func (s *Service) handleRouted(w http.ResponseWriter, r *http.Request, id string) {
+	n, err := versionParam(r.Header.Get("X-Artifact-Version"))
+	if err != nil {
+		writeErr(w, badRequest("X-Artifact-Version must be a version number or \"current\""))
+		return
+	}
+	s.servePreview(w, r, id, n)
 }
 
 // handleExport streams a version as a zip (artifact.json included when the
