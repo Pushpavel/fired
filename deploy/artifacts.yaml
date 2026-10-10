@@ -29,11 +29,9 @@ limits:
   max_inline_bytes: 4194304     # content/content_base64 per publish
   default_active_for: 12h       # schedule window after a publish, without approval
   default_max_run: 30m          # longest run without approval
-  default_quota:                # per quota key, unless PUT /v1/quotas/{key} says otherwise
-    min_interval: 5m
-    storage_bytes: 2147483648   # 2 GiB, deduplicated
-  # Compute per user (memory, GB-hours) is fired's: runners carry the
-  # artifact's quota key in runner.pool. See fired's `quotas` and docs/cluster.md.
+  # Per-user limits aren't configured here: storage and schedule interval
+  # come from tiers (PUT /v1/tiers/{name}), the tier a key is in from fired's
+  # mapping, compute from fired's tiers. See docs/cluster.md.
   max_concurrent_runs: 8        # runs this service drives at once
   min_interval: 1m              # shortest schedule interval for anyone
   serve_rps: 50                 # file reads per artifact per second

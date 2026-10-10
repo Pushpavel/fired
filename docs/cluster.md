@@ -55,8 +55,27 @@ key in its pool. Two limits per key and pool:
 - `gb_hours_per_day`: memory × running time per UTC day, in GB-hours
   (2 GB for 2 h = 4, 100 MB for 48 h = 4.7).
 
-Defaults per pool are in the config (`quotas`); override them per key with
-`PUT /v1/quotas/{key}/{pool}` (your backend, per plan).
+**Tiers** (plans) hold these limits, and limits are data, not config:
+
+```
+PUT /v1/tiers/default  {"pools": {"chat": {"max_memory_mb": 2048, "gb_hours_per_day": 24},
+                                  "artifacts": {"max_memory_mb": 1024, "gb_hours_per_day": 12}}}
+PUT /v1/tiers/pro      {"pools": {"chat": {"max_memory_mb": 8192, "gb_hours_per_day": 200}}}
+PUT /v1/quotas/user-42 {"tier": "pro"}
+```
+
+- **One mapping.** Each quota key is in one tier (`default` until set).
+  That mapping lives here and is the only one: fired-artifacts reads a
+  key's tier from fired and applies its own definition of that tier
+  (storage, schedule interval). A user who is `pro` is `pro` everywhere.
+- **Resolution,** per limit: the key's own override
+  (`PUT /v1/quotas/{key}/{pool}`, for exceptions), else its tier's value,
+  else the `default` tier's, else no limit. Changing a tier changes every
+  key in it at their next start.
+- A fresh install has no tiers, so no limits. Your backend defines tiers
+  from its plans (idempotent `PUT`s, e.g. at deploy time) and sets each
+  user's tier when their plan changes. A tier with keys in it can't be
+  deleted (`409`).
 
 - **Admission** happens on every start (create, resume, or a wake by an
   exec): in one database transaction, the key's quota row is locked, its

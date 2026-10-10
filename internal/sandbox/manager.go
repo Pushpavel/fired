@@ -113,7 +113,6 @@ func New(o Options) (*Manager, error) {
 		host: o.Store.Host(), startedAt: time.Now().UTC(),
 	}
 	o.Store.HostTimeout = o.Config.Cluster.HostTimeout.D()
-	o.Store.Defaults = o.Config.Quotas
 	if m.bus == nil {
 		m.bus = events.NewBus()
 	}

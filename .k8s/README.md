@@ -50,12 +50,12 @@ fired:
     - {name: runners, nodeSelector: {fired-pool: artifacts}, pools: [artifacts]}
   config:
     cluster: {default_pool: chat}
-    quotas:
-      chat:      {max_memory_mb: 4096, gb_hours_per_day: 48}
-      artifacts: {max_memory_mb: 2048, gb_hours_per_day: 24}
 networkPolicy:
   allowFromNamespaces: [app]          # where your backend runs
 ```
+
+Per-user limits aren't in values: they're tiers your backend defines through
+the APIs (see [docs/cluster.md](../docs/cluster.md#per-user-limits)).
 
 ## Deploying
 

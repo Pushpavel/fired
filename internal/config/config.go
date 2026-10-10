@@ -25,12 +25,7 @@ type Config struct {
 	// the same one; only fired reads it. Env FIRED_DATABASE_URL. Required.
 	DatabaseURL string        `yaml:"database_url"`
 	Cluster     ClusterConfig `yaml:"cluster"`
-	// Quotas are per-pool defaults for each quota key (user): e.g.
-	// {"chat": {"max_memory_mb": 4096, "gb_hours_per_day": 48}}. A pool
-	// without defaults has no limits unless set per key
-	// (PUT /v1/quotas/{key}/{pool}).
-	Quotas map[string]api.Quota `yaml:"quotas"`
-	Data   DataConfig           `yaml:"data"`
+	Data        DataConfig    `yaml:"data"`
 	// Driver selects the VM backend: "firecracker" or "fake" (processes on
 	// the host, for development and tests only — no isolation).
 	Driver      string            `yaml:"driver"`

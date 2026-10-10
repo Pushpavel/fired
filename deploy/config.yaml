@@ -22,12 +22,9 @@ cluster:
   heartbeat: 5s
   host_timeout: 30s       # a host silent this long is down
 
-# Per-user limits by pool, for sandboxes created with a quota_key. Usage is
-# memory × running time: 2 GB for 2 h is 4 GB-hours. 0 or absent = no limit.
-# Override per key with PUT /v1/quotas/{key}/{pool}.
-quotas: {}
-#   chat:      {max_memory_mb: 4096, gb_hours_per_day: 48}
-#   artifacts: {max_memory_mb: 2048, gb_hours_per_day: 24}
+# Per-user limits are data, not config: tiers (PUT /v1/tiers/{name}), each
+# quota key's tier (PUT /v1/quotas/{key}), per-key overrides. See
+# docs/cluster.md.
 
 # tls:
 #   cert: /etc/fired/tls/server.crt

@@ -304,21 +304,30 @@ Relative paths are resolved against the template workdir (`/workspace`).
 
 ---
 
-## Quotas
+## Tiers and quotas
 
 Limits per quota key (user) and pool. Usage is memory × running time in
 GB-hours: 2 GB running for 2 h is 4 GB-hours. Suspended and archived
-sandboxes don't count. Defaults per pool come from the config (`quotas`).
+sandboxes don't count. Limits come from **tiers**: each key is in one tier
+(`default` until set), and fired-artifacts uses the same mapping. See
+[cluster.md](cluster.md#per-user-limits).
 
-- `GET /quotas/{key}` → `{"quotas": [QuotaStatus]}`, one per pool the key
-  uses (or that has defaults).
+- `GET /tiers` → `{"tiers": [{"name", "pools": {"<pool>": {"max_memory_mb", "gb_hours_per_day"}}}]}`
+- `GET /tiers/{name}`, `PUT /tiers/{name}` with `{"pools": {…}}` (creates
+  or replaces), `DELETE /tiers/{name}` (`409` while keys are in it).
+- `PUT /quotas/{key}` with `{"tier": "pro"}` maps the key to a tier (`""`
+  = the default tier; an unknown tier is `404 tier_not_found`) →
+  the key's status, as below.
+- `GET /quotas/{key}` → `{"quota_key", "tier", "quotas": [QuotaStatus]}`,
+  one per pool the key uses or its tiers define.
 - `GET /quotas/{key}/{pool}` → `QuotaStatus`:
-  `{"quota_key", "pool", "quota": {"max_memory_mb", "gb_hours_per_day"},
-  "effective": {…}, "running_mb", "gb_hours_today"}`. `quota` is what was
-  set for the key, `effective` applies the defaults (`-1` = no limit).
-- `PUT /quotas/{key}/{pool}` with `{"max_memory_mb": 4096,
-  "gb_hours_per_day": 48}` → `QuotaStatus`. `0` uses the pool's default, a
-  negative value means no limit.
+  `{"quota_key", "pool", "tier", "quota": {"max_memory_mb",
+  "gb_hours_per_day"}, "effective": {…}, "running_mb", "gb_hours_today"}`.
+  `quota` is the key's own override; `effective` is what applies (`-1` = no
+  limit).
+- `PUT /quotas/{key}/{pool}` with `{"max_memory_mb": 16384}` sets an
+  override for one key (`0` = use the tier's value, negative = no limit) →
+  `QuotaStatus`.
 
 ---
 

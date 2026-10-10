@@ -32,9 +32,7 @@ type Store struct {
 	// HostTimeout is how long a host may miss heartbeats before it counts
 	// as down (its sandboxes stop counting against quotas).
 	HostTimeout time.Duration
-	// Defaults are the per-pool quota defaults (config `quotas`).
-	Defaults map[string]api.Quota
-	now      func() time.Time
+	now         func() time.Time
 }
 
 // Open connects to url, migrates the schema (one host at a time, under an

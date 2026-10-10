@@ -93,6 +93,22 @@ and run its own secret scan. Now a publish file op can be
   `DEPLOY_KEY` into `dist/config.txt` and the next publish got 422,
   naming the file and `DEPLOY_KEY`, never the value.
 
+**Limits are tiers, with one mapping** (2026-10-10). The storage limit
+(2 GiB) and the other per-user defaults were config-file values, with
+per-key overrides in each service's database. Now:
+
+- Tiers (plans) are data: `PUT /v1/tiers/{name}` on each service, for the
+  limits it enforces (fired: memory and GB-hours per pool; fired-artifacts:
+  storage and schedule interval). No limits in config files; a fresh
+  install has none until the backend defines tiers.
+- **One key → tier mapping, on fired** (`PUT /v1/quotas/{key}
+  {"tier": "pro"}`). fired-artifacts reads it (cached a minute, last known
+  tier if fired is down). A `pro` user is `pro` in both.
+- Resolution: key override > key's tier > `default` tier > no limit.
+- Tried live: fired's schema migrated v1 → v2 (new tables) with data kept;
+  set `dev` to `pro` on fired and fired-artifacts showed `pro`'s 20 GiB
+  storage.
+
 ## Limits and sandboxes
 
 Dev defaults (`deploy/artifacts.yaml`):
@@ -103,8 +119,9 @@ Dev defaults (`deploy/artifacts.yaml`):
 - **Paths:** up to 1024 bytes, relative, no `.`/`..`; a path can't be both
   a file and a folder; modes 0644/0755.
 - **IDs:** `[a-z0-9][a-z0-9-]{2,47}`.
-- **Per quota key:** 2 GiB storage, counted over that key's distinct
-  blobs, so unchanged files count once. Disk dedup is global: the same file
+- **Per quota key:** storage from the key's tier (the dev `default` tier
+  has 2 GiB, `pro` 20 GiB), counted over that key's distinct blobs, so
+  unchanged files count once. Disk dedup is global: the same file
   from two users is stored once but counted for both.
 - **Serving:** 50 reads/s per artifact, bursts of 100.
 - Inline content is stored as blobs before the publish is validated, so a

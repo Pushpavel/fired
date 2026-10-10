@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -38,11 +39,13 @@ type Service struct {
 	// quotaWait: until when a quota key's runs wait, after fired refused
 	// one for that key's limits.
 	quotaWait map[string]time.Time
-	wake      chan struct{}
-	runsWG    sync.WaitGroup
-	stopOnce  sync.Once
-	stop      chan struct{}
-	bgWG      sync.WaitGroup
+	// tiers caches fired's quota key → tier mapping.
+	tiers    map[string]tierEntry
+	wake     chan struct{}
+	runsWG   sync.WaitGroup
+	stopOnce sync.Once
+	stop     chan struct{}
+	bgWG     sync.WaitGroup
 }
 
 // New opens the store under cfg.DataDir.
@@ -64,8 +67,8 @@ func New(cfg Config, log *slog.Logger) (*Service, error) {
 		broker:  newBroker(cfg.Broker),
 		now:     func() time.Time { return time.Now().UTC() },
 		running: map[string]string{}, buckets: map[string]*bucket{}, touched: map[string]time.Time{},
-		quotaWait: map[string]time.Time{},
-		wake:      make(chan struct{}, 1), stop: make(chan struct{}),
+		quotaWait: map[string]time.Time{}, tiers: map[string]tierEntry{},
+		wake: make(chan struct{}, 1), stop: make(chan struct{}),
 	}
 	return s, nil
 }
@@ -112,6 +115,7 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 	if err != nil {
 		return nil, err
 	}
+	s.tierOf(ctx, req.QuotaKey)
 	now := s.now()
 	a := &pa.Artifact{ID: id, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta, DeleteAfter: req.DeleteAfter,
 		RetainRuns: req.RetainRuns, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
@@ -517,6 +521,9 @@ func (s *Service) Publish(ctx context.Context, id string, req pa.PublishRequest)
 	if err != nil {
 		return nil, err
 	}
+	if a, err := s.Get(ctx, id); err == nil {
+		s.tierOf(ctx, a.QuotaKey)
+	}
 	now := s.now()
 	var v *pa.Version
 	err = s.st.tx(ctx, func(q querier) error {
@@ -646,6 +653,9 @@ func checkNoFileDirClash(tree map[string]pa.File) error {
 
 // Restore publishes a new version with the files of an older one.
 func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest) (*pa.PublishResult, error) {
+	if a, err := s.Get(ctx, id); err == nil {
+		s.tierOf(ctx, a.QuotaKey)
+	}
 	now := s.now()
 	var v *pa.Version
 	err := s.st.tx(ctx, func(q querier) error {
@@ -708,6 +718,7 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 	if req.QuotaKey == "" {
 		return nil, badRequest("quota_key is required")
 	}
+	s.tierOf(ctx, req.QuotaKey)
 	newIDv := req.ID
 	if newIDv == "" {
 		newIDv = newID("art-")
@@ -783,19 +794,120 @@ func (s *Service) MissingBlobs(hashes []string) ([]string, error) {
 
 // ---- quotas
 
+// effectiveQuota resolves a key's limits: its own override, else its
+// tier's, else the default tier's (≤ 0 = no limit). The tier is fired's
+// mapping, read from the cache (see knownTier) so no network call happens
+// inside a transaction.
 func (s *Service) effectiveQuota(ctx context.Context, q querier, key string) (pa.Quota, error) {
 	v, err := getQuota(ctx, q, key)
 	if err != nil {
 		return v, err
 	}
-	d := s.cfg.Limits.DefaultQuota
-	if v.MinInterval == 0 {
-		v.MinInterval = d.MinInterval
-	}
-	if v.StorageBytes == 0 {
-		v.StorageBytes = d.StorageBytes
+	for _, name := range []string{s.knownTier(key), pa.DefaultTier} {
+		t, _, err := getTier(ctx, q, name)
+		if err != nil {
+			return v, err
+		}
+		if v.MinInterval == 0 {
+			v.MinInterval = t.MinInterval
+		}
+		if v.StorageBytes == 0 {
+			v.StorageBytes = t.StorageBytes
+		}
 	}
 	return v, nil
+}
+
+// ---- tiers: definitions here, the key → tier mapping in fired
+
+const tierCacheTTL = time.Minute
+
+type tierEntry struct {
+	tier string
+	at   time.Time
+}
+
+// tierOf returns a key's tier from fired, refreshing the cache when it's
+// older than a minute. If fired can't be reached, the last known tier (or
+// the default) is used: a fired outage mustn't block publishing. Call it
+// outside transactions.
+func (s *Service) tierOf(ctx context.Context, key string) string {
+	if key == "" {
+		return pa.DefaultTier
+	}
+	s.mu.Lock()
+	e, ok := s.tiers[key]
+	s.mu.Unlock()
+	if ok && time.Since(e.at) < tierCacheTTL {
+		return e.tier
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	st, err := s.fired.QuotaKey(ctx, key)
+	if err != nil {
+		if ok {
+			return e.tier
+		}
+		s.log.Warn("tier lookup in fired failed; using the default tier", "quota_key", key, "err", err)
+		return pa.DefaultTier
+	}
+	s.mu.Lock()
+	s.tiers[key] = tierEntry{tier: st.Tier, at: time.Now()}
+	s.mu.Unlock()
+	return st.Tier
+}
+
+// knownTier returns the cached tier without waiting (for use inside
+// transactions), refreshing it in the background when stale or missing.
+func (s *Service) knownTier(key string) string {
+	if key == "" {
+		return pa.DefaultTier
+	}
+	s.mu.Lock()
+	e, ok := s.tiers[key]
+	s.mu.Unlock()
+	if !ok || time.Since(e.at) >= tierCacheTTL {
+		go s.tierOf(context.Background(), key)
+	}
+	if !ok {
+		return pa.DefaultTier
+	}
+	return e.tier
+}
+
+var tierNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+func (s *Service) PutTier(ctx context.Context, t pa.Tier) error {
+	if !tierNameRE.MatchString(t.Name) {
+		return badRequest("tier name must match %s", tierNameRE)
+	}
+	return putTier(ctx, s.st.db, t)
+}
+
+func (s *Service) Tiers(ctx context.Context) ([]pa.Tier, error) { return listTiers(ctx, s.st.db) }
+
+func (s *Service) Tier(ctx context.Context, name string) (*pa.Tier, error) {
+	t, ok, err := getTier(ctx, s.st.db, name)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errf(http.StatusNotFound, "not_found", "tier %q not found", name)
+	}
+	return &pa.Tier{Name: name, Limits: t}, nil
+}
+
+// DeleteTier removes a tier's definition. Keys fired maps to it get the
+// default tier's limits here until it's defined again.
+func (s *Service) DeleteTier(ctx context.Context, name string) error {
+	ok, err := deleteTier(ctx, s.st.db, name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errf(http.StatusNotFound, "not_found", "tier %q not found", name)
+	}
+	return nil
 }
 
 func (s *Service) SetQuota(ctx context.Context, key string, v pa.Quota) error {
@@ -806,6 +918,7 @@ func (s *Service) SetQuota(ctx context.Context, key string, v pa.Quota) error {
 }
 
 func (s *Service) QuotaStatus(ctx context.Context, key string) (*pa.QuotaStatus, error) {
+	tier := s.tierOf(ctx, key)
 	raw, err := getQuota(ctx, s.st.db, key)
 	if err != nil {
 		return nil, err
@@ -818,5 +931,5 @@ func (s *Service) QuotaStatus(ctx context.Context, key string) (*pa.QuotaStatus,
 	if err != nil {
 		return nil, err
 	}
-	return &pa.QuotaStatus{Key: key, Quota: raw, Effective: eff, StorageUsed: used}, nil
+	return &pa.QuotaStatus{Key: key, Tier: tier, Quota: raw, Effective: eff, StorageUsed: used}, nil
 }

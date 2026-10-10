@@ -44,9 +44,6 @@ fired:
     egress:
       enabled: true
       allow_private_cidrs: []
-    quotas: {}
-    #   chat:      {max_memory_mb: 4096, gb_hours_per_day: 48}
-    #   artifacts: {max_memory_mb: 2048, gb_hours_per_day: 24}
     cluster:
       default_pool: default
     ui: false

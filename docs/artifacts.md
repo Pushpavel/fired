@@ -291,11 +291,21 @@ A pending run starts only when all of these allow it:
 Separately, schedule firings closer together than the quota key's
 `min_interval` (and `limits.min_interval`) are skipped.
 
-This service's per-key limits are storage and `min_interval`. Your backend
-sets them with `PUT /v1/quotas/{key}`; zero fields use
-`limits.default_quota`, negative ones disable that limit. `GET
-/v1/quotas/{key}` shows storage used. Compute limits are set on fired, with
-`PUT /v1/quotas/{key}/{pool}` there.
+This service's per-key limits are storage and `min_interval`, from
+**tiers**. Which tier a key is in is fired's single mapping
+(`PUT /v1/quotas/{key} {"tier": "pro"}` on fired); this service reads it
+(cached for a minute, and the last known tier is used if fired can't be
+reached) and applies its own definition of that tier:
+
+- `PUT /v1/tiers/{name}` with `{"limits": {"storage_bytes": 21474836480,
+  "min_interval": "1m"}}`; `GET /v1/tiers`, `GET`/`DELETE /v1/tiers/{name}`.
+- Resolution: the key's own override (`PUT /v1/quotas/{key}`, for
+  exceptions), else its tier's value, else the `default` tier's, else no
+  limit. Negative disables a limit.
+- `GET /v1/quotas/{key}` shows the tier, the override, the effective
+  limits and storage used.
+
+Compute limits (memory, GB-hours) are fired's tiers.
 
 ### Runs
 

@@ -504,3 +504,28 @@ func TestRunQuota(t *testing.T) {
 		t.Fatalf("the running runner should count for u9: %+v", q)
 	}
 }
+
+// TestTierFromFired: a key's tier is fired's one mapping; what the tier
+// means for storage is defined here.
+func TestTierFromFired(t *testing.T) {
+	fc, firedURL := startFired(t)
+	h := newHarness(t, func(c *Config) { c.Fired = FiredConfig{URL: firedURL, Token: firedToken} })
+	ctx := context.Background()
+	c := h.c
+	must(c.PutTier(ctx, pa.Tier{Name: pa.DefaultTier, Limits: pa.Quota{StorageBytes: 1000}}))(t)
+	must(c.PutTier(ctx, pa.Tier{Name: "pro", Limits: pa.Quota{StorageBytes: 100}}))(t)
+	must(fc.PutTier(ctx, api.Tier{Name: "pro"}))(t)
+	must(fc.SetTier(ctx, "u-pro", "pro"))(t)
+
+	st := must(c.Quota(ctx, "u-pro"))(t)
+	if st.Tier != "pro" || st.Effective.StorageBytes != 100 {
+		t.Fatalf("pro key: %+v", st)
+	}
+	if st := must(c.Quota(ctx, "u-free"))(t); st.Tier != pa.DefaultTier || st.Effective.StorageBytes != 1000 {
+		t.Fatalf("unmapped key: %+v", st)
+	}
+	big := strings.Repeat("x", 500)
+	_, err := c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u-pro", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", big)}}})
+	wantCode(t, err, 413, "quota_exceeded")
+	must(c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u-free", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", big)}}}))(t)
+}

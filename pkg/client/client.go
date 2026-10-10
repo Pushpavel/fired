@@ -424,10 +424,34 @@ func (c *Client) Hosts(ctx context.Context) ([]api.HostRecord, error) {
 	return l.Hosts, c.do(ctx, "GET", "/v1/hosts", nil, &l)
 }
 
-// Quotas reports a quota key's limits and usage in every pool it uses.
-func (c *Client) Quotas(ctx context.Context, key string) ([]api.QuotaStatus, error) {
-	var l api.QuotaList
-	return l.Quotas, c.do(ctx, "GET", "/v1/quotas/"+url.PathEscape(key), nil, &l)
+// QuotaKey reports a quota key's tier and its limits and usage in every
+// pool it uses.
+func (c *Client) QuotaKey(ctx context.Context, key string) (*api.QuotaKeyStatus, error) {
+	var s api.QuotaKeyStatus
+	return &s, c.do(ctx, "GET", "/v1/quotas/"+url.PathEscape(key), nil, &s)
+}
+
+// SetTier maps a quota key to a tier ("" = the default tier).
+func (c *Client) SetTier(ctx context.Context, key, tier string) (*api.QuotaKeyStatus, error) {
+	var s api.QuotaKeyStatus
+	return &s, c.do(ctx, "PUT", "/v1/quotas/"+url.PathEscape(key), api.SetQuotaKeyRequest{Tier: tier}, &s)
+}
+
+// Tiers lists the tiers.
+func (c *Client) Tiers(ctx context.Context) ([]api.Tier, error) {
+	var l api.TierList
+	return l.Tiers, c.do(ctx, "GET", "/v1/tiers", nil, &l)
+}
+
+// PutTier creates or replaces a tier.
+func (c *Client) PutTier(ctx context.Context, t api.Tier) (*api.Tier, error) {
+	var out api.Tier
+	return &out, c.do(ctx, "PUT", "/v1/tiers/"+url.PathEscape(t.Name), t, &out)
+}
+
+// DeleteTier removes a tier no quota key is in.
+func (c *Client) DeleteTier(ctx context.Context, name string) error {
+	return c.do(ctx, "DELETE", "/v1/tiers/"+url.PathEscape(name), nil, nil)
 }
 
 // Quota reports a quota key's limits and usage in one pool.

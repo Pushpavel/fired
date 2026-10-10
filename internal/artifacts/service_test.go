@@ -409,8 +409,9 @@ func TestJobsWindowsAndTriggers(t *testing.T) {
 }
 
 func TestScheduleFiring(t *testing.T) {
-	h := newHarness(t, func(c *Config) { c.Limits.DefaultQuota.MinInterval = pa.Duration(15 * time.Minute) })
+	h := newHarness(t, nil)
 	ctx := context.Background()
+	must(h.c.PutTier(ctx, pa.Tier{Name: pa.DefaultTier, Limits: pa.Quota{MinInterval: pa.Duration(15 * time.Minute)}}))(t)
 	res := must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
 		Spec: &pa.Spec{Jobs: map[string]pa.Job{"poll": {Run: "true", Schedule: "*/5 * * * *"}}}}}))(t)
 	id := res.Artifact.ID

@@ -1168,14 +1168,16 @@ async function quotaSection(box, key) {
     h("span", { class: "bar" }, h("i", { style: `width:${max > 0 ? Math.min(100, 100 * used / max) : 0}%` })),
     h("span", {}, h("b", {}, fmt(used)), max > 0 ? ` of ${fmt(max)}` : max < 0 ? ", no limit" : ""));
   const fld = (name, label, val, ph) => h("label", { class: "field" }, h("span", {}, label), h("input", { type: "text", name, value: val || "", placeholder: ph }));
+  const fromTier = (v, f) => v > 0 || (typeof v === "string" && v !== "0s") ? `From the tier, ${f(v)}` : "From the tier, no limit";
   const form = h("div", { class: "cols" },
-    fld("min_interval", "Shortest schedule interval", q.quota.min_interval && q.quota.min_interval !== "0s" ? fmtDur(q.quota.min_interval) : "", `Default, ${fmtDur(S.info?.default_quota?.min_interval) ?? ""}`),
-    fld("storage_bytes", "Storage, bytes", q.quota.storage_bytes, `Default, ${fmtBytes(S.info?.default_quota?.storage_bytes)}`));
+    fld("min_interval", "Shortest schedule interval", q.quota.min_interval && q.quota.min_interval !== "0s" ? fmtDur(q.quota.min_interval) : "", fromTier(e.min_interval, fmtDur)),
+    fld("storage_bytes", "Storage, bytes", q.quota.storage_bytes, fromTier(e.storage_bytes, fmtBytes)));
   box.replaceChildren(h("h3", {}, `Limits for “${key}”`),
-    h("p", { class: "note" }, "Shared by every artifact with this quota key. Empty fields use the service default; -1 turns a limit off."),
+    h("p", { class: "note" }, h("b", {}, `Tier: ${q.tier}. `), "The tier a key is in is set on fired (PUT /v1/quotas/{key}), and applies to its sandboxes and its artifacts. Tiers' storage and schedule limits are defined here with PUT /v1/tiers/{name}."),
+    h("p", { class: "note" }, "Fields below override the tier for this key only. Empty uses the tier; -1 turns a limit off."),
     meter("Storage, deduplicated", q.storage_used, e.storage_bytes, fmtBytes),
     h("p", { class: "note" }, `Schedules fire at most every ${fmtDur(e.min_interval) || "minute"}; closer firings are skipped.`),
-    h("p", { class: "note" }, `Runs use compute from this key's budget in fired's “${S.info?.runner_pool || "artifacts"}” pool (memory at once and GB-hours a day, across every host). fired sets those limits: PUT /v1/quotas/{key}/{pool} on fired. A run over them waits instead of failing.`),
+    h("p", { class: "note" }, `Runs use compute from this key's budget in fired's “${S.info?.runner_pool || "artifacts"}” pool (memory at once and GB-hours a day, across every host). Those come from the same tier, defined on fired. A run over them waits instead of failing.`),
     form,
     h("div", {}, h("button", { class: "btn", onclick: async () => {
       const body = {};
@@ -1184,8 +1186,8 @@ async function quotaSection(box, key) {
         body[inp.name] = inp.name === "min_interval" ? v : +v;
         if (inp.name !== "min_interval" && isNaN(body[inp.name])) { toast(`${inp.previousSibling.textContent} needs a number.`, "err"); return; }
       }
-      try { await guard(() => api("PUT", `/quotas/${enc(key)}`, body), "Limits saved"); quotaSection(box, key); } catch {}
-    } }, "Save limits")));
+      try { await guard(() => api("PUT", `/quotas/${enc(key)}`, body), "Overrides saved"); quotaSection(box, key); } catch {}
+    } }, "Save overrides")));
 }
 
 // ---------- dialogs

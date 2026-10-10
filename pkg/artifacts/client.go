@@ -326,3 +326,21 @@ func (c *Client) Events(ctx context.Context, artifact string, fn func(Event)) er
 	}
 	return sc.Err()
 }
+
+// Tiers lists the tier definitions (storage and schedule limits). Which tier
+// a quota key is in is set on fired.
+func (c *Client) Tiers(ctx context.Context) ([]Tier, error) {
+	var l TierList
+	return l.Tiers, c.do(ctx, "GET", "/v1/tiers", nil, &l)
+}
+
+// PutTier creates or replaces a tier definition.
+func (c *Client) PutTier(ctx context.Context, t Tier) (*Tier, error) {
+	var out Tier
+	return &out, c.do(ctx, "PUT", "/v1/tiers/"+url.PathEscape(t.Name), t, &out)
+}
+
+// DeleteTier removes a tier definition.
+func (c *Client) DeleteTier(ctx context.Context, name string) error {
+	return c.do(ctx, "DELETE", "/v1/tiers/"+url.PathEscape(name), nil, nil)
+}

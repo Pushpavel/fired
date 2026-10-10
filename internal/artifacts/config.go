@@ -12,7 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Pushpavel/fired/pkg/api"
-	pa "github.com/Pushpavel/fired/pkg/artifacts"
 )
 
 // Config is the fired-artifacts service configuration.
@@ -71,8 +70,6 @@ type LimitsConfig struct {
 	DefaultActiveFor api.Duration `yaml:"default_active_for"`
 	// DefaultMaxRun is the longest run allowed without approval.
 	DefaultMaxRun api.Duration `yaml:"default_max_run"`
-	// DefaultQuota applies to quota keys without their own values.
-	DefaultQuota pa.Quota `yaml:"default_quota"`
 	// MaxConcurrentRuns caps runs across the whole service.
 	MaxConcurrentRuns int `yaml:"max_concurrent_runs"`
 	// MinInterval is the shortest schedule interval for anyone.
@@ -128,19 +125,15 @@ func DefaultConfig() Config {
 			MaxInlineBytes:     4 << 20,
 			DefaultActiveFor:   api.Duration(12 * time.Hour),
 			DefaultMaxRun:      api.Duration(30 * time.Minute),
-			DefaultQuota: pa.Quota{
-				MinInterval:  api.Duration(5 * time.Minute),
-				StorageBytes: 2 << 30,
-			},
-			MaxConcurrentRuns: 8,
-			MinInterval:       api.Duration(time.Minute),
-			ServeRPS:          50,
-			ServeBurst:        100,
-			RetainRuns:        24,
-			DeleteAfter:       0,
-			QueueMax:          100,
-			QueueMaxAge:       api.Duration(24 * time.Hour),
-			MaxPayloadBytes:   1 << 20,
+			MaxConcurrentRuns:  8,
+			MinInterval:        api.Duration(time.Minute),
+			ServeRPS:           50,
+			ServeBurst:         100,
+			RetainRuns:         24,
+			DeleteAfter:        0,
+			QueueMax:           100,
+			QueueMaxAge:        api.Duration(24 * time.Hour),
+			MaxPayloadBytes:    1 << 20,
 		},
 		Runner: RunnerConfig{
 			Template:     "base",

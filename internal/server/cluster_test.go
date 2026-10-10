@@ -29,7 +29,6 @@ func TestCluster(t *testing.T) {
 			c.Cluster.DefaultPool = "chat"
 			c.Cluster.Heartbeat = api.Duration(200 * time.Millisecond)
 			c.Cluster.HostTimeout = api.Duration(time.Second)
-			c.Quotas = map[string]api.Quota{"artifacts": {MaxMemoryMB: 1024}}
 		})
 	}
 	a := host("a", "chat")
@@ -148,7 +147,9 @@ func TestCluster(t *testing.T) {
 	must(c.Suspend(ctx, sb.ID))(t)
 	waitEvent(func(e api.Event) bool { return e.SandboxID == sb.ID && e.State == api.StateSuspended && e.Host == "b" })
 
-	// Quotas hold across hosts: u1 may run 1 GB in artifacts.
+	// Quotas hold across hosts: in the default tier, u1 may run 1 GB in
+	// artifacts.
+	must(c.PutTier(ctx, api.Tier{Name: api.DefaultTier, Pools: map[string]api.Quota{"artifacts": {MaxMemoryMB: 1024}}}))(t)
 	must(c.Resume(ctx, sb.ID))(t) // 512 MB
 	q := must(c.Quota(ctx, "u1", "artifacts"))(t)
 	if q.RunningMB != 512 || q.Effective.MaxMemoryMB != 1024 {
@@ -157,6 +158,16 @@ func TestCluster(t *testing.T) {
 	must(c.CreateSandbox(ctx, api.CreateSandboxRequest{Template: "base", Pool: "artifacts", QuotaKey: "u1"}))(t)
 	_, err = c.CreateSandbox(ctx, api.CreateSandboxRequest{Template: "base", Pool: "artifacts", QuotaKey: "u1"})
 	httpErr(err, 429, "quota_exceeded")
+	// Moving u1 to a bigger tier (one mapping, set through any host) lets
+	// it start more on any host.
+	must(c.PutTier(ctx, api.Tier{Name: "pro", Pools: map[string]api.Quota{"artifacts": {MaxMemoryMB: 1536}}}))(t)
+	if k := must(b.c.SetTier(ctx, "u1", "pro"))(t); k.Tier != "pro" {
+		t.Fatalf("set tier: %+v", k)
+	}
+	must(c.CreateSandbox(ctx, api.CreateSandboxRequest{Template: "base", Pool: "artifacts", QuotaKey: "u1"}))(t)
+	_, err = c.CreateSandbox(ctx, api.CreateSandboxRequest{Template: "base", Pool: "artifacts", QuotaKey: "u1"})
+	httpErr(err, 429, "quota_exceeded")
+	// A key's own override beats its tier.
 	must(c.SetQuota(ctx, "u1", "artifacts", api.Quota{MaxMemoryMB: -1}))(t)
 	must(c.CreateSandbox(ctx, api.CreateSandboxRequest{Template: "base", Pool: "artifacts", QuotaKey: "u1"}))(t)
 	// The default pool is a's.

@@ -337,8 +337,9 @@ type RunLogs struct {
 // ---- quotas
 
 // Quota limits what artifacts sharing a quota key (typically one user)
-// may store, and how often their schedules fire. Zero fields use the
-// service default; negative disables the limit.
+// may store, and how often their schedules fire. Zero fields fall through
+// (key override, then its tier, then the default tier); negative disables
+// the limit.
 //
 // Compute (memory, running time) is limited by fired, per quota key in the
 // runner pool: runner sandboxes carry the artifact's quota key.
@@ -347,11 +348,29 @@ type Quota struct {
 	StorageBytes int64    `json:"storage_bytes,omitempty" yaml:"storage_bytes"`
 }
 
+// Tier is what a plan means for artifacts: its storage and schedule
+// limits. Which tier a quota key is in is fired's single mapping
+// (PUT /v1/quotas/{key} on fired); keys without one are in "default".
+type Tier struct {
+	Name   string `json:"name"`
+	Limits Quota  `json:"limits"`
+}
+
+type TierList struct {
+	Tiers []Tier `json:"tiers"`
+}
+
+// DefaultTier applies to quota keys fired has no tier for.
+const DefaultTier = "default"
+
 type QuotaStatus struct {
-	Key         string `json:"key"`
-	Quota       Quota  `json:"quota"`
-	Effective   Quota  `json:"effective"`
-	StorageUsed int64  `json:"storage_used"`
+	Key string `json:"key"`
+	// Tier is the key's tier, from fired.
+	Tier string `json:"tier"`
+	// Quota is this key's own override; Effective is what applies.
+	Quota       Quota `json:"quota"`
+	Effective   Quota `json:"effective"`
+	StorageUsed int64 `json:"storage_used"`
 }
 
 // ---- credentials broker (implemented by your backend)

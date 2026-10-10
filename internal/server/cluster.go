@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/Pushpavel/fired/internal/sandbox"
+	"github.com/Pushpavel/fired/internal/store"
 	"github.com/Pushpavel/fired/pkg/api"
 )
 
@@ -155,7 +157,12 @@ func (s *Server) handleQuotas(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	out := api.QuotaList{Quotas: []api.QuotaStatus{}}
+	tier, err := s.m.Store().KeyTier(r.Context(), key)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := api.QuotaKeyStatus{QuotaKey: key, Tier: tier, Quotas: []api.QuotaStatus{}}
 	for _, p := range pools {
 		st, err := s.m.Store().QuotaStatus(r.Context(), key, p)
 		if err != nil {
@@ -188,6 +195,85 @@ func (s *Server) handlePutQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handleQuota(w, r)
+}
+
+// ---- tiers
+
+var tierNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+func (s *Server) handleTiers(w http.ResponseWriter, r *http.Request) {
+	ts, err := s.m.Store().Tiers(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, 200, api.TierList{Tiers: ts})
+}
+
+func (s *Server) handleGetTier(w http.ResponseWriter, r *http.Request) {
+	t, err := s.m.Store().GetTier(r.Context(), r.PathValue("name"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, &sandbox.Error{Status: 404, Code: "tier_not_found", Msg: fmt.Sprintf("tier %q not found", r.PathValue("name"))})
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, 200, t)
+}
+
+func (s *Server) handlePutTier(w http.ResponseWriter, r *http.Request) {
+	var t api.Tier
+	if err := decode(r, &t); err != nil {
+		writeError(w, err)
+		return
+	}
+	name := r.PathValue("name")
+	if !tierNameRe.MatchString(name) || (t.Name != "" && t.Name != name) {
+		writeError(w, &sandbox.Error{Status: 400, Code: "invalid_request", Msg: fmt.Sprintf("tier name must match %s (and the body's name, if given)", tierNameRe)})
+		return
+	}
+	t.Name = name
+	if err := s.m.Store().PutTier(r.Context(), t); err != nil {
+		writeError(w, err)
+		return
+	}
+	s.handleGetTier(w, r)
+}
+
+func (s *Server) handleDeleteTier(w http.ResponseWriter, r *http.Request) {
+	err := s.m.Store().DeleteTier(r.Context(), r.PathValue("name"))
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, &sandbox.Error{Status: 404, Code: "tier_not_found", Msg: fmt.Sprintf("tier %q not found", r.PathValue("name"))})
+	case errors.Is(err, store.ErrTierInUse):
+		writeError(w, &sandbox.Error{Status: 409, Code: "conflict", Msg: err.Error()})
+	case err != nil:
+		writeError(w, err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// handleSetKeyTier maps a quota key to a tier: the one mapping fired and
+// fired-artifacts both use.
+func (s *Server) handleSetKeyTier(w http.ResponseWriter, r *http.Request) {
+	var req api.SetQuotaKeyRequest
+	if err := decode(r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	err := s.m.Store().SetKeyTier(r.Context(), r.PathValue("key"), req.Tier)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, &sandbox.Error{Status: 404, Code: "tier_not_found", Msg: fmt.Sprintf("tier %q not found; create it with PUT /v1/tiers/%s", req.Tier, req.Tier)})
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.handleQuotas(w, r)
 }
 
 // ---- templates: builds live on one host each

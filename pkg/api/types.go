@@ -394,20 +394,46 @@ type Quota struct {
 	GBHoursPerDay float64 `json:"gb_hours_per_day" yaml:"gb_hours_per_day"`
 }
 
+// Tier is a named set of limits (a plan): what a quota key mapped to it may
+// run in each pool. Every key is in exactly one tier ("default" unless
+// set), and the mapping is the one source of truth for other services too
+// (fired-artifacts reads a key's tier from here).
+type Tier struct {
+	Name  string           `json:"name"`
+	Pools map[string]Quota `json:"pools"`
+}
+
+type TierList struct {
+	Tiers []Tier `json:"tiers"`
+}
+
+// DefaultTier applies to quota keys without a tier.
+const DefaultTier = "default"
+
 // QuotaStatus is a key's limits and usage in one pool.
 type QuotaStatus struct {
 	QuotaKey string `json:"quota_key"`
 	Pool     string `json:"pool"`
-	// Quota is what was set for this key; Effective applies the defaults
-	// (-1 = no limit).
+	Tier     string `json:"tier"`
+	// Quota is this key's own override; Effective is what applies: the
+	// override, else the tier's limit, else the default tier's (-1 = no
+	// limit).
 	Quota        Quota   `json:"quota"`
 	Effective    Quota   `json:"effective"`
 	RunningMB    int     `json:"running_mb"`
 	GBHoursToday float64 `json:"gb_hours_today"`
 }
 
-type QuotaList struct {
-	Quotas []QuotaStatus `json:"quotas"`
+// QuotaKeyStatus is a key's tier and its limits and usage in every pool.
+type QuotaKeyStatus struct {
+	QuotaKey string        `json:"quota_key"`
+	Tier     string        `json:"tier"`
+	Quotas   []QuotaStatus `json:"quotas"`
+}
+
+// SetQuotaKeyRequest maps a key to a tier ("" = the default tier).
+type SetQuotaKeyRequest struct {
+	Tier string `json:"tier"`
 }
 
 type HostInfo struct {

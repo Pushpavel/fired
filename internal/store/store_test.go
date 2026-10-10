@@ -80,8 +80,10 @@ func TestAdmission(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 10, 10, 0, 0, 0, time.UTC)
 	a, b := open(t, url, "a", &now), open(t, url, "b", &now)
+	if err := a.PutTier(ctx, api.Tier{Name: api.DefaultTier, Pools: map[string]api.Quota{"chat": {MaxMemoryMB: 3072, GBHoursPerDay: 4}}}); err != nil {
+		t.Fatal(err)
+	}
 	for _, s := range []*Store{a, b} {
-		s.Defaults = map[string]api.Quota{"chat": {MaxMemoryMB: 3072, GBHoursPerDay: 4}}
 		if err := s.Heartbeat(ctx, api.HostRecord{StartedAt: now}); err != nil {
 			t.Fatal(err)
 		}
@@ -190,5 +192,75 @@ func TestAdmission(t *testing.T) {
 	hs, _ := a.Hosts(ctx)
 	if len(hs) != 2 || !hs[0].Alive || hs[1].Alive {
 		t.Fatalf("hosts: %+v", hs)
+	}
+}
+
+func TestTiers(t *testing.T) {
+	url := storetest.URL(t)
+	ctx := context.Background()
+	s := open(t, url, "a", nil)
+	if err := s.Heartbeat(ctx, api.HostRecord{StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	eff := func(key, pool string) api.QuotaStatus {
+		t.Helper()
+		st, err := s.QuotaStatus(ctx, key, pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return *st
+	}
+	// No tiers at all: no limits.
+	if st := eff("u1", "chat"); st.Tier != api.DefaultTier || st.Effective.MaxMemoryMB != -1 {
+		t.Fatalf("no tiers: %+v", st)
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(s.PutTier(ctx, api.Tier{Name: api.DefaultTier, Pools: map[string]api.Quota{
+		"chat": {MaxMemoryMB: 2048, GBHoursPerDay: 24}, "artifacts": {MaxMemoryMB: 1024}}}))
+	must(s.PutTier(ctx, api.Tier{Name: "pro", Pools: map[string]api.Quota{"chat": {MaxMemoryMB: 8192}}}))
+	if err := s.SetKeyTier(ctx, "u1", "gold"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown tier: %v", err)
+	}
+	must(s.SetKeyTier(ctx, "u1", "pro"))
+	// pro's chat memory, the default tier's GB-hours (pro doesn't set them),
+	// and the default tier's artifacts pool.
+	if st := eff("u1", "chat"); st.Tier != "pro" || st.Effective.MaxMemoryMB != 8192 || st.Effective.GBHoursPerDay != 24 {
+		t.Fatalf("pro chat: %+v", st)
+	}
+	if st := eff("u1", "artifacts"); st.Effective.MaxMemoryMB != 1024 {
+		t.Fatalf("pro artifacts: %+v", st)
+	}
+	if st := eff("u2", "chat"); st.Effective.MaxMemoryMB != 2048 {
+		t.Fatalf("default: %+v", st)
+	}
+	// A key's own override beats its tier.
+	must(s.SetQuota(ctx, "u1", "chat", api.Quota{MaxMemoryMB: 16384}))
+	if st := eff("u1", "chat"); st.Effective.MaxMemoryMB != 16384 || st.Quota.MaxMemoryMB != 16384 {
+		t.Fatalf("override: %+v", st)
+	}
+	// Changing the tier changes every key in it.
+	must(s.PutTier(ctx, api.Tier{Name: "pro", Pools: map[string]api.Quota{"chat": {MaxMemoryMB: 9000, GBHoursPerDay: 100}}}))
+	if st := eff("u1", "chat"); st.Effective.GBHoursPerDay != 100 {
+		t.Fatalf("tier change: %+v", st)
+	}
+	pools, err := s.QuotaPools(ctx, "u1")
+	if err != nil || len(pools) != 2 || pools[0] != "artifacts" || pools[1] != "chat" {
+		t.Fatalf("pools: %v %v", pools, err)
+	}
+	if err := s.DeleteTier(ctx, "pro"); !errors.Is(err, ErrTierInUse) {
+		t.Fatalf("delete a tier in use: %v", err)
+	}
+	must(s.SetKeyTier(ctx, "u1", ""))
+	if tier, _ := s.KeyTier(ctx, "u1"); tier != api.DefaultTier {
+		t.Fatalf("unmapped: %s", tier)
+	}
+	must(s.DeleteTier(ctx, "pro"))
+	if ts, _ := s.Tiers(ctx); len(ts) != 1 {
+		t.Fatalf("tiers: %+v", ts)
 	}
 }

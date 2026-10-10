@@ -89,6 +89,17 @@ CREATE TABLE usage (
 	PRIMARY KEY (quota_key, pool, day)
 );
 `},
+	// Tiers (plans) and the one quota key → tier mapping.
+	{minCode: 1, sql: `
+CREATE TABLE tiers (
+	name  TEXT PRIMARY KEY,
+	pools JSONB NOT NULL DEFAULT '{}'
+);
+CREATE TABLE key_tiers (
+	quota_key TEXT PRIMARY KEY,
+	tier      TEXT NOT NULL
+);
+`},
 }
 
 // SchemaVersion is the schema this code is built for.

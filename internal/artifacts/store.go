@@ -118,6 +118,10 @@ CREATE TABLE IF NOT EXISTS quotas (
 	key  TEXT PRIMARY KEY,
 	data TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tiers (
+	name TEXT PRIMARY KEY,
+	data TEXT NOT NULL
+);
 `
 
 func (s *store) close() error { return s.db.Close() }
@@ -551,6 +555,54 @@ func putQuota(ctx context.Context, q querier, key string, v pa.Quota) error {
 	d, _ := json.Marshal(v)
 	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO quotas(key, data) VALUES(?,?)`, key, string(d))
 	return err
+}
+
+func getTier(ctx context.Context, q querier, name string) (pa.Quota, bool, error) {
+	var data string
+	var out pa.Quota
+	err := q.QueryRowContext(ctx, `SELECT data FROM tiers WHERE name=?`, name).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, false, nil
+	}
+	if err != nil {
+		return out, false, err
+	}
+	_ = json.Unmarshal([]byte(data), &out)
+	return out, true, nil
+}
+
+func putTier(ctx context.Context, q querier, t pa.Tier) error {
+	d, _ := json.Marshal(t.Limits)
+	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO tiers(name, data) VALUES(?,?)`, t.Name, string(d))
+	return err
+}
+
+func listTiers(ctx context.Context, q querier) ([]pa.Tier, error) {
+	rows, err := q.QueryContext(ctx, `SELECT name, data FROM tiers ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []pa.Tier{}
+	for rows.Next() {
+		var t pa.Tier
+		var data string
+		if err := rows.Scan(&t.Name, &data); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(data), &t.Limits)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func deleteTier(ctx context.Context, q querier, name string) (bool, error) {
+	res, err := q.ExecContext(ctx, `DELETE FROM tiers WHERE name=?`, name)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // ---- garbage collection

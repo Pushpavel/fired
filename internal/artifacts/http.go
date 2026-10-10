@@ -49,6 +49,10 @@ func (s *Service) Handler() http.Handler {
 	h("GET /v1/artifacts/{id}/runs/{run}", s.handleRun)
 	h("GET /v1/artifacts/{id}/runs/{run}/logs", s.handleRunLogs)
 
+	h("GET /v1/tiers", s.handleTiers)
+	h("GET /v1/tiers/{name}", s.handleGetTier)
+	h("PUT /v1/tiers/{name}", s.handlePutTier)
+	h("DELETE /v1/tiers/{name}", s.handleDeleteTier)
 	h("GET /v1/quotas/{key}", s.handleGetQuota)
 	h("PUT /v1/quotas/{key}", s.handlePutQuota)
 	if s.cfg.UI {
@@ -588,6 +592,53 @@ func (s *Service) handlePutQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, st)
+}
+
+// ---- tiers
+
+func (s *Service) handleTiers(w http.ResponseWriter, r *http.Request) {
+	ts, err := s.Tiers(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, pa.TierList{Tiers: ts})
+}
+
+func (s *Service) handleGetTier(w http.ResponseWriter, r *http.Request) {
+	t, err := s.Tier(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, t)
+}
+
+func (s *Service) handlePutTier(w http.ResponseWriter, r *http.Request) {
+	var t pa.Tier
+	if err := decode(r, &t, 1<<20); err != nil {
+		writeErr(w, err)
+		return
+	}
+	name := r.PathValue("name")
+	if t.Name != "" && t.Name != name {
+		writeErr(w, badRequest("the body's name %q differs from the path's %q", t.Name, name))
+		return
+	}
+	t.Name = name
+	if err := s.PutTier(r.Context(), t); err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.handleGetTier(w, r)
+}
+
+func (s *Service) handleDeleteTier(w http.ResponseWriter, r *http.Request) {
+	if err := s.DeleteTier(r.Context(), r.PathValue("name")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- events
