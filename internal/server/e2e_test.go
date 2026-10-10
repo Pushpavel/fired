@@ -284,6 +284,17 @@ func TestEndToEnd(t *testing.T) {
 		if err := c.DeleteFile(ctx, id, "restored", true); err != nil {
 			t.Fatal(err)
 		}
+		// manifest: hashes without downloading
+		must(c.WriteFile(ctx, id, "dir2/skip/x.txt", strings.NewReader("x"), 0o644))(t)
+		m := must(c.Manifest(ctx, id, "dir2", "skip"))(t)
+		if len(m.Files) != 1 || m.Files[0].Path != "moved.txt" || m.Files[0].Size != 8 ||
+			m.Files[0].SHA256 != "9b96a1fe1d548cbbc960cc6a0286668fd74a763667b06366fb2324269fcabaa4" {
+			t.Fatalf("manifest: %+v", m)
+		}
+		m = must(c.Manifest(ctx, id, "dir2/moved.txt"))(t)
+		if len(m.Files) != 1 || m.Files[0].Path != "moved.txt" {
+			t.Fatalf("single-file manifest: %+v", m)
+		}
 	})
 
 	t.Run("background", func(t *testing.T) {

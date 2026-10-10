@@ -8,7 +8,8 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/fired ./cmd/fired \
- && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/fired-agent ./cmd/fired-agent
+ && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/fired-agent ./cmd/fired-agent \
+ && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/fired-artifacts ./cmd/fired-artifacts
 
 # Guest kernel, built from Firecracker's CI config plus what fired needs built
 # in (overlayfs root, vsock, ext4, devtmpfs, virtio-rng, cgroup v2). Cached
@@ -57,6 +58,9 @@ RUN set -eux; arch="$(uname -m)"; \
     firecracker --version
 COPY --from=build /out/fired /usr/local/bin/fired
 COPY --from=build /out/fired-agent /usr/local/lib/fired/fired-agent
+# The artifact service ships in the same image; run it with
+# --entrypoint fired-artifacts (see docs/artifacts.md).
+COPY --from=build /out/fired-artifacts /usr/local/bin/fired-artifacts
 # Default guest kernel. Mounting a directory over /data/kernels replaces it.
 COPY --from=kernel /out/vmlinux /data/kernels/vmlinux
 COPY deploy/config.yaml /etc/fired/config.yaml

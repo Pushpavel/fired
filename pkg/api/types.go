@@ -225,6 +225,21 @@ type DirListing struct {
 	Entries []FileInfo `json:"entries"`
 }
 
+// FileManifest lists the regular files under a path with their SHA-256,
+// returned by GET /files/manifest.
+type FileManifest struct {
+	Path  string          `json:"path"`
+	Files []ManifestEntry `json:"files"`
+}
+
+type ManifestEntry struct {
+	// Path is relative to FileManifest.Path, slash-separated.
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Mode   string `json:"mode"`
+	SHA256 string `json:"sha256"`
+}
+
 type MoveRequest struct {
 	From string `json:"from"`
 	To   string `json:"to"`

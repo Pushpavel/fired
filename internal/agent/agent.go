@@ -188,6 +188,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /files/mkdir", a.handleMkdir)
 	mux.HandleFunc("POST /files/move", a.handleMove)
 	mux.HandleFunc("GET /archive", a.handleGetArchive)
+	mux.HandleFunc("GET /manifest", a.handleManifest)
 	mux.HandleFunc("PUT /archive", a.handlePutArchive)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {

@@ -359,6 +359,14 @@ func (c *Client) DownloadArchive(ctx context.Context, id, path string, excludes 
 	return resp.Body, nil
 }
 
+// Manifest lists the regular files under path with size, mode and SHA-256
+// (excluding base names or relative paths matching excludes).
+func (c *Client) Manifest(ctx context.Context, id, path string, excludes ...string) (*api.FileManifest, error) {
+	q := url.Values{"path": {path}, "exclude": excludes}
+	var m api.FileManifest
+	return &m, c.do(ctx, "GET", sb(id)+"/files/manifest?"+q.Encode(), nil, &m)
+}
+
 // UploadArchive extracts a tar.gz into path.
 func (c *Client) UploadArchive(ctx context.Context, id, path string, tgz io.Reader) error {
 	req, err := c.newRequest(ctx, "PUT", sb(id)+"/files/archive?path="+url.QueryEscape(path), tgz)

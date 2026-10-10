@@ -246,6 +246,7 @@ Relative paths are resolved against the template workdir (`/workspace`).
 | `POST /files/move`, body `{"from":"a","to":"b"}` | `FileInfo` |
 | `GET /files/archive?path=dist&exclude=node_modules&exclude=.git` | A tar.gz with entries relative to `path` |
 | `PUT /files/archive?path=dest`, body = tar.gz | Extracted into `dest` |
+| `GET /files/manifest?path=dist&exclude=node_modules` | `{"path", "files": [{path, size, mode, sha256}]}`: the regular files under `path` (relative to it) with their SHA-256, so you can upload only what a content-addressed store doesn't have yet |
 
 ---
 

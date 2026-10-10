@@ -159,9 +159,11 @@ export default {
 };
 ```
 
-**Static artifacts** (slides, docs, built React apps) don't need a VM to be
-viewed. Download `GET /files/archive?path=dist`, store the bundle in MinIO,
-and serve it from the preview domain directly.
+**Artifacts** (pages, decks, built React apps, data files, scheduled
+automations) don't need a VM to be viewed. Publish them to the artifact
+service (`fired-artifacts`, [docs/artifacts.md](artifacts.md)) and serve its
+files from a separate preview domain. `GET /files/manifest?path=dist` gives
+you the SHA-256 of every file, so a publish uploads only new content.
 
 ## Pull requests
 

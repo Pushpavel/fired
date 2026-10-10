@@ -1,0 +1,58 @@
+# fired-artifacts configuration. Every key is optional; the values shown are
+# the defaults unless noted. Env overrides: FIRED_ARTIFACTS_TOKEN,
+# FIRED_ARTIFACTS_LISTEN, FIRED_ARTIFACTS_DATA_DIR, FIRED_URL, FIRED_API_TOKEN,
+# FIRED_ARTIFACTS_BROKER_URL, FIRED_ARTIFACTS_BROKER_TOKEN.
+
+listen: ":8444"
+token: ""                       # required; prefer FIRED_ARTIFACTS_TOKEN
+
+# SQLite + blob store. Artifacts are kept work: put this on durable storage.
+data_dir: /data/artifacts
+
+# The fired daemon jobs run on.
+fired:
+  url: http://127.0.0.1:8443
+  token: ""                     # prefer FIRED_API_TOKEN
+
+# Your backend's credentials endpoint, POSTed before every run with
+# {artifact, quota_key, labels, version, job, run_id}; it answers
+# {secret_env, secret_files}. Empty url runs jobs without credentials.
+broker:
+  url: ""
+  token: ""
+  timeout: 10s
+
+limits:
+  max_files_per_version: 5000
+  max_version_bytes: 268435456  # 256 MiB
+  max_inline_bytes: 4194304     # content/content_base64 per publish
+  default_active_for: 12h       # schedule window after a publish, without approval
+  default_max_run: 30m          # longest run without approval
+  default_quota:                # per quota key, unless PUT /v1/quotas/{key} says otherwise
+    max_concurrent_runs: 2
+    run_minutes_per_day: 240
+    min_interval: 5m
+    storage_bytes: 2147483648   # 2 GiB, deduplicated
+  max_concurrent_runs: 8        # whole service
+  min_interval: 1m              # shortest schedule interval for anyone
+  serve_rps: 50                 # file reads per artifact per second
+  serve_burst: 100
+  retain_runs: 24               # run-produced versions kept per artifact
+  delete_after: 0s              # delete artifacts inactive this long (0 = never)
+  queue_max: 100                # defaults for on_busy: queue
+  queue_max_age: 24h
+  max_payload_bytes: 1048576
+
+runner:
+  template: base                # fired template for jobs that don't name one
+  workdir: /artifact
+  egress: []                    # allowlist for runner sandboxes, e.g. ["api.github.com"]
+  ttl:                          # runner sandboxes are a cache; these are fired TTLs
+    idle_suspend: 1m
+    archive_after: 1h
+    delete_after: 48h
+  log_bytes: 262144             # tail kept per stream per run
+
+scheduler_interval: 5s
+gc_interval: 1h
+log_level: info

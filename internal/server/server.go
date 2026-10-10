@@ -72,6 +72,7 @@ func (s *Server) routes() {
 	h("POST /v1/sandboxes/{id}/files/move", s.forwardFiles("POST", "/files/move"))
 	h("GET /v1/sandboxes/{id}/files/archive", s.forwardFiles("GET", "/archive"))
 	h("PUT /v1/sandboxes/{id}/files/archive", s.forwardFiles("PUT", "/archive"))
+	h("GET /v1/sandboxes/{id}/files/manifest", s.forwardFiles("GET", "/manifest"))
 
 	h("GET /v1/sandboxes/{id}/ports", s.handleListPorts)
 	h("POST /v1/sandboxes/{id}/ports", s.handleExpose)
