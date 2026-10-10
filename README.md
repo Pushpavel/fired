@@ -159,7 +159,7 @@ or `Authorization: Bearer <token>`. The full reference is
 | Lifecycle | `POST /sandboxes/{id}/resume`, `/suspend`, `/archive`; `GET /sandboxes/{id}/logs` |
 | Exec | `POST /sandboxes/{id}/exec`, `GET /sandboxes/{id}/exec/stream` (WebSocket) |
 | Processes | `GET /sandboxes/{id}/processes[/{pid}[/output]]`, `DELETE /sandboxes/{id}/processes/{pid}` |
-| Files | `GET/PUT/DELETE /sandboxes/{id}/files?path=`, `POST /files/mkdir`, `POST /files/move`, `GET/PUT /files/archive`, `GET /files/manifest` |
+| Files | `GET/PUT/DELETE /sandboxes/{id}/files?path=`, `POST /files/mkdir`, `POST /files/move`, `GET/PUT /files/archive`, `GET /files/manifest`, `GET /files/scan` |
 | Ports | `GET/POST /sandboxes/{id}/ports`, `DELETE /ports/{port}`, `ANY /ports/{port}/proxy/{path}` |
 | Ops | `GET /host`, `GET /events` (SSE), `GET /metrics`, `GET /healthz` |
 

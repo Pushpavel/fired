@@ -240,6 +240,31 @@ type ManifestEntry struct {
 	SHA256 string `json:"sha256"`
 }
 
+// FileScan is a manifest of the regular files under a path whose hashes were
+// computed over the same bytes that were checked for the sandbox's secret
+// values. Returned by GET /files/scan. A caller that downloads the files and
+// checks each against its SHA256 gets exactly what was scanned.
+type FileScan struct {
+	// Path is the scanned path as resolved in the guest.
+	Path string `json:"path"`
+	// Base is the directory entry paths are relative to: Path itself, or
+	// its parent when Path is a file.
+	Base  string          `json:"base"`
+	Files []ManifestEntry `json:"files"`
+	// SecretsChecked is how many secrets (by name) the files were checked
+	// against: those passed to this sandbox's commands since the daemon
+	// started. 0 means nothing was checked, e.g. redaction is off.
+	SecretsChecked int           `json:"secrets_checked"`
+	Found          []SecretMatch `json:"found"`
+}
+
+// SecretMatch is a file that contains a secret (or an encoding of it). Only
+// the secret's name is reported, never its value.
+type SecretMatch struct {
+	Path   string `json:"path"`
+	Secret string `json:"secret"`
+}
+
 type MoveRequest struct {
 	From string `json:"from"`
 	To   string `json:"to"`

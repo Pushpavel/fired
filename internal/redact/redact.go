@@ -89,6 +89,20 @@ func (s *Set) MaxLen() int {
 	return len(s.secrets[0].val)
 }
 
+// Names is how many distinct secrets (by name) the set holds.
+func (s *Set) Names() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	names := map[string]bool{}
+	for _, sec := range s.secrets {
+		names[sec.name] = true
+	}
+	return len(names)
+}
+
 func (s *Set) Empty() bool {
 	if s == nil {
 		return true

@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -349,4 +352,106 @@ func TestRunsInFired(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 		}
 	})
+}
+
+func TestFromSandbox(t *testing.T) {
+	fc, firedURL := startFired(t)
+	h := newHarness(t, func(c *Config) { c.Fired.URL = firedURL; c.Fired.Token = firedToken })
+	ctx := context.Background()
+	c := h.c
+	sb := must(fc.CreateSandbox(ctx, api.CreateSandboxRequest{Template: "base"}))(t)
+	write := func(p, content string, mode uint32) {
+		t.Helper()
+		must(fc.WriteFile(ctx, sb.ID, p, strings.NewReader(content), mode))(t)
+	}
+	write("dist/index.html", "<h1>build 1</h1>", 0o644)
+	write("dist/run.sh", "#!/bin/sh\necho hi\n", 0o755)
+	write("dist/sub/a.css", "h1{}", 0o644)
+	write("dist/node_modules/x.js", "big", 0o644)
+	from := func(dst string, src pa.SandboxSource) pa.FileOp {
+		if src.ID == "" {
+			src.ID = sb.ID
+		}
+		return pa.FileOp{Path: dst, FromSandbox: &src}
+	}
+	tree := func(v *pa.Version) string {
+		var out []string
+		for _, f := range v.Files {
+			out = append(out, fmt.Sprintf("%s:%o", f.Path, f.Mode))
+		}
+		sort.Strings(out)
+		return strings.Join(out, ",")
+	}
+
+	// Mirror dist/ into site/, next to an inline file.
+	res := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "built", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{
+		pa.Text("README.md", "# built"),
+		from("site", pa.SandboxSource{Path: "dist", Exclude: []string{"node_modules"}}),
+	}}}))(t)
+	v := must(c.Version(ctx, "built", res.Publish.Version.Version))(t)
+	if got := tree(v); got != "README.md:644,site/index.html:644,site/run.sh:755,site/sub/a.css:644" {
+		t.Fatalf("v1 tree: %s", got)
+	}
+	if got := string(must(c.ReadFile(ctx, "built", "site/index.html", 0))(t)); got != "<h1>build 1</h1>" {
+		t.Fatalf("content: %q", got)
+	}
+
+	// The next build: a file removed in the sandbox disappears from site/.
+	if err := fc.DeleteFile(ctx, sb.ID, "dist/sub", true); err != nil {
+		t.Fatal(err)
+	}
+	write("dist/index.html", "<h1>build 2</h1>", 0o644)
+	r2 := must(c.Publish(ctx, "built", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{
+		from("site", pa.SandboxSource{FiredURL: firedURL, Path: "/workspace/dist", Exclude: []string{"node_modules"}})}}))(t)
+	v = must(c.Version(ctx, "built", r2.Version.Version))(t)
+	if got := tree(v); got != "README.md:644,site/index.html:644,site/run.sh:755" {
+		t.Fatalf("v2 tree: %s", got)
+	}
+
+	// A file holding a secret this sandbox was given fails the publish.
+	must(fc.Exec(ctx, sb.ID, api.ExecRequest{Cmd: "true", SecretEnv: map[string]string{"API_KEY": "sk-live-0123456789"}}))(t)
+	write("dist/.env", "API_KEY=sk-live-0123456789\n", 0o644)
+	_, err := c.Publish(ctx, "built", pa.PublishRequest{BaseVersion: 2, Files: []pa.FileOp{from("", pa.SandboxSource{Path: "dist"})}})
+	wantCode(t, err, 422, "secret_found")
+	if !strings.Contains(err.Error(), ".env") || !strings.Contains(err.Error(), "API_KEY") || strings.Contains(err.Error(), "sk-live") {
+		t.Fatalf("secret error should name the file and secret, not the value: %v", err)
+	}
+	// Excluding it works; "" mirrors the whole tree, so README.md goes.
+	r3 := must(c.Publish(ctx, "built", pa.PublishRequest{BaseVersion: 2, Files: []pa.FileOp{
+		from("", pa.SandboxSource{Path: "dist", Exclude: []string{".env", "node_modules"}})}}))(t)
+	v = must(c.Version(ctx, "built", r3.Version.Version))(t)
+	if got := tree(v); got != "index.html:644,run.sh:755" {
+		t.Fatalf("root mirror: %s", got)
+	}
+
+	// Bad sources.
+	_, err = c.Publish(ctx, "built", pa.PublishRequest{BaseVersion: 3, Files: []pa.FileOp{from("x", pa.SandboxSource{Path: "nope"})}})
+	wantCode(t, err, 404, "not_found")
+	_, err = c.Publish(ctx, "built", pa.PublishRequest{BaseVersion: 3, Files: []pa.FileOp{from("x", pa.SandboxSource{ID: "sb-missing", Path: "dist"})}})
+	wantCode(t, err, 404, "not_found")
+	_, err = c.Publish(ctx, "built", pa.PublishRequest{BaseVersion: 3, Files: []pa.FileOp{from("x", pa.SandboxSource{FiredURL: "ftp://x", Path: "dist"})}})
+	wantCode(t, err, 400, "invalid_request")
+
+	// A file that changes between the scan and its download fails the
+	// publish: the proxy edits it right after fired answers the scan.
+	// (A changed file whose scanned content the store already has isn't
+	// downloaded at all, so the scanned bytes are published; only new
+	// content can race.)
+	write("dist/new.txt", "scanned", 0o644)
+	target, _ := url.Parse(firedURL)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if strings.HasSuffix(resp.Request.URL.Path, "/files/scan") {
+			write("dist/new.txt", "changed after the scan", 0o644)
+		}
+		return nil
+	}
+	ps := httptest.NewServer(proxy)
+	defer ps.Close()
+	_, err = c.Publish(ctx, "built", pa.PublishRequest{BaseVersion: 3, Files: []pa.FileOp{
+		from("", pa.SandboxSource{FiredURL: ps.URL, Path: "dist", Exclude: []string{".env", "node_modules"}})}})
+	wantCode(t, err, 409, "changed")
+	if a := must(c.Get(ctx, "built"))(t); a.CurrentVersion != 3 {
+		t.Fatalf("failed publishes made versions: %d", a.CurrentVersion)
+	}
 }

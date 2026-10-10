@@ -247,6 +247,7 @@ Relative paths are resolved against the template workdir (`/workspace`).
 | `GET /files/archive?path=dist&exclude=node_modules&exclude=.git` | A tar.gz with entries relative to `path` |
 | `PUT /files/archive?path=dest`, body = tar.gz | Extracted into `dest` |
 | `GET /files/manifest?path=dist&exclude=node_modules` | `{"path", "files": [{path, size, mode, sha256}]}`: the regular files under `path` (relative to it) with their SHA-256, so you can upload only what a content-addressed store doesn't have yet |
+| `GET /files/scan?path=dist&exclude=node_modules` | The same manifest, plus `base` (the directory entry paths are relative to), `secrets_checked` and `found: [{path, secret}]`: files containing a secret value (or its base64/URL encoding) that was passed to this sandbox's commands. Hashes are computed over the bytes that were checked, so a caller that verifies each download against them publishes exactly what was scanned. Only secret names are returned. `secrets_checked: 0` means nothing was checked (redaction is off, or no secrets were passed since the daemon started). |
 
 ---
 

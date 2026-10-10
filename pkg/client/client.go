@@ -367,6 +367,14 @@ func (c *Client) Manifest(ctx context.Context, id, path string, excludes ...stri
 	return &m, c.do(ctx, "GET", sb(id)+"/files/manifest?"+q.Encode(), nil, &m)
 }
 
+// ScanFiles lists the regular files under path with their SHA-256, computed
+// over the same bytes that were checked for the sandbox's secret values.
+func (c *Client) ScanFiles(ctx context.Context, id, path string, excludes ...string) (*api.FileScan, error) {
+	q := url.Values{"path": {path}, "exclude": excludes}
+	var s api.FileScan
+	return &s, c.do(ctx, "GET", sb(id)+"/files/scan?"+q.Encode(), nil, &s)
+}
+
 // UploadArchive extracts a tar.gz into path.
 func (c *Client) UploadArchive(ctx context.Context, id, path string, tgz io.Reader) error {
 	req, err := c.newRequest(ctx, "PUT", sb(id)+"/files/archive?path="+url.QueryEscape(path), tgz)

@@ -120,9 +120,9 @@ POST /v1/blobs/missing  {"hashes": ["<sha256>", ...]}   → {"missing": [...]}
 PUT  /v1/blobs/<sha256>  (raw bytes, only the missing ones)
 ```
 
-`GET /v1/sandboxes/{id}/files/manifest?path=…` on fired returns the SHA-256 of
-every file in a sandbox folder, so republishing a 200-file build where one
-file changed downloads and uploads one file.
+To publish a sandbox folder, use a `from_sandbox` op (below): the service
+pulls only the files it doesn't have, so republishing a 200-file build where
+one file changed copies one file.
 
 ```json
 {
@@ -153,8 +153,8 @@ file changed downloads and uploads one file.
 - **`replace_dirs` mirrors folders:** they are emptied before `files` apply,
   so files that disappeared from a build folder disappear from the artifact.
 - **Each file op sets exactly one of** `hash` (an uploaded blob), `content`,
-  `content_base64` or `delete`. Inline content is capped by
-  `limits.max_inline_bytes`. `mode` is 0644 (default) or 0755.
+  `content_base64`, `delete` or `from_sandbox` (below). Inline content is
+  capped by `limits.max_inline_bytes`. `mode` is 0644 (default) or 0755.
 - **`spec` writes `artifact.json`.** Passing both `spec` and an
   `artifact.json` file is an error. Without either, the previous
   `artifact.json` carries over and is validated again against the new files
@@ -174,10 +174,40 @@ The response is the new version plus the status of every job (see below),
 e.g. `"state": "blocked", "needs_approval": ["timeout 2h exceeds the allowed
 max run 30m0s"]`. The publish itself never waits for approval.
 
-Your backend's artifact tool resolves its sources (sandbox folders, MCP
-resources, tool outputs, inline text) into blobs and file ops. It should
-apply ignore rules and scan for the secret values it has handed out before
-uploading; runs are scanned by the service itself (see Runs).
+### Publishing from a sandbox
+
+A `from_sandbox` op copies a folder (or one file) from a fired sandbox and
+mirrors it at `path` (`""` or `"."` is the artifact's root): files under
+`path` that the source doesn't have are removed, like `replace_dirs`.
+
+```json
+{"path": "site", "from_sandbox": {"id": "sb-…", "path": "/workspace/dist",
+  "exclude": ["node_modules", ".git"], "fired_url": "http://10.0.1.6:8443"}}
+```
+
+1. The service calls fired's `GET /files/scan`. fired checks every file
+   against the secret values passed to that sandbox's commands, and hashes
+   the same bytes. Any match fails the publish with `422 secret_found`
+   (the file and the secret's name, never its value).
+2. It asks its own store which hashes are missing, and downloads only those
+   (8 at a time).
+3. Each download must hash to the scanned value. A file that changed after
+   the scan fails the publish with `409 changed`; publish again. Files
+   whose scanned content the store already has aren't downloaded, so what
+   is published is exactly what was scanned.
+
+`fired_url` names the fired host the sandbox is on (default: `fired.url`).
+The service sends its fired token there, so all hosts share one token, and
+your backend must only pass URLs it chose, never one from an agent. Modes
+come from the sandbox (executable becomes 0755). A missing sandbox or path
+is `404`; other fired errors are `502 fired_error`. The secret check only
+knows secrets fired was given since it started, and only with redaction
+on; like the run check, it catches accidents and is not a boundary.
+
+Other sources (MCP resources, tool outputs, inline text) are resolved by
+your backend's artifact tool into blobs and file ops, applying its own
+ignore rules and secret checks; runs are scanned by the service itself (see
+Runs).
 
 ## Serving, versions, forks
 

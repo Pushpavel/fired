@@ -104,7 +104,7 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 	if len(req.Meta) > 0 && !json.Valid(req.Meta) {
 		return nil, badRequest("meta must be valid JSON")
 	}
-	prep, err := s.preparePublish(*req.Publish)
+	prep, err := s.preparePublish(ctx, *req.Publish)
 	if err != nil {
 		return nil, err
 	}
@@ -277,26 +277,48 @@ func sortedFiles(tree map[string]pa.File) []pa.File {
 type resolvedOp struct {
 	path   string
 	delete bool
-	file   pa.File
+	// clear removes everything under path ("" = the whole tree), so a
+	// from_sandbox folder is mirrored.
+	clear bool
+	file  pa.File
 }
 
 // resolveOps validates file ops and stores inline content as blobs.
-func (s *Service) resolveOps(req pa.PublishRequest) ([]resolvedOp, error) {
+func (s *Service) resolveOps(ctx context.Context, req pa.PublishRequest) ([]resolvedOp, error) {
 	var ops []resolvedOp
 	var inline int64
 	for i, op := range req.Files {
-		p, err := cleanPath(op.Path)
-		if err != nil {
-			return nil, badRequest("files[%d]: %v", i, err)
-		}
 		set := 0
-		for _, b := range []bool{op.Hash != "", op.Content != nil, op.ContentBase64 != "", op.Delete} {
+		for _, b := range []bool{op.Hash != "", op.Content != nil, op.ContentBase64 != "", op.Delete, op.FromSandbox != nil} {
 			if b {
 				set++
 			}
 		}
 		if set != 1 {
-			return nil, badRequest("files[%d] (%s): set exactly one of hash, content, content_base64 or delete", i, p)
+			return nil, badRequest("files[%d] (%s): set exactly one of hash, content, content_base64, delete or from_sandbox", i, op.Path)
+		}
+		if op.FromSandbox != nil {
+			// path is the folder to mirror into; "" or "." is the root.
+			dst := ""
+			if op.Path != "" && op.Path != "." {
+				var err error
+				if dst, err = cleanPath(op.Path); err != nil {
+					return nil, badRequest("files[%d]: %v", i, err)
+				}
+			}
+			if op.Mode != 0 {
+				return nil, badRequest("files[%d] (%s): from_sandbox takes modes from the sandbox; leave mode out", i, op.Path)
+			}
+			pulled, err := s.pullSandbox(ctx, i, dst, *op.FromSandbox)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, pulled...)
+			continue
+		}
+		p, err := cleanPath(op.Path)
+		if err != nil {
+			return nil, badRequest("files[%d]: %v", i, err)
 		}
 		mode := op.Mode
 		switch mode {
@@ -453,8 +475,8 @@ type publishPrep struct {
 	replaceDirs []string
 }
 
-func (s *Service) preparePublish(req pa.PublishRequest) (*publishPrep, error) {
-	ops, err := s.resolveOps(req)
+func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*publishPrep, error) {
+	ops, err := s.resolveOps(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -487,7 +509,7 @@ func (s *Service) preparePublish(req pa.PublishRequest) (*publishPrep, error) {
 }
 
 func (s *Service) Publish(ctx context.Context, id string, req pa.PublishRequest) (*pa.PublishResult, error) {
-	prep, err := s.preparePublish(req)
+	prep, err := s.preparePublish(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -529,6 +551,14 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 		}
 	}
 	for _, op := range p.ops {
+		if op.clear {
+			for path := range tree {
+				if op.path == "" || under(path, op.path) {
+					delete(tree, path)
+				}
+			}
+			continue
+		}
 		if op.delete {
 			delete(tree, op.path)
 			continue

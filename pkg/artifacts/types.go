@@ -141,7 +141,7 @@ type VersionList struct {
 }
 
 // FileOp is one change in a publish. Exactly one of Hash, Content,
-// ContentBase64 or Delete is set.
+// ContentBase64, Delete or FromSandbox is set.
 type FileOp struct {
 	Path string `json:"path"`
 	// Hash refers to a blob uploaded with PUT /v1/blobs/{hash}.
@@ -149,6 +149,11 @@ type FileOp struct {
 	Content       *string `json:"content,omitempty"`
 	ContentBase64 string  `json:"content_base64,omitempty"`
 	Delete        bool    `json:"delete,omitempty"`
+	// FromSandbox copies a folder (or one file) from a fired sandbox and
+	// mirrors it at Path ("" or "." is the artifact's root): files under
+	// Path that the source doesn't have are removed. Modes come from the
+	// sandbox. The source is checked for the sandbox's secret values first.
+	FromSandbox *SandboxSource `json:"from_sandbox,omitempty"`
 	// Mode is 0644 (default) or 0755.
 	Mode uint32 `json:"mode,omitempty"`
 }
@@ -174,6 +179,20 @@ type PublishRequest struct {
 	// Notify is an opaque target (e.g. an agent session). The first run of
 	// this version emits its run.finished event with this value set.
 	Notify string `json:"notify,omitempty"`
+}
+
+// SandboxSource is where a from_sandbox op reads from.
+type SandboxSource struct {
+	// FiredURL is the fired host the sandbox runs on. Empty uses the
+	// service's own fired URL. The service's fired token is sent to it, so
+	// never pass a URL your backend didn't choose.
+	FiredURL string `json:"fired_url,omitempty"`
+	ID       string `json:"id"`
+	// Path is a folder (or file) in the sandbox, e.g. /workspace/dist.
+	Path string `json:"path"`
+	// Exclude skips matching base names or relative paths (globs), e.g.
+	// node_modules, .git, *.log.
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 type PublishResult struct {

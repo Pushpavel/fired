@@ -295,6 +295,36 @@ func TestEndToEnd(t *testing.T) {
 		if len(m.Files) != 1 || m.Files[0].Path != "moved.txt" {
 			t.Fatalf("single-file manifest: %+v", m)
 		}
+		// scan: the same manifest, checked for this sandbox's secrets
+		// (GH_TOKEN and creds were registered by the secrets subtest).
+		must(c.WriteFile(ctx, id, "pub/ok.txt", strings.NewReader("nothing to see"), 0o755))(t)
+		must(c.WriteFile(ctx, id, "pub/sub/leak.env", strings.NewReader("TOKEN=Z2hzX3N1cGVyc2VjcmV0MTIz\n"), 0o644))(t)
+		must(c.WriteFile(ctx, id, "pub/skip/creds.txt", strings.NewReader("file-secret-456"), 0o644))(t)
+		sc := must(c.ScanFiles(ctx, id, "pub", "skip"))(t)
+		if sc.SecretsChecked < 2 || len(sc.Files) != 2 || !strings.HasSuffix(sc.Base, "/pub") || sc.Base != sc.Path {
+			t.Fatalf("scan: %+v", sc)
+		}
+		if len(sc.Found) != 1 || sc.Found[0].Path != "sub/leak.env" || sc.Found[0].Secret != "GH_TOKEN" {
+			t.Fatalf("scan found (base64 of GH_TOKEN in sub/leak.env): %+v", sc.Found)
+		}
+		for _, f := range sc.Files {
+			if f.Path == "ok.txt" && f.Mode != "0755" {
+				t.Fatalf("scan entry: %+v", f)
+			}
+		}
+		m = must(c.Manifest(ctx, id, "pub", "skip"))(t)
+		for i, f := range m.Files {
+			if g := sc.Files[i]; g.Path != f.Path || g.SHA256 != f.SHA256 || g.Size != f.Size {
+				t.Fatalf("scan and manifest disagree: %+v vs %+v", g, f)
+			}
+		}
+		one := must(c.ScanFiles(ctx, id, "pub/ok.txt"))(t)
+		if len(one.Files) != 1 || one.Files[0].Path != "ok.txt" || one.Base == one.Path {
+			t.Fatalf("single-file scan: %+v", one)
+		}
+		if _, err := c.ScanFiles(ctx, id, "pub/missing"); !client.IsNotFound(err) {
+			t.Fatalf("scan of a missing path: %v", err)
+		}
 	})
 
 	t.Run("background", func(t *testing.T) {
