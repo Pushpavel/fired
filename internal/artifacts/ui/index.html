@@ -932,7 +932,7 @@ async function publish() {
     const runNow = [...document.querySelectorAll("input[name=run_now]:checked")].map(x => x.value);
     if (runNow.length) req.run_now = runNow;
     const r = await api("POST", `/artifacts/${enc(a.id)}/versions`, req);
-    toast(`Published v${r.version.version}`, "ok");
+    toast(r.unchanged ? `Nothing changed: v${r.version.version} already has these files` : `Published v${r.version.version}`, "ok");
     for (const j of r.jobs || []) if (j.needs_approval?.length) toast(`${j.name} needs approval: ${j.needs_approval.join("; ")}`);
     S.stage.clear(); S.mirror = []; S.ver = null;
     if (runNow.length) { S.tab = "runs"; S.runSel = null; }
@@ -988,7 +988,7 @@ async function showCompare() {
 async function restore(n) {
   const a = S.art;
   try {
-    const r = await guard(() => api("POST", `/artifacts/${enc(a.id)}/restore`, { version: n, base_version: a.current_version }), r => `Restored v${n} as v${r.version.version}`);
+    const r = await guard(() => api("POST", `/artifacts/${enc(a.id)}/restore`, { version: n, base_version: a.current_version }), r => r.unchanged ? `v${r.version.version} already has v${n}'s files` : `Restored v${n} as v${r.version.version}`);
     S.ver = null; S.compare = null; await loadArtifact();
   } catch {}
 }
@@ -1142,7 +1142,10 @@ async function tabSettings(p) {
     h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Delete after inactive for"), ", -1 for never"), da), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Job-run versions to keep")), rr)),
     h("div", { class: "row" }, h("button", { class: "btn primary", onclick: async () => {
       try {
-        const req = { meta: { ...m, title: title.value.trim() || undefined, description: desc.value.trim() || undefined }, labels: kvLines(labels.value), quota_key: qk.value.trim() };
+        // PATCH merges labels and meta: removed keys are sent as null.
+        const lb = kvLines(labels.value);
+        for (const k of Object.keys(a.labels || {})) if (!(k in lb)) lb[k] = null;
+        const req = { meta: { title: title.value.trim() || null, description: desc.value.trim() || null }, labels: lb, quota_key: qk.value.trim() };
         req.delete_after = da.value.trim() || "0s";
         req.retain_runs = +rr.value || 0;
         await guard(() => api("PATCH", `/artifacts/${enc(a.id)}`, req), "Saved");

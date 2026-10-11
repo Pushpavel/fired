@@ -6,6 +6,7 @@
 package artifacts
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -128,14 +129,14 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 			return err
 		}
 		var err error
-		v, err = s.commitEdit(ctx, q, a, *req.Publish, prep, now)
+		v, _, err = s.commitEdit(ctx, q, a, *req.Publish, prep, now)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.emit(pa.Event{Type: "artifact.created", Artifact: id})
-	res, err := s.afterPublish(ctx, id, v, *req.Publish)
+	res, err := s.afterPublish(ctx, id, v, false, *req.Publish)
 	if err != nil {
 		return nil, err
 	}
@@ -189,10 +190,28 @@ func (s *Service) Update(ctx context.Context, id string, req pa.UpdateArtifactRe
 			a.QuotaKey = *req.QuotaKey
 		}
 		if req.Labels != nil {
-			a.Labels = req.Labels
+			labels := make(map[string]string, len(a.Labels)+len(req.Labels))
+			for k, v := range a.Labels {
+				labels[k] = v
+			}
+			for k, v := range req.Labels {
+				if v == nil {
+					delete(labels, k)
+				} else {
+					labels[k] = *v
+				}
+			}
+			if len(labels) == 0 {
+				labels = nil
+			}
+			a.Labels = labels
 		}
 		if len(req.Meta) > 0 {
-			a.Meta = req.Meta
+			meta, err := mergePatch(a.Meta, req.Meta)
+			if err != nil {
+				return err
+			}
+			a.Meta = meta
 		}
 		if req.DeleteAfter != nil {
 			a.DeleteAfter = *req.DeleteAfter
@@ -205,6 +224,52 @@ func (s *Service) Update(ctx context.Context, id string, req pa.UpdateArtifactRe
 		return putArtifact(ctx, q, a)
 	})
 	return out, err
+}
+
+// mergePatch applies a JSON merge patch (RFC 7386) to doc: object keys in
+// the patch are set, null ones removed, recursively; a patch that isn't an
+// object replaces doc. A result of null is returned as nil.
+func mergePatch(doc, patch json.RawMessage) (json.RawMessage, error) {
+	var d, p any
+	if len(doc) > 0 {
+		if err := decodeJSON(doc, &d); err != nil {
+			return nil, err
+		}
+	}
+	if err := decodeJSON(patch, &p); err != nil {
+		return nil, badRequest("meta must be valid JSON")
+	}
+	out := mergeValue(d, p)
+	if out == nil {
+		return nil, nil
+	}
+	return json.Marshal(out)
+}
+
+// decodeJSON keeps numbers as written, so merging doesn't round them.
+func decodeJSON(b []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	return dec.Decode(v)
+}
+
+func mergeValue(doc, patch any) any {
+	p, ok := patch.(map[string]any)
+	if !ok {
+		return patch
+	}
+	d, ok := doc.(map[string]any)
+	if !ok {
+		d = map[string]any{}
+	}
+	for k, v := range p {
+		if v == nil {
+			delete(d, k)
+		} else {
+			d[k] = mergeValue(d[k], v)
+		}
+	}
+	return d
 }
 
 func (s *Service) notFound(err error, id string) error {
@@ -526,32 +591,52 @@ func (s *Service) Publish(ctx context.Context, id string, req pa.PublishRequest)
 	}
 	now := s.now()
 	var v *pa.Version
+	var unchanged bool
 	err = s.st.tx(ctx, func(q querier) error {
 		a, err := getArtifact(ctx, q, id)
 		if err != nil {
 			return s.notFound(err, id)
 		}
-		if req.BaseVersion != a.CurrentVersion {
-			return errf(http.StatusConflict, "conflict", "base_version %d is not the current version (current is %d); read it, merge your changes and publish again", req.BaseVersion, a.CurrentVersion)
+		if err := checkBase(req.BaseVersion, a.CurrentVersion); err != nil {
+			return err
 		}
-		v, err = s.commitEdit(ctx, q, a, req, prep, now)
+		v, unchanged, err = s.commitEdit(ctx, q, a, req, prep, now)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.afterPublish(ctx, id, v, req)
+	return s.afterPublish(ctx, id, v, unchanged, req)
+}
+
+// checkBase checks that a publish or restore is on top of the current
+// version. Every artifact has a version, so 0 means base_version was left out.
+func checkBase(base, current int) error {
+	if base == 0 {
+		return badRequest("base_version is required: the version your change is on top of (current is %d)", current)
+	}
+	if base != current {
+		return errf(http.StatusConflict, "conflict", "base_version %d is not the current version (current is %d); read it, merge your changes and publish again", base, current)
+	}
+	return nil
 }
 
 // commitEdit applies a prepared publish on top of a's current version and
-// makes it current. A version always has at least one file.
-func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req pa.PublishRequest, p *publishPrep, now time.Time) (*pa.Version, error) {
+// makes it current. A version always has at least one file. When the result
+// has the current version's files, nothing is written (beyond notify) and
+// it returns the current version with unchanged set.
+func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req pa.PublishRequest, p *publishPrep, now time.Time) (v *pa.Version, unchanged bool, err error) {
 	id := a.ID
+	cur := map[string]pa.File{}
+	if a.CurrentVersion > 0 {
+		if cur, err = getTree(ctx, q, id, a.CurrentVersion); err != nil {
+			return nil, false, err
+		}
+	}
 	tree := map[string]pa.File{}
-	if !req.Replace && a.CurrentVersion > 0 {
-		var err error
-		if tree, err = getTree(ctx, q, id, a.CurrentVersion); err != nil {
-			return nil, err
+	if !req.Replace {
+		for p, f := range cur {
+			tree[p] = f
 		}
 	}
 	for _, d := range p.replaceDirs {
@@ -580,49 +665,72 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 		tree[pa.SpecFile] = pa.File{Path: pa.SpecFile, Hash: p.specHash, Size: p.specSize, Mode: 0o644}
 	}
 	if len(tree) == 0 {
-		return nil, badRequest("a version needs at least one file")
+		return nil, false, badRequest("a version needs at least one file")
+	}
+	if a.CurrentVersion > 0 && treesEqual(cur, tree) {
+		if v, err = getVersion(ctx, q, id, a.CurrentVersion); err != nil {
+			return nil, false, err
+		}
+		if err := checkRunNow(req.RunNow, v.Spec); err != nil {
+			return nil, false, err
+		}
+		if req.Notify != "" {
+			if err := setNotify(ctx, q, id, v.Version, req.Notify); err != nil {
+				return nil, false, err
+			}
+		}
+		return v, true, nil
 	}
 	if err := checkNoFileDirClash(tree); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	spec, err := s.specFor(tree)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	size, err := s.checkTree(ctx, q, a.QuotaKey, tree)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	n, err := maxVersion(ctx, q, id)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	for _, j := range req.RunNow {
-		if _, ok := spec.Jobs[j]; !ok {
-			return nil, badRequest("run_now: job %q is not defined in this version", j)
-		}
+	if err := checkRunNow(req.RunNow, spec); err != nil {
+		return nil, false, err
 	}
-	v := &pa.Version{Artifact: id, Version: n + 1, Parent: a.CurrentVersion, Origin: pa.OriginEdit, Label: req.Label,
+	v = &pa.Version{Artifact: id, Version: n + 1, Parent: a.CurrentVersion, Origin: pa.OriginEdit, Label: req.Label,
 		Labels: req.Labels, FileCount: len(tree), SizeBytes: size, Spec: spec, CreatedAt: now}
 	if err := insertVersion(ctx, q, v, tree); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if req.Notify != "" {
 		if err := setNotify(ctx, q, id, v.Version, req.Notify); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	a.CurrentVersion, a.UpdatedAt, a.LastActiveAt = v.Version, now, now
 	if err := putArtifact(ctx, q, a); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return v, s.syncJobs(ctx, q, id, spec, now, true)
+	return v, false, s.syncJobs(ctx, q, id, spec, now, true)
 }
 
-// afterPublish announces a committed version, starts run_now jobs and
-// reports every job's status.
-func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, req pa.PublishRequest) (*pa.PublishResult, error) {
-	s.emit(pa.Event{Type: "artifact.version", Artifact: id, Version: v.Version, Origin: v.Origin})
+func checkRunNow(jobs []string, spec pa.Spec) error {
+	for _, j := range jobs {
+		if _, ok := spec.Jobs[j]; !ok {
+			return badRequest("run_now: job %q is not defined in this version", j)
+		}
+	}
+	return nil
+}
+
+// afterPublish announces a committed version (unless the publish changed
+// nothing), starts run_now jobs and reports every job's status.
+func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, unchanged bool, req pa.PublishRequest) (*pa.PublishResult, error) {
+	if !unchanged {
+		s.emit(pa.Event{Type: "artifact.version", Artifact: id, Version: v.Version, Origin: v.Origin})
+	}
 	for _, j := range req.RunNow {
 		if _, err := s.Trigger(ctx, id, j, pa.TriggerRequest{}, pa.TriggerManual); err != nil {
 			s.log.Warn("run_now", "artifact", id, "job", j, "err", err)
@@ -632,7 +740,7 @@ func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, re
 	if err != nil {
 		return nil, err
 	}
-	return &pa.PublishResult{Version: *v, Jobs: jobs}, nil
+	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Jobs: jobs}, nil
 }
 
 // checkNoFileDirClash rejects trees where a path is both a file and a
@@ -658,13 +766,17 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 	}
 	now := s.now()
 	var v *pa.Version
+	var unchanged bool
 	err := s.st.tx(ctx, func(q querier) error {
 		a, err := getArtifact(ctx, q, id)
 		if err != nil {
 			return s.notFound(err, id)
 		}
-		if req.BaseVersion != a.CurrentVersion {
-			return errf(http.StatusConflict, "conflict", "base_version %d is not the current version (current is %d)", req.BaseVersion, a.CurrentVersion)
+		if err := checkBase(req.BaseVersion, a.CurrentVersion); err != nil {
+			return err
+		}
+		if req.Version == 0 {
+			return badRequest("version is required: the version to restore")
 		}
 		old, err := getVersion(ctx, q, id, req.Version)
 		if err != nil {
@@ -675,6 +787,15 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 		}
 		tree, err := getTree(ctx, q, id, req.Version)
 		if err != nil {
+			return err
+		}
+		cur, err := getTree(ctx, q, id, a.CurrentVersion)
+		if err != nil {
+			return err
+		}
+		if treesEqual(cur, tree) {
+			v, err = getVersion(ctx, q, id, a.CurrentVersion)
+			unchanged = true
 			return err
 		}
 		size, err := s.checkTree(ctx, q, a.QuotaKey, tree)
@@ -703,12 +824,14 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 	if err != nil {
 		return nil, err
 	}
-	s.emit(pa.Event{Type: "artifact.version", Artifact: id, Version: v.Version, Origin: v.Origin})
+	if !unchanged {
+		s.emit(pa.Event{Type: "artifact.version", Artifact: id, Version: v.Version, Origin: v.Origin})
+	}
 	jobs, err := s.Jobs(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return &pa.PublishResult{Version: *v, Jobs: jobs}, nil
+	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Jobs: jobs}, nil
 }
 
 // Fork creates a new artifact whose first version has the files of

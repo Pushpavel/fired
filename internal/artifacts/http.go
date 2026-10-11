@@ -254,7 +254,7 @@ func (s *Service) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, res)
+	writeJSON(w, publishStatus(res), res)
 }
 
 func (s *Service) handleVersions(w http.ResponseWriter, r *http.Request) {
@@ -303,7 +303,15 @@ func (s *Service) handleRestore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, res)
+	writeJSON(w, publishStatus(res), res)
+}
+
+// publishStatus is 201 for a new version, 200 when nothing changed.
+func publishStatus(res *pa.PublishResult) int {
+	if res.Unchanged {
+		return http.StatusOK
+	}
+	return http.StatusCreated
 }
 
 func (s *Service) handleFork(w http.ResponseWriter, r *http.Request) {

@@ -149,8 +149,40 @@ func TestPublishSemantics(t *testing.T) {
 	})
 
 	t.Run("conflict", func(t *testing.T) {
-		_, err := c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 0, Files: []pa.FileOp{pa.Text("x.txt", "x")}})
+		_, err := c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 2, Files: []pa.FileOp{pa.Text("x.txt", "x")}})
 		wantCode(t, err, 409, "conflict")
+		// Left out, base_version reads as 0, which is never a current version.
+		_, err = c.Publish(ctx, id, pa.PublishRequest{Files: []pa.FileOp{pa.Text("x.txt", "x")}})
+		wantCode(t, err, 400, "invalid_request")
+		_, err = c.Restore(ctx, id, pa.RestoreRequest{Version: 1})
+		wantCode(t, err, 400, "invalid_request")
+		_, err = c.Restore(ctx, id, pa.RestoreRequest{BaseVersion: 1})
+		wantCode(t, err, 400, "invalid_request")
+	})
+
+	t.Run("unchanged", func(t *testing.T) {
+		v1 := must(c.Version(ctx, id, 1))(t)
+		var same []pa.FileOp
+		for _, f := range v1.Files {
+			same = append(same, pa.FileOp{Path: f.Path, Hash: f.Hash})
+		}
+		for _, req := range []pa.PublishRequest{
+			{BaseVersion: 1, Files: same, Label: "same files"},
+			{BaseVersion: 1},
+			{BaseVersion: 1, Files: []pa.FileOp{{Path: "nope.txt", Delete: true}}},
+		} {
+			r := must(c.Publish(ctx, id, req))(t)
+			if !r.Unchanged || r.Version.Version != 1 || r.Version.Label != v1.Label {
+				t.Fatalf("unchanged publish: %+v", r)
+			}
+		}
+		r := must(c.Restore(ctx, id, pa.RestoreRequest{Version: 1, BaseVersion: 1}))(t)
+		if !r.Unchanged || r.Version.Version != 1 {
+			t.Fatalf("restore of the current files: %+v", r)
+		}
+		if n := len(must(c.Versions(ctx, id))(t)); n != 1 {
+			t.Fatalf("unchanged publishes made versions: %d", n)
+		}
 	})
 
 	t.Run("patch", func(t *testing.T) {
@@ -285,9 +317,21 @@ func TestPublishSemantics(t *testing.T) {
 			t.Fatalf("list: %+v", l)
 		}
 		ra := 3
-		a := must(c.Update(ctx, id, pa.UpdateArtifactRequest{RetainRuns: &ra, Meta: json.RawMessage(`{"title":"New"}`)}))(t)
-		if a.RetainRuns != 3 || string(a.Meta) != `{"title":"New"}` {
-			t.Fatalf("update: %+v", a)
+		a := must(c.Update(ctx, id, pa.UpdateArtifactRequest{RetainRuns: &ra, Meta: json.RawMessage(`{"title":"New","n":12345678901234567890}`)}))(t)
+		if a.RetainRuns != 3 || string(a.Meta) != `{"n":12345678901234567890,"title":"New"}` {
+			t.Fatalf("update: %+v %s", a, a.Meta)
+		}
+		// Labels and meta merge: null removes a key, the rest are kept.
+		str := func(s string) *string { return &s }
+		a = must(c.Update(ctx, id, pa.UpdateArtifactRequest{
+			Labels: map[string]*string{"session": nil, "stage": str("draft")},
+			Meta:   json.RawMessage(`{"n":null,"description":"d"}`)}))(t)
+		if len(a.Labels) != 1 || a.Labels["stage"] != "draft" || string(a.Meta) != `{"description":"d","title":"New"}` || a.RetainRuns != 3 {
+			t.Fatalf("merge: %+v %s", a, a.Meta)
+		}
+		a = must(c.Update(ctx, id, pa.UpdateArtifactRequest{Labels: map[string]*string{"stage": nil}, Meta: json.RawMessage(`null`)}))(t)
+		if a.Labels != nil || a.Meta != nil {
+			t.Fatalf("clear: %+v %s", a, a.Meta)
 		}
 	})
 

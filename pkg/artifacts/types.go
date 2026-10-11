@@ -159,7 +159,9 @@ type FileOp struct {
 }
 
 // PublishRequest creates a new version on top of BaseVersion, which must be
-// the artifact's current version. Every version has at least one file.
+// the artifact's current version (required, except in a create). Every
+// version has at least one file. A publish that leaves the files as they are
+// makes no version (PublishResult.Unchanged).
 type PublishRequest struct {
 	BaseVersion int `json:"base_version"`
 	// Replace starts from an empty tree instead of the base version's files.
@@ -196,8 +198,12 @@ type SandboxSource struct {
 }
 
 type PublishResult struct {
-	Version Version     `json:"version"`
-	Jobs    []JobStatus `json:"jobs,omitempty"`
+	Version Version `json:"version"`
+	// Unchanged is true when the publish (or restore) would have produced
+	// the files of the current version: no version was made, and Version is
+	// the current one.
+	Unchanged bool        `json:"unchanged,omitempty"`
+	Jobs      []JobStatus `json:"jobs,omitempty"`
 }
 
 type CreateArtifactRequest struct {
@@ -218,12 +224,15 @@ type CreateArtifactResult struct {
 	Publish  PublishResult `json:"publish"`
 }
 
+// UpdateArtifactRequest changes an artifact's settings. Omitted fields are
+// left alone. Labels and Meta are merged (JSON merge patch, RFC 7386): keys
+// given are set, keys set to null are removed, the rest are kept.
 type UpdateArtifactRequest struct {
-	QuotaKey    *string           `json:"quota_key,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Meta        json.RawMessage   `json:"meta,omitempty"`
-	DeleteAfter *Duration         `json:"delete_after,omitempty"`
-	RetainRuns  *int              `json:"retain_runs,omitempty"`
+	QuotaKey    *string            `json:"quota_key,omitempty"`
+	Labels      map[string]*string `json:"labels,omitempty"`
+	Meta        json.RawMessage    `json:"meta,omitempty"`
+	DeleteAfter *Duration          `json:"delete_after,omitempty"`
+	RetainRuns  *int               `json:"retain_runs,omitempty"`
 }
 
 type RestoreRequest struct {

@@ -40,7 +40,7 @@ dev state moved to Postgres; the `base` template was recreated there on
 | # | Use case | Covers | Status |
 |---|---|---|---|
 | 01 | A static page | create + first publish, the default spec (index.html, no artifact.json), serving, preview origin | done: [01-static-page.md](01-static-page.md) |
-| 02 | Editing over time | publish as a patch, labels, `base_version` conflicts (409), compare, restore, zip export | not started |
+| 02 | Editing over time | publish as a patch, labels, `base_version` conflicts (409), compare, restore, zip export | in progress: [02-editing.md](02-editing.md) |
 | 03 | Views | artifact.json views (md, csv, json, svg, react), strict spec validation, a view whose entry is deleted | not started |
 | 04 | Uploading a build | blobs, `/blobs/missing` dedup, folder upload with `replace_dirs`, size and file limits | not started |
 | 05 | A scheduled job | cron + timezone, `writes`, run versions, a run that changes nothing, the 12h activity window, expiry | not started |

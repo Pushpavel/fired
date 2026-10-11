@@ -143,8 +143,14 @@ one file changed copies one file.
 ```
 
 - **`base_version` must be the current version,** or the publish fails with
-  `409 conflict`. Read the latest, merge, publish again. In a create, leave
-  it out.
+  `409 conflict`. Read the latest, merge, publish again. It is required
+  (`400` when left out), except in a create, where it's left out.
+- **A publish that changes nothing makes no version.** When the result has
+  exactly the current version's files (same paths, hashes and modes), the
+  answer is `200` with `"unchanged": true` and the current version, and no
+  `artifact.version` event is sent. Its `label` and `labels` are dropped;
+  `run_now` and `notify` still apply, to the current version. Job runs work
+  the same way: a run whose writes change nothing makes no version.
 - **A version always has at least one file.** A create without files, or a
   publish that deletes every file, fails with `400`.
 - **Files are a patch:** listed files are added or replaced, the rest are
@@ -232,14 +238,20 @@ Runs).
   they are user-generated HTML and JS.
 - **Restore:** `POST /v1/artifacts/{id}/restore {"version": 3,
   "base_version": 9}` creates v10 with v3's files. History stays linear, and
-  the restore itself can be undone the same way.
+  the restore itself can be undone the same way. Both fields are required,
+  and a restore to the files the current version already has is
+  `"unchanged": true`, like a publish.
 - **Fork:** `POST /v1/artifacts/{id}/fork {"quota_key": "u2", "version": 4}`
   creates a new artifact whose v1 has v4's files (blobs are shared, nothing
   is copied). Its jobs come along in `artifact.json`, but schedules are off
   until the new owner publishes or a grant turns them on. Run state is not
   copied.
 - **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of the
-  version, `artifact.json` included.
+  version's files, `artifact.json` included when the version has one (a
+  version without one uses the default spec, and so does its zip).
+- **Compare:** there's no compare endpoint; `GET …/versions/{n}` lists
+  every file with its hash, so two versions diff by path and hash. The
+  console does this.
 
 ## Jobs
 
@@ -369,7 +381,7 @@ redacted).
 | Event | When |
 |---|---|
 | `artifact.created`, `artifact.deleted` | |
-| `artifact.version` | Every new version, with `origin`; for runs, also `job` and `run_id`. |
+| `artifact.version` | Every new version, with `origin`; for runs, also `job` and `run_id`. Not sent for an unchanged publish or restore. |
 | `run.started` | A run left `pending`. |
 | `run.finished` | With `status`, `reason`, and `notify` if the publish asked for it. |
 | `run.dropped` | With `reason`: `queue_full`, `expired`, `job_removed`, `needs_approval`. |
@@ -396,6 +408,12 @@ what matters to sessions.
 All endpoints are under `/v1`. They need `X-Fired-Token: <token>` or
 `Authorization: Bearer <token>`. Errors look like fired's:
 `{"error": {"code", "message"}}`. A Go client is in `pkg/artifacts`.
+
+`PATCH /artifacts/{id}` changes settings (`quota_key`, `labels`, `meta`,
+`delete_after`, `retain_runs`) and never makes a version. Omitted fields are
+left alone; `labels` and `meta` are merged as a JSON merge patch (RFC 7386):
+`{"labels": {"stage": "review", "draft": null}}` sets `stage`, removes
+`draft` and keeps the other labels.
 
 | | |
 |---|---|
