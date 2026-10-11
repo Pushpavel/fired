@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -306,7 +307,7 @@ func TestPublishSemantics(t *testing.T) {
 			names = append(names, f.Name)
 		}
 		sort.Strings(names)
-		if strings.Join(names, ",") != "data/a.csv,index.html" {
+		if strings.Join(names, ",") != ".fired/export.json,data/a.csv,index.html" {
 			t.Fatalf("zip: %v", names)
 		}
 	})
@@ -571,4 +572,83 @@ func TestCreateNeedsFirstVersion(t *testing.T) {
 	if a := must(c.Get(ctx, "one"))(t); a.CurrentVersion != 1 {
 		t.Fatalf("refused publishes changed the artifact: %+v", a)
 	}
+}
+
+// An export carries what isn't in the files (meta, the effective spec) in
+// .fired/export.json; publishing the zip's files again uses it as a fallback
+// and never stores .fired.
+func TestExportRoundTrip(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	c := h.c
+	export := func(id string, v int) map[string][]byte {
+		t.Helper()
+		req, _ := http.NewRequest("GET", fmt.Sprintf("%s/v1/artifacts/%s/versions/%d/export", h.srv.URL, id, v), nil)
+		req.Header.Set("X-Fired-Token", testToken)
+		resp := must(http.DefaultClient.Do(req))(t)
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		zr := must(zip.NewReader(bytes.NewReader(data), int64(len(data))))(t)
+		out := map[string][]byte{}
+		for _, f := range zr.File {
+			rc := must(f.Open())(t)
+			out[f.Name], _ = io.ReadAll(rc)
+			rc.Close()
+		}
+		return out
+	}
+	ops := func(files map[string][]byte) []pa.FileOp {
+		var out []pa.FileOp
+		for p, b := range files {
+			out = append(out, pa.Text(p, string(b)))
+		}
+		return out
+	}
+
+	// Default spec: the zip comes back as the same tree, with the meta.
+	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "orig", QuotaKey: "u", Meta: json.RawMessage(`{"title":"Orig","description":"d"}`),
+		Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("index.html", "hi")}}}))(t)
+	files := export("orig", 1)
+	var info pa.ExportInfo
+	if err := json.Unmarshal(files[pa.ExportFile], &info); err != nil || info.Artifact != "orig" || info.Version != 1 ||
+		info.Spec == nil || len(info.Spec.Views) != 1 || !bytes.Contains(info.Meta, []byte(`"description": "d"`)) {
+		t.Fatalf("export.json: %s %v", files[pa.ExportFile], err)
+	}
+	r := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "copy", QuotaKey: "u", Publish: &pa.PublishRequest{Files: ops(files)}}))(t)
+	if v := must(c.Version(ctx, "copy", 1))(t); strings.Join(paths(v), ",") != "index.html" {
+		t.Fatalf("copy tree: %v", paths(v))
+	}
+	if string(r.Artifact.Meta) != `{"title":"Orig","description":"d"}` {
+		t.Fatalf("meta fallback: %s", r.Artifact.Meta)
+	}
+
+	// The request's meta wins key by key; null drops a fallback key.
+	r = must(c.Create(ctx, pa.CreateArtifactRequest{ID: "named", QuotaKey: "u", Meta: json.RawMessage(`{"title":"Mine","description":null}`),
+		Publish: &pa.PublishRequest{Files: ops(files)}}))(t)
+	if string(r.Artifact.Meta) != `{"title":"Mine"}` {
+		t.Fatalf("meta override: %s", r.Artifact.Meta)
+	}
+
+	// A spec that isn't the default is written as artifact.json, unless the
+	// files or the request bring their own.
+	files[pa.ExportFile] = []byte(`{"spec":{"views":[{"type":"md","entry":"index.html"}]}}`)
+	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "as-md", QuotaKey: "u", Publish: &pa.PublishRequest{Files: ops(files)}}))(t)
+	if v := must(c.Version(ctx, "as-md", 1))(t); strings.Join(paths(v), ",") != "artifact.json,index.html" || v.Spec.Views[0].Type != "md" {
+		t.Fatalf("spec fallback: %v %+v", paths(v), v.Spec)
+	}
+	r2 := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "own-spec", QuotaKey: "u", Publish: &pa.PublishRequest{Files: ops(files),
+		Spec: &pa.Spec{Views: []pa.View{{Type: "text", Entry: "index.html"}}}}}))(t)
+	if r2.Publish.Version.Spec.Views[0].Type != "text" {
+		t.Fatalf("request spec wins: %+v", r2.Publish.Version.Spec)
+	}
+
+	// .fired is never stored, and a broken export.json says so.
+	pr := must(c.Publish(ctx, "copy", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{pa.Text(".fired/other", "x")}}))(t)
+	if !pr.Unchanged {
+		t.Fatalf(".fired stored: %+v", pr)
+	}
+	_, err := c.Publish(ctx, "copy", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{pa.Text(pa.ExportFile, "{")}})
+	wantCode(t, err, 400, "invalid_request")
+	_, err = c.Publish(ctx, "copy", pa.PublishRequest{BaseVersion: 1, Spec: &pa.Spec{Jobs: map[string]pa.Job{"a": {Run: "x", Writes: []string{".fired"}}}}})
+	wantCode(t, err, 400, "invalid_request")
 }

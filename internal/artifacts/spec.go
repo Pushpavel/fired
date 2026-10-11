@@ -112,8 +112,8 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 				add("jobs.%s.writes[%d]: %v", n, k, err)
 				continue
 			}
-			if c == pa.SpecFile {
-				add("jobs.%s.writes[%d]: a job can't write %s", n, k, pa.SpecFile)
+			if c == pa.SpecFile || under(c, pa.FiredDir) {
+				add("jobs.%s.writes[%d]: a job can't write %s", n, k, c)
 			}
 			j.Writes[k] = c
 		}

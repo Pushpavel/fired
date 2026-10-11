@@ -247,8 +247,24 @@ Runs).
   until the new owner publishes or a grant turns them on. Run state is not
   copied.
 - **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of the
-  version's files, `artifact.json` included when the version has one (a
-  version without one uses the default spec, and so does its zip).
+  version's files (`artifact.json` included when the version has one) plus
+  `.fired/export.json`: the artifact and version it came from, the
+  artifact's `meta`, and the version's effective `spec` (also when it's the
+  default). It carries what isn't in the files, so the zip can be published
+  again somewhere else (below).
+- **`.fired/` is reserved** at the root of a tree: it's never stored. When
+  a publish's files include `.fired/export.json` (an exported zip uploaded
+  again, or unzipped in a sandbox and published with `from_sandbox`), it's
+  a fallback for what the request doesn't say:
+  - its `spec` applies when there's no `artifact.json` in the files or the
+    version and no `spec` in the request, and is written as `artifact.json`
+    only if it differs from the default, so a round trip gives the same tree;
+  - its `meta` applies on a create, merged under the request's `meta`: the
+    request's keys win, and a `null` drops one (an agent naming the copy
+    sets `title` and keeps the rest).
+
+  The export's `artifact`, `version` and `exported_at` are informational.
+  Jobs can't write under `.fired/`.
 - **Compare:** there's no compare endpoint; `GET …/versions/{n}` lists
   every file with its hash, so two versions diff by path and hash. The
   console does this.

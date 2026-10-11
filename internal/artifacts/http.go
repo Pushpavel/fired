@@ -486,23 +486,36 @@ func (s *Service) handleRouted(w http.ResponseWriter, r *http.Request, id string
 	s.servePreview(w, r, id, n)
 }
 
-// handleExport streams a version as a zip (artifact.json included when the
-// version has one).
+// handleExport streams a version as a zip: its files (artifact.json
+// included when the version has one) and .fired/export.json, the artifact's
+// meta and the version's effective spec, for publishing the zip again.
 func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 	n, err := versionParam(r.PathValue("v"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	v, err := s.Version(r.Context(), r.PathValue("id"), n, true)
+	a, err := s.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	v, err := s.Version(r.Context(), a.ID, n, true)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	info, _ := json.MarshalIndent(pa.ExportInfo{Artifact: a.ID, Version: v.Version, ExportedAt: s.now().UTC(), Meta: a.Meta, Spec: &v.Spec}, "", "  ")
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-v%d.zip"`, v.Artifact, v.Version))
 	zw := zip.NewWriter(w)
+	if fw, err := zw.CreateHeader(&zip.FileHeader{Name: pa.ExportFile, Method: zip.Deflate, Modified: v.CreatedAt}); err == nil {
+		_, _ = fw.Write(append(info, '\n'))
+	}
 	for _, f := range v.Files {
+		if under(f.Path, pa.FiredDir) {
+			continue // stored before .fired was reserved; export.json replaces it
+		}
 		hdr := &zip.FileHeader{Name: f.Path, Method: zip.Deflate, Modified: v.CreatedAt}
 		hdr.SetMode(0o644)
 		if f.Mode == 0o755 {

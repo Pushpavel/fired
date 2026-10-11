@@ -116,9 +116,20 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 	if err != nil {
 		return nil, err
 	}
+	meta := req.Meta
+	if prep.info != nil && len(prep.info.Meta) > 0 {
+		// The export's meta is a fallback: the request's keys win, and a
+		// null in the request drops one.
+		meta = prep.info.Meta
+		if len(req.Meta) > 0 {
+			if meta, err = mergePatch(prep.info.Meta, req.Meta); err != nil {
+				return nil, err
+			}
+		}
+	}
 	s.tierOf(ctx, req.QuotaKey)
 	now := s.now()
-	a := &pa.Artifact{ID: id, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta, DeleteAfter: req.DeleteAfter,
+	a := &pa.Artifact{ID: id, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: meta, DeleteAfter: req.DeleteAfter,
 		RetainRuns: req.RetainRuns, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
 	var v *pa.Version
 	err = s.st.tx(ctx, func(q querier) error {
@@ -356,6 +367,37 @@ type resolvedOp struct {
 	file  pa.File
 }
 
+// takeFiredDir removes the ops for the reserved .fired folder and returns
+// its export.json, if one was given.
+func (s *Service) takeFiredDir(ops []resolvedOp) ([]resolvedOp, *pa.ExportInfo, error) {
+	var info *pa.ExportInfo
+	out := ops[:0]
+	for _, op := range ops {
+		if op.path == "" || !under(op.path, pa.FiredDir) {
+			out = append(out, op)
+			continue
+		}
+		if op.path != pa.ExportFile || op.delete || op.clear {
+			continue
+		}
+		data, err := s.blobs.ReadAll(op.file.Hash, 1<<20)
+		if err != nil {
+			return nil, nil, badRequest("%s: %v", pa.ExportFile, err)
+		}
+		info = &pa.ExportInfo{}
+		if err := json.Unmarshal(data, info); err != nil {
+			return nil, nil, badRequest("%s: %v", pa.ExportFile, err)
+		}
+		if len(info.Meta) > 0 {
+			var b bytes.Buffer
+			if err := json.Compact(&b, info.Meta); err == nil {
+				info.Meta = b.Bytes()
+			}
+		}
+	}
+	return out, info, nil
+}
+
 // resolveOps validates file ops and stores inline content as blobs.
 func (s *Service) resolveOps(ctx context.Context, req pa.PublishRequest) ([]resolvedOp, error) {
 	var ops []resolvedOp
@@ -546,6 +588,11 @@ type publishPrep struct {
 	specHash    string
 	specSize    int64
 	replaceDirs []string
+	// info is .fired/export.json from the files, if they had one;
+	// infoSpec is its spec as artifact.json, used when there's no other.
+	info         *pa.ExportInfo
+	infoSpecHash string
+	infoSpecSize int64
 }
 
 func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*publishPrep, error) {
@@ -553,7 +600,18 @@ func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*p
 	if err != nil {
 		return nil, err
 	}
-	p := &publishPrep{ops: ops, replaceDirs: make([]string, 0, len(req.ReplaceDirs))}
+	ops, info, err := s.takeFiredDir(ops)
+	if err != nil {
+		return nil, err
+	}
+	p := &publishPrep{ops: ops, info: info, replaceDirs: make([]string, 0, len(req.ReplaceDirs))}
+	if info != nil && info.Spec != nil && req.Spec == nil {
+		data := EncodeSpec(*info.Spec)
+		if p.infoSpecHash, err = s.blobs.PutBytes(data); err != nil {
+			return nil, err
+		}
+		p.infoSpecSize = int64(len(data))
+	}
 	if req.Spec != nil {
 		for _, op := range ops {
 			if op.path == pa.SpecFile {
@@ -661,8 +719,18 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 		}
 		tree[op.path] = op.file
 	}
+	for path := range tree {
+		if under(path, pa.FiredDir) {
+			delete(tree, path)
+		}
+	}
 	if p.specHash != "" {
 		tree[pa.SpecFile] = pa.File{Path: pa.SpecFile, Hash: p.specHash, Size: p.specSize, Mode: 0o644}
+	}
+	if _, ok := tree[pa.SpecFile]; !ok && p.infoSpecHash != "" && !bytes.Equal(EncodeSpec(*p.info.Spec), EncodeSpec(DefaultSpec(tree))) {
+		// The export's spec, written out only when it isn't what the tree
+		// gets anyway, so an exported zip published again is the same tree.
+		tree[pa.SpecFile] = pa.File{Path: pa.SpecFile, Hash: p.infoSpecHash, Size: p.infoSpecSize, Mode: 0o644}
 	}
 	if len(tree) == 0 {
 		return nil, false, badRequest("a version needs at least one file")

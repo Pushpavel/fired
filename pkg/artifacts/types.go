@@ -17,6 +17,28 @@ type Duration = api.Duration
 // SpecFile is the path of the config file inside an artifact's file tree.
 const SpecFile = "artifact.json"
 
+// FiredDir is reserved at the root of a file tree: an export writes
+// ExportFile there, and a publish reads it and never stores the folder.
+const (
+	FiredDir   = ".fired"
+	ExportFile = ".fired/export.json"
+)
+
+// ExportInfo is ExportFile in an exported zip: where the files came from
+// and the settings that aren't files. When the files are published again
+// (a create, or a publish), it is a fallback: Spec applies only if there is
+// no artifact.json and no spec in the request, and Meta (on a create only)
+// fills keys the request's meta leaves out.
+type ExportInfo struct {
+	Artifact   string          `json:"artifact,omitempty"`
+	Version    int             `json:"version,omitempty"`
+	ExportedAt time.Time       `json:"exported_at"`
+	Meta       json.RawMessage `json:"meta,omitempty"`
+	// Spec is the version's effective spec, also when it has no
+	// artifact.json and uses the default.
+	Spec *Spec `json:"spec,omitempty"`
+}
+
 // Spec is the content of artifact.json: how the files are viewed and which
 // jobs run against them. It is versioned with the files.
 type Spec struct {

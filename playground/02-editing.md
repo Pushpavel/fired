@@ -77,22 +77,39 @@ page, v5/v6 no-ops (before the fix), v7 restore v1, v8 restore v4.
   `null` for labels and title/description you cleared.
 - **Restore's 409** has the same "read it, merge…" hint as publish (one
   `checkBase` for both).
-- **Docs:** PATCH semantics, export "artifact.json included when the
-  version has one", no compare endpoint (diff the file lists by hash).
-  The export itself is unchanged: a zip without artifact.json re-imports
-  to the same default spec.
+- **Docs:** PATCH semantics, what export includes, no compare endpoint
+  (diff the file lists by hash).
 
 Checked live after the fix: no-base publish 400; `files: []` on v7 → 200
 unchanged; restore v3 (same files as v7) → 200 unchanged; stale restore
 409 with the hint; restore v4 → v8; PATCH `{"labels":{"stage":"review"}}`
 kept `usecase`, and `null`s removed `stage` and `description`.
 
+**Exports carry a `.fired/` folder** (2026-10-11). An artifact's settings
+that aren't files (title, description, and the spec when it's the default)
+were lost in a zip, so a zip uploaded somewhere else couldn't be set up the
+same way. Now:
+
+- Export adds `.fired/export.json`: `{artifact, version, exported_at,
+  meta, spec}`, with the effective spec even when it's the default.
+- `.fired/` is reserved at a tree's root and never stored. A publish
+  whose files include `.fired/export.json` uses it only as a **fallback**:
+  its spec when nothing else gives one (written as `artifact.json` only if
+  it isn't the default, so a round trip is the same tree), and its meta on
+  a create, under the request's meta. An agent that unzips and names the
+  copy itself wins; a bare re-upload gets the old title back.
+- Labels, quota key and retention stay out: they're the backend's (who
+  owns it, how long it's kept), and a new home sets its own.
+- Tried live: exported `hello-page` v8, unzipped, created `hello-copy` from
+  the files with `meta.title` "Hello copy": that title won, 3 files, no
+  `.fired`, no `artifact.json`. Without meta, the copy got "Hello page".
+
 ## Questions
 
 - ~~Should an edit that changes nothing be a no-op?~~ Yes, done.
 - ~~Should `PATCH` merge `labels` and `meta`?~~ Yes, done.
 - ~~Should export include the effective `artifact.json` even when it's the
-  default?~~ No: without one, a re-import gets the same default.
+  default?~~ Yes, in `.fired/export.json` with the meta (see Decided).
 - Still to look at: the console's Compare (v4 vs v3, v8 vs v7) and the
   settings tab saving after the merge change.
 
