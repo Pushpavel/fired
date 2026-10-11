@@ -413,9 +413,14 @@ type QuotaStatus struct {
 	// Tier is the key's tier, from fired.
 	Tier string `json:"tier"`
 	// Quota is this key's own override; Effective is what applies.
-	Quota       Quota `json:"quota"`
-	Effective   Quota `json:"effective"`
-	StorageUsed int64 `json:"storage_used"`
+	Quota     Quota `json:"quota"`
+	Effective Quota `json:"effective"`
+	// StorageUsed is what counts against storage_bytes: the distinct blobs
+	// and chunks the key's versions reference. StorageLogical is what they'd
+	// take with no sharing (every file of every version in full); the
+	// difference is what deduplication saves.
+	StorageUsed    int64 `json:"storage_used"`
+	StorageLogical int64 `json:"storage_logical"`
 }
 
 // ---- credentials broker (implemented by your backend)

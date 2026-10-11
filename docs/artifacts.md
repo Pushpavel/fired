@@ -51,7 +51,9 @@ host it points at.
   - `fork`: the first version of a fork
 - **File tree**: paths (relative, slash-separated) to blobs. Each blob is
   stored once, named by the SHA-256 of its content and zstd-compressed, so
-  unchanged files cost nothing across versions, forks and artifacts.
+  unchanged files cost nothing across versions, forks and artifacts. Large
+  files are stored as chunks, so a changed large file costs only its
+  changed chunks (see Publishing).
 - **`artifact.json`**: an ordinary file in the tree, so it is versioned,
   exported and forked with everything else. Every version has one: when a
   publish doesn't bring one, the current one is kept, and a new artifact
@@ -160,6 +162,29 @@ POST /v1/blobs/missing  {"hashes": ["<sha256>", ...]}   → {"missing": [...]}
 PUT  /v1/blobs/<sha256>  (raw bytes, only the missing ones)
 ```
 
+**Large files are chunked.** A file of 1 MiB or more is stored as
+content-defined chunks (FastCDC, `fastcdc-v1.0.0`: 256 KiB min, 1 MiB
+average, 4 MiB max), each chunk a blob. An edit or an append changes one
+or two chunks; the rest are shared with earlier versions and with any
+file, artifact or user that has them. A file is still named by the SHA-256
+of its whole content everywhere (publish, ETags, `from_sandbox`), and
+storage counts the distinct chunks a quota key references. To send only
+the changed chunks of a large file:
+
+```
+POST /v1/blobs/missing        {"hashes": ["<file>", "<chunk>", ...]}
+PUT  /v1/blobs/<chunk>        (each missing chunk's bytes)
+PUT  /v1/blobs/<file>/chunks  {"chunks": [{"hash", "size"}, ...]}   (in order)
+```
+
+The service checks every chunk is uploaded and that, in order, they hash
+to `<file>` (`422 missing_blob` / `hash_mismatch` otherwise). Cut chunks
+with `pkg/artifacts.SplitChunks` (the Go client's `Upload` and
+`UploadContent` do all of this), or chunks won't match stored ones; any
+cut is accepted, it just shares less. A whole large file `PUT` as one blob
+is chunked by the service, so it shares storage the same way, only the
+upload isn't smaller.
+
 To publish a sandbox folder, use a `from_sandbox` op (below): the service
 pulls only the files it doesn't have, so republishing a 200-file build where
 one file changed copies one file.
@@ -217,7 +242,10 @@ one file changed copies one file.
 - **Limits:** `limits.max_files_per_version` (`artifact.json` isn't
   counted), `limits.max_version_bytes`, the request body (twice
   `limits.max_inline_bytes` plus 1 MiB; over it is `413 too_large`), and
-  the quota key's `storage_bytes`, counted over distinct blobs.
+  the quota key's `storage_bytes`, counted over the distinct blobs and
+  chunks its versions reference. `GET /quotas/{key}` shows that
+  (`storage_used`) next to `storage_logical`, every file of every version
+  in full: the difference is what sharing saves.
 - **`run_now`** triggers those jobs right after the publish, so an agent
   learns quickly whether a job works. A blocked job isn't triggered; its
   status in the response says why.
@@ -473,7 +501,7 @@ left alone; `labels` and `meta` are merged as a JSON merge patch (RFC 7386):
 
 | | |
 |---|---|
-| Blobs | `POST /blobs/missing`, `PUT /blobs/{sha256}` |
+| Blobs | `POST /blobs/missing`, `PUT /blobs/{sha256}`, `PUT /blobs/{sha256}/chunks` |
 | Artifacts | `POST /artifacts` (with `publish`, the first version), `GET /artifacts?quota_key=&label=k=v`, `GET/PATCH/DELETE /artifacts/{id}` |
 | Versions | `POST /artifacts/{id}/versions` (publish), `GET /artifacts/{id}/versions`, `GET /artifacts/{id}/versions/{n\|current}` (with files), `GET …/versions/{n}/export` |
 | History | `POST /artifacts/{id}/restore`, `POST /artifacts/{id}/fork` |

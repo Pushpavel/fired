@@ -178,6 +178,21 @@ CREATE TABLE tiers (
 	name TEXT PRIMARY KEY,
 	data TEXT NOT NULL
 );
+`, `
+-- Large files, stored as content-defined chunks (each one a blob).
+CREATE TABLE chunked (
+	file       TEXT PRIMARY KEY,
+	size       BIGINT NOT NULL,
+	touched_at BIGINT NOT NULL
+);
+CREATE TABLE chunks (
+	file  TEXT NOT NULL,
+	idx   INT NOT NULL,
+	chunk TEXT NOT NULL,
+	size  BIGINT NOT NULL,
+	PRIMARY KEY (file, idx)
+);
+CREATE INDEX chunks_chunk ON chunks(chunk);
 `}
 
 // lockKey is the advisory lock for migrations and write transactions
@@ -453,28 +468,63 @@ func deleteVersion(ctx context.Context, q querier, id string, n int) error {
 	return err
 }
 
-// storageUsed is the size of the distinct blobs referenced by all versions
-// of all artifacts with this quota key (deduplicated, like the store).
+// keyPieces is what a quota key's files are stored as: a chunked file is
+// its chunks, any other file its own blob. Storage is counted over these,
+// so a large file and its next version share most of their bytes.
+const keyPieces = `
+SELECT DISTINCT COALESCE(c.chunk, f.hash) AS piece, COALESCE(c.size, f.size) AS size
+FROM files f JOIN artifacts a ON a.id=f.artifact LEFT JOIN chunks c ON c.file=f.hash
+WHERE a.quota_key=?`
+
+// storageUsed is the size of the distinct pieces (blobs, chunks) referenced
+// by all versions of all artifacts with this quota key.
 func storageUsed(ctx context.Context, q querier, key string) (int64, error) {
 	var n sql.NullInt64
-	err := q.QueryRowContext(ctx, `
-SELECT SUM(size)::BIGINT FROM (SELECT DISTINCT f.hash, f.size FROM files f JOIN artifacts a ON a.id=f.artifact WHERE a.quota_key=?)`, key).Scan(&n)
+	err := q.QueryRowContext(ctx, `SELECT SUM(size)::BIGINT FROM (`+keyPieces+`) p`, key).Scan(&n)
 	return n.Int64, err
 }
 
-// knownHashes returns which of hashes are already referenced under key.
-func knownHashes(ctx context.Context, q querier, key string, hashes map[string]int64) (map[string]bool, error) {
-	out := map[string]bool{}
-	for h := range hashes {
-		var one int
-		err := q.QueryRowContext(ctx, `SELECT 1 FROM files f JOIN artifacts a ON a.id=f.artifact WHERE a.quota_key=? AND f.hash=? LIMIT 1`, key, h).Scan(&one)
-		if err == nil {
-			out[h] = true
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
+// storageLogical is what the key's versions would take with no sharing at
+// all: every file of every version, in full.
+func storageLogical(ctx context.Context, q querier, key string) (int64, error) {
+	var n sql.NullInt64
+	err := q.QueryRowContext(ctx, `SELECT SUM(f.size)::BIGINT FROM files f JOIN artifacts a ON a.id=f.artifact WHERE a.quota_key=?`, key).Scan(&n)
+	return n.Int64, err
+}
+
+// addedBytes is how much storage files (hash → size) add to key: the size
+// of their pieces the key doesn't reference yet.
+func addedBytes(ctx context.Context, q querier, key string, files map[string]int64) (int64, error) {
+	pieces := map[string]int64{}
+	for h, size := range files {
+		chunks, _, err := chunkList(ctx, q, h)
+		if err != nil {
+			return 0, err
+		}
+		if chunks == nil {
+			pieces[h] = size
+		}
+		for _, c := range chunks {
+			pieces[c.Hash] = c.Size
 		}
 	}
-	return out, nil
+	rows, err := q.QueryContext(ctx, `SELECT piece FROM (`+keyPieces+`) p`, key)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return 0, err
+		}
+		delete(pieces, p)
+	}
+	var added int64
+	for _, size := range pieces {
+		added += size
+	}
+	return added, rows.Err()
 }
 
 // ---- notify
@@ -722,6 +772,7 @@ func referencedBlobs(ctx context.Context, q querier) (map[string]bool, error) {
 		`SELECT DISTINCT hash FROM files`,
 		`SELECT DISTINCT hash FROM run_state`,
 		`SELECT DISTINCT logs FROM runs WHERE logs<>''`,
+		`SELECT DISTINCT chunk FROM chunks`,
 	} {
 		rows, err := q.QueryContext(ctx, query)
 		if err != nil {

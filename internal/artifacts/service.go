@@ -412,10 +412,10 @@ func (s *Service) resolveOps(ctx context.Context, req pa.PublishRequest) ([]reso
 			if !validHash(op.Hash) {
 				return nil, badRequest("files[%d] (%s): %v", i, p, errBadHash)
 			}
-			if !s.blobs.Touch(op.Hash, s.now()) {
+			if !s.hasContent(ctx, op.Hash) {
 				return nil, errf(http.StatusUnprocessableEntity, "missing_blob", "files[%d] (%s): blob %s has not been uploaded", i, p, op.Hash)
 			}
-			size, err := s.blobSize(op.Hash)
+			size, err := s.contentSize(ctx, op.Hash)
 			if err != nil {
 				return nil, err
 			}
@@ -433,7 +433,7 @@ func (s *Service) resolveOps(ctx context.Context, req pa.PublishRequest) ([]reso
 		if inline > s.cfg.Limits.MaxInlineBytes {
 			return nil, errf(http.StatusRequestEntityTooLarge, "too_large", "inline content exceeds %d bytes; upload large files as blobs", s.cfg.Limits.MaxInlineBytes)
 		}
-		h, err := s.blobs.PutBytes(data)
+		h, _, err := s.putContent(ctx, bytes.NewReader(data), 0, "")
 		if err != nil {
 			return nil, err
 		}
@@ -470,7 +470,7 @@ func (s *Service) specFor(tree map[string]pa.File) (pa.Spec, error) {
 	if !ok {
 		return pa.Spec{}, nil
 	}
-	data, err := s.blobs.ReadAll(f.Hash, 1<<20)
+	data, err := s.readContent(context.Background(), f.Hash, 1<<20)
 	if err != nil {
 		return pa.Spec{}, badRequest("%s: %v", pa.SpecFile, err)
 	}
@@ -494,7 +494,7 @@ func (s *Service) specFile(tree, cur map[string]pa.File, title, description *str
 	}
 	var sp pa.Spec
 	if ok && (title != nil || description != nil) {
-		data, err := s.blobs.ReadAll(f.Hash, 1<<20)
+		data, err := s.readContent(context.Background(), f.Hash, 1<<20)
 		if err != nil {
 			return badRequest("%s: %v", pa.SpecFile, err)
 		}
@@ -552,15 +552,9 @@ func (s *Service) checkTree(ctx context.Context, q querier, key string, tree map
 		return 0, err
 	}
 	if quota.StorageBytes > 0 {
-		known, err := knownHashes(ctx, q, key, hashes)
+		added, err := addedBytes(ctx, q, key, hashes)
 		if err != nil {
 			return 0, err
-		}
-		var added int64
-		for h, sz := range hashes {
-			if !known[h] {
-				added += sz
-			}
 		}
 		if added > 0 {
 			used, err := storageUsed(ctx, q, key)
@@ -980,7 +974,7 @@ func (s *Service) MissingBlobs(hashes []string) ([]string, error) {
 		if !validHash(h) {
 			return nil, badRequest("%q: %v", h, errBadHash)
 		}
-		if !s.blobs.Touch(h, s.now()) { // present: kept through GC until the publish
+		if !s.hasContent(context.Background(), h) { // present: kept through GC until the publish
 			out = append(out, h)
 		}
 	}
@@ -1126,5 +1120,9 @@ func (s *Service) QuotaStatus(ctx context.Context, key string) (*pa.QuotaStatus,
 	if err != nil {
 		return nil, err
 	}
-	return &pa.QuotaStatus{Key: key, Tier: tier, Quota: raw, Effective: eff, StorageUsed: used}, nil
+	logical, err := storageLogical(ctx, s.st.db, key)
+	if err != nil {
+		return nil, err
+	}
+	return &pa.QuotaStatus{Key: key, Tier: tier, Quota: raw, Effective: eff, StorageUsed: used, StorageLogical: logical}, nil
 }

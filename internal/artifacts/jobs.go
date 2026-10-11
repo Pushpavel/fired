@@ -309,7 +309,7 @@ func (s *Service) RunLogs(ctx context.Context, id, runID string) (*pa.RunLogs, e
 	if r.Logs == "" {
 		return out, nil
 	}
-	data, err := s.blobs.ReadAll(r.Logs, 64<<20)
+	data, err := s.readContent(ctx, r.Logs, 64<<20)
 	if err != nil {
 		return nil, err
 	}

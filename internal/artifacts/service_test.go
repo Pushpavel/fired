@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	mrand "math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -768,4 +769,83 @@ func TestRequestLimits(t *testing.T) {
 	wantCode(t, err, 413, "too_many_files")
 	_, err = h.c.Create(ctx, pa.CreateArtifactRequest{ID: "big", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", strings.Repeat("x", 4<<20))}}})
 	wantCode(t, err, 413, "too_large")
+}
+
+// Large files are stored as content-defined chunks: a new version of a big
+// file shares most of them, uploads send only the missing ones, storage
+// counts chunks, and GC follows file → chunks.
+func TestChunkedContent(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	c := h.c
+	rnd := mrand.New(mrand.NewPCG(1, 2))
+	data1 := make([]byte, 3<<20)
+	for i := range data1 {
+		data1[i] = byte(rnd.Uint32())
+	}
+	op := must(c.Upload(ctx, "big.bin", data1, 0))(t)
+	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "big", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{op}}}))(t)
+	chunks1, size, err := chunkList(ctx, h.svc.st.db, op.Hash)
+	if err != nil || len(chunks1) < 2 || size != int64(len(data1)) || h.svc.blobs.Has(op.Hash) {
+		t.Fatalf("stored as %d chunks, size %d, whole blob %v: %v", len(chunks1), size, h.svc.blobs.Has(op.Hash), err)
+	}
+	if b := must(c.ReadFile(ctx, "big", "big.bin", 0))(t); !bytes.Equal(b, data1) {
+		t.Fatal("chunked file reads back different")
+	}
+
+	// Appending: only the last chunk(s) are new, so only they go up.
+	data2 := append(append([]byte{}, data1...), bytes.Repeat([]byte("appended row\n"), 8000)...)
+	var want []string
+	_ = pa.SplitChunks(bytes.NewReader(data2), func(b []byte) error { want = append(want, pa.HashBytes(b)); return nil })
+	missing := must(c.MissingBlobs(ctx, want))(t)
+	if len(missing) == 0 || len(missing) > 2 {
+		t.Fatalf("an append should miss 1-2 of %d chunks, missing %d", len(want), len(missing))
+	}
+	op2 := must(c.Upload(ctx, "big.bin", data2, 0))(t)
+	must(c.Publish(ctx, "big", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{op2}}))(t)
+	if b := must(c.ReadFile(ctx, "big", "big.bin", 0))(t); !bytes.Equal(b, data2) {
+		t.Fatal("v2 reads back different")
+	}
+	q := must(c.Quota(ctx, "u"))(t)
+	if q.StorageUsed > int64(len(data2))+int64(len(data1))/2 || q.StorageLogical < int64(len(data1)+len(data2)) {
+		t.Fatalf("storage used %d, logical %d: chunks aren't shared", q.StorageUsed, q.StorageLogical)
+	}
+
+	// A whole-file upload is chunked by the service, sharing chunks too.
+	data3 := append([]byte{}, data1...)
+	data3[len(data3)/2] ^= 0xff
+	h3 := pa.HashBytes(data3)
+	if err := c.PutBlob(ctx, h3, bytes.NewReader(data3)); err != nil {
+		t.Fatal(err)
+	}
+	chunks3, _, _ := chunkList(ctx, h.svc.st.db, h3)
+	shared := 0
+	for i := range chunks3 {
+		if i < len(chunks1) && chunks3[i] == chunks1[i] {
+			shared++
+		}
+	}
+	if shared < len(chunks1)-2 {
+		t.Fatalf("one changed byte should change 1-2 chunks; shared %d of %d", shared, len(chunks1))
+	}
+	err = c.PutBlob(ctx, pa.HashBytes([]byte("other")), bytes.NewReader(data3))
+	wantCode(t, err, 422, "hash_mismatch")
+
+	// A chunk list must be uploaded, and add up to the hash in order.
+	rev := append([]pa.ChunkRef{}, chunks1...)
+	rev[0], rev[1] = rev[1], rev[0]
+	wantCode(t, c.PutChunks(ctx, pa.HashBytes([]byte("x")), rev), 422, "hash_mismatch")
+	wantCode(t, c.PutChunks(ctx, pa.HashBytes([]byte("y")), []pa.ChunkRef{{Hash: pa.HashBytes([]byte("never")), Size: 5}}), 422, "missing_blob")
+
+	// GC: once nothing references them, chunked files and chunks go.
+	if err := c.Delete(ctx, "big"); err != nil {
+		t.Fatal(err)
+	}
+	h.now = h.now.Add(3 * time.Hour)
+	old := h.now.Add(-3 * time.Hour)
+	_ = h.svc.blobs.Walk(func(b string, _ time.Time) error { return os.Chtimes(h.svc.blobs.path(b), old, old) })
+	h.svc.GC(ctx)
+	if cs, _, _ := chunkList(ctx, h.svc.st.db, op.Hash); cs != nil || h.svc.blobs.Has(chunks1[0].Hash) {
+		t.Fatalf("unreferenced chunks kept: list %v, chunk blob %v", cs != nil, h.svc.blobs.Has(chunks1[0].Hash))
+	}
 }

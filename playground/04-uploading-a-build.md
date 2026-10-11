@@ -71,6 +71,40 @@ Artifacts `u04-*` (quota keys `u04`, `u04b`, `u04q`). All artifacts from
   same check.
 - `replace_dirs: [""]` now says to use `"replace": true`.
 
+## Decided: chunked storage and uploads (2026-10-11)
+
+Rows weren't the cost to fix; content is. A job that appends to a 100 MB
+CSV stored another 100 MB per run, and re-uploaded all of it. Looked at
+git (trees, packfile deltas), BitTorrent v2 (per-file Merkle trees),
+restic/borg/casync (content-defined chunking) and Dropbox (4 MB blocks,
+upload only missing ones). Git-style trees aren't needed: artifacts don't
+have that many files.
+
+- **Files of 1 MiB or more are stored as FastCDC chunks** (256 KiB min,
+  1 MiB average, 4 MiB max), each chunk a blob; dedup is global (any
+  file, artifact or user). Library: `github.com/PlakarKorp/go-cdc-chunkers`
+  v1.1.0, the versioned `fastcdc-v1.0.0` variant (pinned, since the cut
+  points are part of the storage format). jotfs/fastcdc-go was the first
+  pick but writes its gear table on every NewChunker (a data race).
+- **A file is still named by its whole SHA-256** everywhere (publish,
+  ETags, `from_sandbox`, the files API); the service keeps file → chunks
+  in Postgres (`chunked`, `chunks`) and joins them when reading.
+- **Chunk-level uploads:** `/blobs/missing` with the file and chunk
+  hashes, `PUT` the missing chunks, then `PUT /blobs/{file}/chunks` with
+  the list (checked: every chunk present, the whole hashes to the file).
+  The Go client's `Upload`/`UploadContent` do it; `pa.SplitChunks` is the
+  shared cutter. A whole-file `PUT` (the console) is chunked by the
+  service: same storage saving, full upload.
+- **Storage counts distinct chunks per key**; `GET /quotas/{key}` shows
+  `storage_used` and `storage_logical` (no sharing at all).
+- **GC follows file → chunks** with the same grace period and touch as
+  blobs.
+
+Tried live with the Go client: a 21 MB CSV (15 chunks), then 5 versions
+each appending a row: each sent 1 chunk (~1 MB) instead of 21 MB; after 6
+versions storage used 27 MB against 126 MB logical, and the file reads
+back identical (`chunk-demo`, key `chunkdemo`).
+
 ## Questions
 
 - ~~The console hashes with `crypto.subtle`, only on secure origins.~~

@@ -127,8 +127,12 @@ func (s *Service) download(ctx context.Context, fc *client.Client, sb, base stri
 					fail(firedErr(where, err))
 					continue
 				}
-				err = s.blobs.Put(h, rc, s.cfg.Limits.MaxVersionBytes)
+				var got string
+				got, _, err = s.putContent(ctx, rc, s.cfg.Limits.MaxVersionBytes, h)
 				rc.Close()
+				if err == nil && got != h {
+					err = ErrHashMismatch
+				}
 				switch {
 				case errors.Is(err, ErrHashMismatch):
 					fail(changed)

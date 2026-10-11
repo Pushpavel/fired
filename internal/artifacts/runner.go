@@ -158,7 +158,7 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, timeout time.Durati
 		return failed("upload files", err)
 	}
 	if si.stateHash != "" && j.State != "" {
-		rc, err := s.blobs.Open(si.stateHash)
+		rc, err := s.openContent(ctx, si.stateHash)
 		if err != nil {
 			return failed("open state", err)
 		}
@@ -314,7 +314,7 @@ func (s *Service) treeArchive(tree map[string]pa.File) io.Reader {
 				if err := tw.WriteHeader(&tar.Header{Name: p, Mode: int64(f.Mode), Size: f.Size, Typeflag: tar.TypeReg, ModTime: now}); err != nil {
 					return err
 				}
-				rc, err := s.blobs.Open(f.Hash)
+				rc, err := s.openContent(context.Background(), f.Hash)
 				if err != nil {
 					return err
 				}
@@ -378,7 +378,7 @@ func (s *Service) capture(ctx context.Context, sb, w string, writes []string) (m
 				if err != nil {
 					return err
 				}
-				h, n, err := s.blobs.Add(tr, s.cfg.Limits.MaxVersionBytes)
+				h, n, err := s.putContent(context.Background(), tr, s.cfg.Limits.MaxVersionBytes, "")
 				if err != nil {
 					return err
 				}
@@ -409,7 +409,7 @@ func (s *Service) findSecret(files map[string]pa.File, secrets *redact.Set) (str
 	overlap := secrets.MaxLen()
 	buf := make([]byte, overlap+1<<20)
 	for p, f := range files {
-		rc, err := s.blobs.Open(f.Hash)
+		rc, err := s.openContent(context.Background(), f.Hash)
 		if err != nil {
 			return "", "", err
 		}
@@ -447,7 +447,7 @@ func (s *Service) captureState(ctx context.Context, sb, dir string) (string, err
 		return "", err
 	}
 	defer rc.Close()
-	h, _, err := s.blobs.Add(rc, s.cfg.Limits.MaxVersionBytes)
+	h, _, err := s.putContent(ctx, rc, s.cfg.Limits.MaxVersionBytes, "")
 	return h, err
 }
 

@@ -45,6 +45,17 @@ func (s *Service) GC(ctx context.Context) {
 		ms(now.Add(-runHistory))); err != nil {
 		s.log.Error("gc: prune runs", "err", err)
 	}
+	// Chunked files nothing references (past the grace period) go, and the
+	// chunks of the rest count as referenced.
+	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM chunked WHERE touched_at<?
+AND file NOT IN (SELECT hash FROM files UNION SELECT hash FROM run_state UNION SELECT logs FROM runs)`, ms(now.Add(-blobGrace))); err != nil {
+		s.log.Error("gc: chunked files", "err", err)
+		return
+	}
+	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM chunks WHERE file NOT IN (SELECT file FROM chunked)`); err != nil {
+		s.log.Error("gc: chunk lists", "err", err)
+		return
+	}
 	refs, err := referencedBlobs(ctx, s.st.db)
 	if err != nil {
 		s.log.Error("gc: referenced blobs", "err", err)

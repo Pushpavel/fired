@@ -120,20 +120,76 @@ func (c *Client) PutBlob(ctx context.Context, hash string, content io.Reader) er
 	return nil
 }
 
-// Upload stores data as a blob if the service doesn't have it yet and
-// returns a FileOp referring to it.
+// PutChunks declares the file hash as the given chunks, in order; every
+// chunk must already be uploaded. The service checks they add up to hash.
+func (c *Client) PutChunks(ctx context.Context, hash string, chunks []ChunkRef) error {
+	return c.do(ctx, "PUT", "/v1/blobs/"+url.PathEscape(hash)+"/chunks", ChunksRequest{Chunks: chunks}, nil)
+}
+
+// Upload stores data if the service doesn't have it yet and returns a
+// FileOp referring to it. A large file goes up as chunks (only the ones the
+// service is missing), so a new version of it sends just what changed.
 func (c *Client) Upload(ctx context.Context, path string, data []byte, mode uint32) (FileOp, error) {
-	h := HashBytes(data)
-	missing, err := c.MissingBlobs(ctx, []string{h})
+	h, _, err := c.UploadContent(ctx, bytes.NewReader(data))
 	if err != nil {
 		return FileOp{}, err
 	}
-	if len(missing) > 0 {
-		if err := c.PutBlob(ctx, h, bytes.NewReader(data)); err != nil {
-			return FileOp{}, err
+	return FileOp{Path: path, Hash: h, Mode: mode}, nil
+}
+
+// UploadContent is Upload for content read from r (read twice: once to
+// hash and chunk it, once to send what's missing). It returns the hash and
+// size.
+func (c *Client) UploadContent(ctx context.Context, r io.ReadSeeker) (string, int64, error) {
+	hs := sha256.New()
+	var chunks []ChunkRef
+	var offsets []int64
+	var size int64
+	if err := SplitChunks(io.TeeReader(r, hs), func(b []byte) error {
+		chunks = append(chunks, ChunkRef{Hash: HashBytes(b), Size: int64(len(b))})
+		offsets = append(offsets, size)
+		size += int64(len(b))
+		return nil
+	}); err != nil {
+		return "", 0, err
+	}
+	h := hex.EncodeToString(hs.Sum(nil))
+	want := []string{h}
+	if size >= ChunkThreshold {
+		for _, ch := range chunks {
+			want = append(want, ch.Hash)
 		}
 	}
-	return FileOp{Path: path, Hash: h, Mode: mode}, nil
+	missing, err := c.MissingBlobs(ctx, want)
+	if err != nil {
+		return "", 0, err
+	}
+	need := map[string]bool{}
+	for _, m := range missing {
+		need[m] = true
+	}
+	if !need[h] {
+		return h, size, nil
+	}
+	if size < ChunkThreshold {
+		if _, err := r.Seek(0, io.SeekStart); err != nil {
+			return "", 0, err
+		}
+		return h, size, c.PutBlob(ctx, h, r)
+	}
+	for i, ch := range chunks {
+		if !need[ch.Hash] {
+			continue
+		}
+		if _, err := r.Seek(offsets[i], io.SeekStart); err != nil {
+			return "", 0, err
+		}
+		if err := c.PutBlob(ctx, ch.Hash, io.LimitReader(r, ch.Size)); err != nil {
+			return "", 0, err
+		}
+		delete(need, ch.Hash)
+	}
+	return h, size, c.PutChunks(ctx, h, chunks)
 }
 
 // ---- artifacts

@@ -30,6 +30,7 @@ func (s *Service) Handler() http.Handler {
 
 	h("POST /v1/blobs/missing", s.handleMissingBlobs)
 	h("PUT /v1/blobs/{hash}", s.handlePutBlob)
+	h("PUT /v1/blobs/{hash}/chunks", s.handlePutChunks)
 
 	h("POST /v1/artifacts", s.handleCreate)
 	h("GET /v1/artifacts", s.handleList)
@@ -173,7 +174,12 @@ func (s *Service) handleMissingBlobs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handlePutBlob(w http.ResponseWriter, r *http.Request) {
 	h := r.PathValue("hash")
-	err := s.blobs.Put(h, r.Body, s.cfg.Limits.MaxVersionBytes)
+	got, _, err := s.putContent(r.Context(), r.Body, s.cfg.Limits.MaxVersionBytes, h)
+	if !validHash(h) {
+		err = errBadHash
+	} else if err == nil && got != h {
+		err = ErrHashMismatch
+	}
 	switch err {
 	case nil:
 		writeJSON(w, 200, map[string]string{"hash": h})
@@ -186,6 +192,23 @@ func (s *Service) handlePutBlob(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, err)
 	}
+}
+
+// handlePutChunks declares a file as chunks already uploaded, so a large
+// file goes up as only the chunks the store is missing.
+func (s *Service) handlePutChunks(w http.ResponseWriter, r *http.Request) {
+	var req pa.ChunksRequest
+	if err := decode(r, &req, 4<<20); err != nil {
+		writeErr(w, err)
+		return
+	}
+	h := r.PathValue("hash")
+	size, err := s.putChunkList(r.Context(), h, req.Chunks)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"hash": h, "size": size})
 }
 
 // ---- artifacts
@@ -435,7 +458,7 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 		return
 	}
 	go s.noteRead(id)
-	rc, err := s.blobs.Open(f.Hash)
+	rc, err := s.openContent(r.Context(), f.Hash)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -523,7 +546,7 @@ func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		rc, err := s.blobs.Open(f.Hash)
+		rc, err := s.openContent(r.Context(), f.Hash)
 		if err != nil {
 			s.log.Error("export: open blob", "hash", f.Hash, "err", err)
 			return
