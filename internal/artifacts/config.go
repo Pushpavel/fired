@@ -21,8 +21,12 @@ type Config struct {
 	// Token authenticates callers (X-Fired-Token or Bearer). Env
 	// FIRED_ARTIFACTS_TOKEN. Required.
 	Token string `yaml:"token"`
-	// DataDir holds the SQLite database and the blob store. Put it on
-	// durable (ideally replicated) storage: artifacts are kept work, unlike
+	// DatabaseURL is the Postgres database for artifacts, versions, jobs and
+	// runs, normally fired's: the tables go in their own schema, "artifacts".
+	// Env FIRED_ARTIFACTS_DATABASE_URL. Required.
+	DatabaseURL string `yaml:"database_url"`
+	// DataDir holds the blob store (file contents). Put it on durable
+	// (ideally replicated) storage: artifacts are kept work, unlike
 	// sandboxes. Env FIRED_ARTIFACTS_DATA_DIR.
 	DataDir string `yaml:"data_dir"`
 	// Fired is the sandbox daemon jobs run on. Env FIRED_URL, FIRED_API_TOKEN.
@@ -175,6 +179,7 @@ func LoadConfig(path string) (Config, error) {
 	env("FIRED_ARTIFACTS_LISTEN", &cfg.Listen)
 	env("FIRED_ARTIFACTS_TOKEN", &cfg.Token)
 	env("FIRED_ARTIFACTS_DATA_DIR", &cfg.DataDir)
+	env("FIRED_ARTIFACTS_DATABASE_URL", &cfg.DatabaseURL)
 	env("FIRED_URL", &cfg.Fired.URL)
 	env("FIRED_API_TOKEN", &cfg.Fired.Token)
 	env("FIRED_ARTIFACTS_BROKER_URL", &cfg.Broker.URL)
@@ -187,6 +192,9 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func (c *Config) Validate() error {
+	if c.DatabaseURL == "" {
+		return fmt.Errorf("database_url is required (FIRED_ARTIFACTS_DATABASE_URL)")
+	}
 	if c.DataDir == "" || !filepath.IsAbs(c.DataDir) {
 		return fmt.Errorf("data_dir must be an absolute path")
 	}

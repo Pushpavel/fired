@@ -31,7 +31,10 @@ agent ─ MCP tools ─▶ your backend ─────────────�
 
 It is a separate binary because its data has a different life from
 sandboxes: artifacts are kept and shared, so run it next to your backend on
-durable storage. Runs happen on whichever fired host it points at.
+durable storage. Its records (artifacts, versions, jobs, runs) are in
+Postgres, normally fired's database in a schema of its own (`artifacts`),
+and file contents in a blob store on disk. Runs happen on whichever fired
+host it points at.
 
 ## Concepts
 
@@ -483,9 +486,9 @@ left alone; `labels` and `meta` are merged as a JSON merge patch (RFC 7386):
 ## Running it
 
 ```bash
-make dev            # fired with the fake driver, in one terminal
+make dev-vm         # fired with real VMs, detached (or `make dev`, the fake driver)
 curl -H "X-Fired-Token: dev" -d '{"name":"base"}' http://127.0.0.1:8443/v1/templates
-make dev-artifacts  # fired-artifacts on :8444, token "dev", in another
+make dev-artifacts  # fired-artifacts on :8444, token "dev", detached; same Postgres
 ```
 
 `make dev-artifacts` turns on the console (`ui: true` or
@@ -515,7 +518,8 @@ unpublished edits. It's a reference for your frontend's renderers.
 The production image contains the binary too:
 `docker run --entrypoint fired-artifacts fired:latest serve`. Configure it
 with `deploy/artifacts.yaml` (every key is documented there) and env
-overrides. Point `data_dir` at durable storage, give `runner.egress` the
+overrides. Set `database_url` (fired's database is fine; it only uses its
+own schema), point `data_dir` at durable storage, give `runner.egress` the
 hosts your jobs need, and set `broker.url` to your backend's credentials
 endpoint.
 

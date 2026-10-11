@@ -68,6 +68,10 @@ spec:
             matchLabels:
               app.kubernetes.io/name: fired
               app.kubernetes.io/component: host
+        {{- if .Values.artifacts.enabled }}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: fired-artifacts}
+        {{- end }}
       ports:
         - {port: 5432, protocol: TCP}
 {{- end }}

@@ -1,6 +1,7 @@
 {{- if .Values.artifacts.enabled }}
-# fired-artifacts: one replica on a volume (its store is SQLite), calling
-# fired through the cluster Service.
+# fired-artifacts: one replica, its records in fired's Postgres (schema
+# "artifacts") and its blobs on a volume, calling fired through the cluster
+# Service.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -56,6 +57,8 @@ spec:
           args: ["serve", "-config", "/etc/fired-artifacts/artifacts.yaml"]
           env:
             - {name: FIRED_ARTIFACTS_DATA_DIR, value: /data/artifacts}
+            - name: FIRED_ARTIFACTS_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: fired, key: database-url}}
             - {name: FIRED_ARTIFACTS_UI, value: {{ ternary "1" "0" .Values.artifacts.ui | quote }}}
             - {name: FIRED_URL, value: "http://fired.{{ .Release.Namespace }}.svc:8443"}
             - name: FIRED_API_TOKEN

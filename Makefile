@@ -62,17 +62,19 @@ dev-vm: docker db
 # Run the artifact service from the image, as its own container the way it's
 # its own Deployment in Kubernetes, against `make dev-vm` or `make dev` (run
 # that first), with its console on http://127.0.0.1:8444/ui/ (token "dev").
-# Its SQLite and blobs are in .dev/artifacts. Detached: `docker logs -f
+# Its records are in the dev Postgres (`make db`, schema "artifacts") and
+# its blobs in .dev/artifacts. Detached: `docker logs -f
 # fired-dev-artifacts`, `docker stop fired-dev-artifacts`.
 # Jobs use fired's "base" template: create it with
 #   curl -H "X-Fired-Token: dev" -d '{"name":"base"}' http://127.0.0.1:8443/v1/templates
-dev-artifacts: docker
+dev-artifacts: docker db
 	mkdir -p $(CURDIR)/.dev/artifacts
 	docker rm -f fired-dev-artifacts >/dev/null 2>&1 || true
 	docker run -d --name fired-dev-artifacts --network host --user $$(id -u):$$(id -g) \
 	  -v $(CURDIR)/deploy/artifacts.yaml:/etc/fired-artifacts/artifacts.yaml:ro \
 	  -v $(CURDIR)/.dev/artifacts:/data/artifacts \
 	  -e FIRED_ARTIFACTS_TOKEN=dev -e FIRED_ARTIFACTS_UI=1 -e FIRED_ARTIFACTS_LISTEN=127.0.0.1:8444 \
+	  -e FIRED_ARTIFACTS_DATABASE_URL="$(DB_URL)" \
 	  -e FIRED_URL=http://127.0.0.1:8443 -e FIRED_API_TOKEN=dev \
 	  --entrypoint fired-artifacts fired:latest serve -config /etc/fired-artifacts/artifacts.yaml
 

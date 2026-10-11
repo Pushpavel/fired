@@ -49,7 +49,8 @@ type Service struct {
 	bgWG     sync.WaitGroup
 }
 
-// New opens the store under cfg.DataDir.
+// New connects to the database (migrating it) and opens the blob store
+// under cfg.DataDir.
 func New(cfg Config, log *slog.Logger) (*Service, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -58,7 +59,7 @@ func New(cfg Config, log *slog.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := openStore(cfg.DataDir)
+	st, err := openStore(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		return nil, err
 	}

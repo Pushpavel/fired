@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Pushpavel/fired/internal/store/storetest"
 	pa "github.com/Pushpavel/fired/pkg/artifacts"
 	"github.com/Pushpavel/fired/pkg/client"
 )
@@ -43,6 +44,7 @@ func newHarness(t *testing.T, mutate func(*Config)) *harness {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.DataDir = t.TempDir()
+	cfg.DatabaseURL = storetest.URL(t)
 	cfg.Token = testToken
 	cfg.Fired.URL = "http://127.0.0.1:1" // unused unless a test starts runs
 	if mutate != nil {

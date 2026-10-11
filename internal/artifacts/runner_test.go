@@ -391,7 +391,7 @@ func TestFromSandbox(t *testing.T) {
 		from("site", pa.SandboxSource{Path: "dist", Exclude: []string{"node_modules"}}),
 	}}}))(t)
 	v := must(c.Version(ctx, "built", res.Publish.Version.Version))(t)
-	if got := tree(v); got != "README.md:644,site/index.html:644,site/run.sh:755,site/sub/a.css:644" {
+	if got := tree(v); got != "README.md:644,artifact.json:644,site/index.html:644,site/run.sh:755,site/sub/a.css:644" {
 		t.Fatalf("v1 tree: %s", got)
 	}
 	if got := string(must(c.ReadFile(ctx, "built", "site/index.html", 0))(t)); got != "<h1>build 1</h1>" {
@@ -406,7 +406,7 @@ func TestFromSandbox(t *testing.T) {
 	r2 := must(c.Publish(ctx, "built", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{
 		from("site", pa.SandboxSource{FiredURL: firedURL, Path: "/workspace/dist", Exclude: []string{"node_modules"}})}}))(t)
 	v = must(c.Version(ctx, "built", r2.Version.Version))(t)
-	if got := tree(v); got != "README.md:644,site/index.html:644,site/run.sh:755" {
+	if got := tree(v); got != "README.md:644,artifact.json:644,site/index.html:644,site/run.sh:755" {
 		t.Fatalf("v2 tree: %s", got)
 	}
 
@@ -418,11 +418,12 @@ func TestFromSandbox(t *testing.T) {
 	if !strings.Contains(err.Error(), ".env") || !strings.Contains(err.Error(), "API_KEY") || strings.Contains(err.Error(), "sk-live") {
 		t.Fatalf("secret error should name the file and secret, not the value: %v", err)
 	}
-	// Excluding it works; "" mirrors the whole tree, so README.md goes.
+	// Excluding it works; "" mirrors the whole tree, so README.md goes
+	// (artifact.json is kept: every version has one).
 	r3 := must(c.Publish(ctx, "built", pa.PublishRequest{BaseVersion: 2, Files: []pa.FileOp{
 		from("", pa.SandboxSource{Path: "dist", Exclude: []string{".env", "node_modules"}})}}))(t)
 	v = must(c.Version(ctx, "built", r3.Version.Version))(t)
-	if got := tree(v); got != "index.html:644,run.sh:755" {
+	if got := tree(v); got != "artifact.json:644,index.html:644,run.sh:755" {
 		t.Fatalf("root mirror: %s", got)
 	}
 

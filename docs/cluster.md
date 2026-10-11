@@ -9,11 +9,14 @@ or a Kubernetes Service in front of every host.
 backend ─┐                ┌─ fired host a (pool chat) ── its VMs
          ├─ one URL (LB) ─┤
 artifacts┘                └─ fired host b (pool artifacts) ── its VMs
-                    both ──── Postgres (fired's own; nobody else reads it)
+                    both ──── Postgres (fired's own schema; fired-artifacts
+                              keeps its records in another, "artifacts")
 ```
 
-The database is fired's private state. Other services use the API only, so
+fired's tables are its private state. Other services use the API only, so
 the schema can change with fired releases without touching them.
+fired-artifacts shares the database server and database but never fired's
+tables: its own are in the schema `artifacts`.
 
 ## What lives where
 

@@ -1,13 +1,20 @@
 # fired-artifacts configuration. Every key is optional; the values shown are
 # the defaults unless noted. Env overrides: FIRED_ARTIFACTS_TOKEN,
-# FIRED_ARTIFACTS_LISTEN, FIRED_ARTIFACTS_DATA_DIR, FIRED_URL, FIRED_API_TOKEN,
+# FIRED_ARTIFACTS_LISTEN, FIRED_ARTIFACTS_DATABASE_URL, FIRED_ARTIFACTS_DATA_DIR,
+# FIRED_URL, FIRED_API_TOKEN,
 # FIRED_ARTIFACTS_BROKER_URL, FIRED_ARTIFACTS_BROKER_TOKEN, FIRED_ARTIFACTS_UI,
 # FIRED_ARTIFACTS_PREVIEW_DOMAIN.
 
 listen: ":8444"
 token: ""                       # required; prefer FIRED_ARTIFACTS_TOKEN
 
-# SQLite + blob store. Artifacts are kept work: put this on durable storage.
+# Postgres for records (artifacts, versions, jobs, runs), normally fired's
+# database: the tables go in their own schema, "artifacts". Required; prefer
+# FIRED_ARTIFACTS_DATABASE_URL.
+database_url: ""
+
+# The blob store (file contents). Artifacts are kept work: put this on
+# durable storage.
 data_dir: /data/artifacts
 
 # The fired daemon jobs run on.

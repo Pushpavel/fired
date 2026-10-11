@@ -5,18 +5,24 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"path/filepath"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	pa "github.com/Pushpavel/fired/pkg/artifacts"
 )
 
 // store persists artifacts, versions, file trees, jobs, runs and quotas in
-// SQLite. File contents live in Blobs; rows only hold hashes.
+// Postgres, in the schema "artifacts" of whatever database it's given
+// (normally fired's, whose tables it never touches). File contents live in
+// Blobs; rows only hold hashes.
 type store struct {
-	db *sql.DB
+	db  pg      // queries outside transactions
+	raw *sql.DB // the pool, for transactions
 }
 
 type querier interface {
@@ -25,106 +31,198 @@ type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-var errNotFound = errors.New("not found")
+// pg runs queries written with "?" placeholders (also built dynamically)
+// as Postgres "$n" ones.
+type pg struct{ q querier }
 
-func openStore(dir string) (*store, error) {
-	dsn := "file:" + filepath.Join(dir, "artifacts.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)"
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, err
-	}
-	// SQLite allows one writer; a single connection avoids SQLITE_BUSY churn.
-	// Never call a non-tx store method while holding a tx: it would wait
-	// for the connection the tx holds.
-	db.SetMaxOpenConns(1)
-	s := &store{db: db}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return s, nil
+func (p pg) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return p.q.ExecContext(ctx, rebind(query), args...)
+}
+func (p pg) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return p.q.QueryContext(ctx, rebind(query), args...)
+}
+func (p pg) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return p.q.QueryRowContext(ctx, rebind(query), args...)
 }
 
-const schema = `
-CREATE TABLE IF NOT EXISTS artifacts (
+func rebind(query string) string {
+	if !strings.Contains(query, "?") {
+		return query
+	}
+	var b strings.Builder
+	n := 0
+	for _, c := range query {
+		if c == '?' {
+			n++
+			b.WriteString("$" + strconv.Itoa(n))
+			continue
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
+}
+
+var errNotFound = errors.New("not found")
+
+// dbSchema is where this service's tables live.
+const dbSchema = "artifacts"
+
+func openStore(ctx context.Context, url string) (*store, error) {
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		return nil, fmt.Errorf("database_url: %w", err)
+	}
+	cfg.RuntimeParams["search_path"] = dbSchema
+	raw := stdlib.OpenDB(*cfg)
+	raw.SetMaxOpenConns(16)
+	raw.SetConnMaxIdleTime(5 * time.Minute)
+	// The database may still be starting (compose, Kubernetes): retry for a
+	// minute before giving up.
+	deadline := time.Now().Add(time.Minute)
+	for {
+		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = raw.PingContext(pctx)
+		cancel()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			raw.Close()
+			return nil, fmt.Errorf("connect to database: %w", err)
+		}
+		time.Sleep(time.Second)
+	}
+	if err := migrate(ctx, raw); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	return &store{db: pg{raw}, raw: raw}, nil
+}
+
+// migrations are applied in order, once each, under an advisory lock.
+// Nothing is deployed yet, so they can still be edited; once it is, only
+// append.
+var migrations = []string{`
+CREATE TABLE artifacts (
 	id              TEXT PRIMARY KEY,
 	quota_key       TEXT NOT NULL,
-	current_version INTEGER NOT NULL DEFAULT 0,
+	current_version INT NOT NULL DEFAULT 0,
 	data            TEXT NOT NULL,
-	created_at      INTEGER NOT NULL,
-	updated_at      INTEGER NOT NULL,
-	last_active_at  INTEGER NOT NULL
+	created_at      BIGINT NOT NULL,
+	updated_at      BIGINT NOT NULL,
+	last_active_at  BIGINT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS artifacts_quota ON artifacts(quota_key);
-CREATE TABLE IF NOT EXISTS versions (
+CREATE INDEX artifacts_quota ON artifacts(quota_key);
+CREATE TABLE versions (
 	artifact   TEXT NOT NULL,
-	version    INTEGER NOT NULL,
+	version    INT NOT NULL,
 	origin     TEXT NOT NULL,
 	data       TEXT NOT NULL,
-	created_at INTEGER NOT NULL,
+	created_at BIGINT NOT NULL,
 	PRIMARY KEY (artifact, version)
 );
-CREATE TABLE IF NOT EXISTS files (
+CREATE TABLE files (
 	artifact TEXT NOT NULL,
-	version  INTEGER NOT NULL,
+	version  INT NOT NULL,
 	path     TEXT NOT NULL,
 	hash     TEXT NOT NULL,
-	size     INTEGER NOT NULL,
-	mode     INTEGER NOT NULL,
+	size     BIGINT NOT NULL,
+	mode     INT NOT NULL,
 	PRIMARY KEY (artifact, version, path)
 );
-CREATE INDEX IF NOT EXISTS files_hash ON files(hash);
-CREATE TABLE IF NOT EXISTS jobs (
+CREATE INDEX files_hash ON files(hash);
+CREATE TABLE jobs (
 	artifact      TEXT NOT NULL,
 	job           TEXT NOT NULL,
-	armed_until   INTEGER NOT NULL DEFAULT 0,
-	grant_until   INTEGER NOT NULL DEFAULT 0,
-	grant_max_run INTEGER NOT NULL DEFAULT 0,
+	armed_until   BIGINT NOT NULL DEFAULT 0,
+	grant_until   BIGINT NOT NULL DEFAULT 0,
+	grant_max_run BIGINT NOT NULL DEFAULT 0,
 	sched_key     TEXT NOT NULL DEFAULT '',
-	next_at       INTEGER NOT NULL DEFAULT 0,
-	last_fire_at  INTEGER NOT NULL DEFAULT 0,
+	next_at       BIGINT NOT NULL DEFAULT 0,
+	last_fire_at  BIGINT NOT NULL DEFAULT 0,
 	PRIMARY KEY (artifact, job)
 );
-CREATE TABLE IF NOT EXISTS runs (
+CREATE TABLE runs (
 	id          TEXT PRIMARY KEY,
 	artifact    TEXT NOT NULL,
 	job         TEXT NOT NULL,
 	status      TEXT NOT NULL,
 	trigger     TEXT NOT NULL,
-	payload     BLOB,
+	payload     BYTEA,
 	logs        TEXT NOT NULL DEFAULT '',
 	data        TEXT NOT NULL,
-	created_at  INTEGER NOT NULL,
-	started_at  INTEGER NOT NULL DEFAULT 0,
-	finished_at INTEGER NOT NULL DEFAULT 0
+	created_at  BIGINT NOT NULL,
+	started_at  BIGINT NOT NULL DEFAULT 0,
+	finished_at BIGINT NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS runs_status ON runs(status, created_at);
-CREATE INDEX IF NOT EXISTS runs_artifact ON runs(artifact, created_at);
-CREATE TABLE IF NOT EXISTS run_state (
+CREATE INDEX runs_status ON runs(status, created_at);
+CREATE INDEX runs_artifact ON runs(artifact, created_at);
+CREATE TABLE run_state (
 	artifact   TEXT NOT NULL,
 	job        TEXT NOT NULL,
 	hash       TEXT NOT NULL,
-	updated_at INTEGER NOT NULL,
+	updated_at BIGINT NOT NULL,
 	PRIMARY KEY (artifact, job)
 );
-CREATE TABLE IF NOT EXISTS notify (
+CREATE TABLE notify (
 	artifact TEXT NOT NULL,
-	version  INTEGER NOT NULL,
+	version  INT NOT NULL,
 	target   TEXT NOT NULL,
 	PRIMARY KEY (artifact, version)
 );
-CREATE TABLE IF NOT EXISTS quotas (
+CREATE TABLE quotas (
 	key  TEXT PRIMARY KEY,
 	data TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS tiers (
+CREATE TABLE tiers (
 	name TEXT PRIMARY KEY,
 	data TEXT NOT NULL
 );
-`
+`}
 
-func (s *store) close() error { return s.db.Close() }
+// lockKey is the advisory lock for migrations and write transactions
+// ("artifact" in ASCII).
+const lockKey = 0x6172746966616374
+
+func migrate(ctx context.Context, db *sql.DB) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, lockKey); err != nil {
+		return fmt.Errorf("migrate: lock: %w", err)
+	}
+	defer conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, lockKey)
+	if _, err := conn.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+dbSchema+`;
+CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL)`); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	var v int
+	if err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&v); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	for ; v < len(migrations); v++ {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, migrations[v]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migrate to %d: %w", v+1, err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version(version) VALUES($1)`, v+1); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *store) close() error { return s.raw.Close() }
 
 func ms(t time.Time) int64 {
 	if t.IsZero() {
@@ -140,12 +238,19 @@ func fromMS(v int64) time.Time {
 	return time.UnixMilli(v).UTC()
 }
 
+// tx runs fn in a transaction. Write transactions take one advisory lock,
+// so they run one at a time: read-check-write sequences (base_version,
+// the next version number) stay correct without row locks.
 func (s *store) tx(ctx context.Context, fn func(q querier) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.raw.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if err := fn(tx); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := fn(pg{tx}); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -353,7 +458,7 @@ func deleteVersion(ctx context.Context, q querier, id string, n int) error {
 func storageUsed(ctx context.Context, q querier, key string) (int64, error) {
 	var n sql.NullInt64
 	err := q.QueryRowContext(ctx, `
-SELECT SUM(size) FROM (SELECT DISTINCT f.hash, f.size FROM files f JOIN artifacts a ON a.id=f.artifact WHERE a.quota_key=?)`, key).Scan(&n)
+SELECT SUM(size)::BIGINT FROM (SELECT DISTINCT f.hash, f.size FROM files f JOIN artifacts a ON a.id=f.artifact WHERE a.quota_key=?)`, key).Scan(&n)
 	return n.Int64, err
 }
 
@@ -375,7 +480,7 @@ func knownHashes(ctx context.Context, q querier, key string, hashes map[string]i
 // ---- notify
 
 func setNotify(ctx context.Context, q querier, id string, n int, target string) error {
-	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO notify(artifact, version, target) VALUES(?,?,?)`, id, n, target)
+	_, err := q.ExecContext(ctx, `INSERT INTO notify(artifact, version, target) VALUES(?,?,?) ON CONFLICT(artifact, version) DO UPDATE SET target=excluded.target`, id, n, target)
 	return err
 }
 
@@ -534,7 +639,7 @@ func putRunState(ctx context.Context, q querier, id, job, hash string, t time.Ti
 		_, err := q.ExecContext(ctx, `DELETE FROM run_state WHERE artifact=? AND job=?`, id, job)
 		return err
 	}
-	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO run_state(artifact, job, hash, updated_at) VALUES(?,?,?,?)`, id, job, hash, ms(t))
+	_, err := q.ExecContext(ctx, `INSERT INTO run_state(artifact, job, hash, updated_at) VALUES(?,?,?,?) ON CONFLICT(artifact, job) DO UPDATE SET hash=excluded.hash, updated_at=excluded.updated_at`, id, job, hash, ms(t))
 	return err
 }
 
@@ -556,7 +661,7 @@ func getQuota(ctx context.Context, q querier, key string) (pa.Quota, error) {
 
 func putQuota(ctx context.Context, q querier, key string, v pa.Quota) error {
 	d, _ := json.Marshal(v)
-	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO quotas(key, data) VALUES(?,?)`, key, string(d))
+	_, err := q.ExecContext(ctx, `INSERT INTO quotas(key, data) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET data=excluded.data`, key, string(d))
 	return err
 }
 
@@ -576,7 +681,7 @@ func getTier(ctx context.Context, q querier, name string) (pa.Quota, bool, error
 
 func putTier(ctx context.Context, q querier, t pa.Tier) error {
 	d, _ := json.Marshal(t.Limits)
-	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO tiers(name, data) VALUES(?,?)`, t.Name, string(d))
+	_, err := q.ExecContext(ctx, `INSERT INTO tiers(name, data) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET data=excluded.data`, t.Name, string(d))
 	return err
 }
 
