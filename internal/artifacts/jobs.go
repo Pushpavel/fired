@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	pa "github.com/Pushpavel/fired/pkg/artifacts"
@@ -212,7 +213,7 @@ func (s *Service) Trigger(ctx context.Context, id string, req pa.TriggerRequest,
 		}
 		now := s.now()
 		if st := s.jobStatus(*spec.Job, r, 0, now); st.State == pa.JobBlocked {
-			return errf(http.StatusConflict, "needs_approval", "the job can't run until approved: %v", st.NeedsApproval)
+			return errf(http.StatusConflict, "needs_approval", "the job can't run until approved: %s", strings.Join(st.NeedsApproval, "; "))
 		}
 		run, dropped, err = s.enqueue(ctx, q, id, *spec.Job, kind, req.Payload, now)
 		return err
@@ -227,7 +228,9 @@ func (s *Service) Trigger(ctx context.Context, id string, req pa.TriggerRequest,
 	return &run.Run, nil
 }
 
-var errQueueFull = errf(http.StatusTooManyRequests, "queue_full", "the job's run queue is full")
+func errQueueFull(max int) error {
+	return errf(http.StatusTooManyRequests, "queue_full", "the job's queue is full: queue.max is %d", max)
+}
 
 // enqueue adds a pending run, applying the on_busy policy. It returns the
 // new run and any runs dropped on the way (expired from the queue).
@@ -252,7 +255,7 @@ func (s *Service) enqueue(ctx context.Context, q querier, id string, raw pa.Job,
 			live++
 		}
 		if j.Queue.Max > 0 && live >= j.Queue.Max {
-			return nil, dropped, errQueueFull
+			return nil, dropped, errQueueFull(j.Queue.Max)
 		}
 	default: // latest
 		for _, p := range pending {

@@ -278,8 +278,8 @@ func (s *Service) previewTarget(hostport string) (id string, n int, owner, ok bo
 // paths are files of the entry's folder by exact path (no index files,
 // nothing outside it, not artifact.json). ?download on any of them is an
 // attachment. Without a view there is nothing to serve. /.fired/ is the
-// service's: /.fired/db.js is the db's client for pages and /.fired/db/
-// the db, which owner may write.
+// service's: /.fired/db.js is the client for pages, /.fired/db/ the db,
+// which owner may write, and /.fired/job the job, which owner may run.
 func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n int, owner bool) {
 	if p, ok := strings.CutPrefix(r.URL.Path, "/.fired/"); ok {
 		s.serveViewDB(w, r, id, p, owner)
@@ -332,7 +332,7 @@ func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n
 //go:embed viewjs/db.js
 var dbJS string
 
-// serveViewDB serves /.fired/{p} of a view: the db's client and the db.
+// serveViewDB serves /.fired/{p} of a view: the client, the db and the job.
 func (s *Service) serveViewDB(w http.ResponseWriter, r *http.Request, id, p string, owner bool) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if !s.allowRead(id) {
@@ -353,16 +353,39 @@ func (s *Service) serveViewDB(w http.ResponseWriter, r *http.Request, id, p stri
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "private, no-cache")
 		_, _ = io.WriteString(w, strings.Replace(dbJS, "__CAN_WRITE__", strconv.FormatBool(owner), 1))
-	case p == "db" || strings.HasPrefix(p, "db/"):
+	case r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodDelete &&
+		!strings.HasPrefix(r.Header.Get("Content-Type"), "application/json"):
 		// Writes must be JSON: a cross-site form can't send that without
 		// the page's own origin agreeing (CORS preflight).
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodDelete &&
-			!strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-			writeErr(w, errf(http.StatusUnsupportedMediaType, "invalid_request", "send writes as application/json"))
-			return
-		}
+		writeErr(w, errf(http.StatusUnsupportedMediaType, "invalid_request", "send writes as application/json"))
+	case p == "db" || strings.HasPrefix(p, "db/"):
 		go s.noteRead(id)
 		s.serveDB(w, r, id, strings.TrimPrefix(p, "db"), dbAccess{full: owner})
+	case p == "job" && (r.Method == http.MethodGet || r.Method == http.MethodHead):
+		// Anyone viewing the page may see when it's next refreshed.
+		st, err := s.Job(r.Context(), id)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, 200, st)
+	case p == "job/runs" && r.Method == http.MethodPost:
+		if !owner {
+			writeErr(w, errf(http.StatusForbidden, "read_only", "only the artifact's owner runs its job"))
+			return
+		}
+		var req pa.TriggerRequest
+		if err := decode(r, &req, int64(s.cfg.Limits.MaxPayloadBytes)+4096); err != nil {
+			writeErr(w, err)
+			return
+		}
+		run, err := s.Trigger(r.Context(), id, req, pa.TriggerPage)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, run)
 	default:
 		writeErr(w, errf(http.StatusNotFound, "not_found", "no %s here", r.URL.Path))
 	}

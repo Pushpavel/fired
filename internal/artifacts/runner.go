@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -362,16 +363,17 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 
 // ensureRunner returns the artifact's runner sandbox, creating it if it's
 // missing, broken, on a down host, or made for a different template, quota
-// key or pool.
+// key, pool or allowlist (runner.egress, runner.db_url).
 func (s *Service) ensureRunner(ctx context.Context, a pa.Artifact, template string) (string, error) {
 	id, pool := a.ID, s.cfg.Runner.Pool
 	list, err := s.fired.ListSandboxes(ctx, map[string]string{labelArtifact: id}, "")
 	if err != nil {
 		return "", err
 	}
+	allow := s.runnerEgress()
 	for _, sb := range list {
 		if sb.State != api.StateError && sb.State != api.StateDeleting && !sb.HostDown &&
-			sb.Labels[labelTemplate] == template && sb.QuotaKey == a.QuotaKey && sb.Pool == pool {
+			sb.Labels[labelTemplate] == template && sb.QuotaKey == a.QuotaKey && sb.Pool == pool && slices.Equal(sb.Egress.Allow, allow) {
 			return sb.ID, nil
 		}
 		_ = s.fired.DeleteSandbox(ctx, sb.ID)

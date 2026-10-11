@@ -7,6 +7,7 @@
 //   if (db.canWrite) await db.doc("tasks/t1").update({ done: true });
 //
 // The artifact's owner writes; everyone else reads (not _private/).
+// `job` (below) runs the artifact's job from its owner's page.
 // Documents are JSON objects at paths with an even number of segments
 // ("collection/doc", "a/b/c/d"); a collection is the documents directly
 // under it.
@@ -125,6 +126,27 @@ class CollectionRef extends Query {
   // add creates a document with a new id.
   async add(data) { return this.doc().set(data, { rev: -1 }); }
 }
+
+// The artifact's job, if it has one: anyone can see its status (when it
+// runs next); its owner can run it now, with a payload the job reads from
+// $TRIGGER_FILE (trigger type "page"). What it produces arrives in the db.
+export const job = {
+  canRun: canWrite,
+  async status() {
+    const res = await fetch("/.fired/job", { credentials: "same-origin" });
+    const json = await res.json().catch(() => null);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new DBError(res.status, json);
+    return json;
+  },
+  async run(payload) {
+    const res = await fetch("/.fired/job/runs", { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload === undefined ? {} : { payload }) });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) throw new DBError(res.status, json);
+    return json;
+  },
+};
 
 export const db = {
   canWrite,

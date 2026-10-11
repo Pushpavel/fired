@@ -60,9 +60,52 @@ func (s *Service) tick(ctx context.Context) {
 	if err := s.fireSchedules(ctx); err != nil {
 		s.log.Error("schedules", "err", err)
 	}
+	if err := s.expireQueued(ctx); err != nil {
+		s.log.Error("expire queued runs", "err", err)
+	}
 	if err := s.dispatch(ctx); err != nil {
 		s.log.Error("dispatch", "err", err)
 	}
+}
+
+// expireQueued drops queued runs older than their job's queue.max_age,
+// so a run waiting behind a long one doesn't look queued after it expired.
+func (s *Service) expireQueued(ctx context.Context) error {
+	pending, err := queryRuns(ctx, s.st.db, `status='pending' ORDER BY created_at`)
+	if err != nil {
+		return err
+	}
+	now := s.now()
+	specs := map[string]*pa.Job{}
+	for _, p := range pending {
+		j, ok := specs[p.Artifact]
+		if !ok {
+			if _, spec, err := s.currentSpec(ctx, s.st.db, p.Artifact); err == nil && spec.Job != nil {
+				d := s.cfg.jobDefaults(*spec.Job)
+				j = &d
+			}
+			specs[p.Artifact] = j
+		}
+		if j == nil || j.OnBusy != pa.OnBusyQueue || j.Queue.MaxAge <= 0 || now.Sub(p.CreatedAt) <= time.Duration(j.Queue.MaxAge) {
+			continue
+		}
+		dropped := false
+		err := s.st.tx(ctx, func(q querier) error {
+			cur, err := getRun(ctx, q, p.ID)
+			if err != nil || cur.Status != pa.RunPending {
+				return err
+			}
+			dropped = true
+			return s.finishPending(ctx, q, cur, pa.RunDropped, "expired", now)
+		})
+		if err != nil {
+			return err
+		}
+		if dropped {
+			s.emit(pa.Event{Type: "run.dropped", Artifact: p.Artifact, RunID: p.ID, Status: pa.RunDropped, Reason: "expired"})
+		}
+	}
+	return nil
 }
 
 // dueJobs returns the artifacts whose job's schedule is due.
@@ -176,7 +219,7 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 			for _, x := range dropped {
 				events = append(events, pa.Event{Type: "run.dropped", Artifact: id, RunID: x.ID, Status: x.Status, Reason: x.Reason})
 			}
-			if err == errQueueFull {
+			if err != nil && asError(err).Code == "queue_full" {
 				x := &runRow{Run: pa.Run{ID: newID("run-"), Artifact: id, Status: pa.RunDropped, Trigger: pa.TriggerSchedule,
 					Reason: "queue_full", CreatedAt: now, FinishedAt: &now}}
 				events = append(events, pa.Event{Type: "run.dropped", Artifact: id, RunID: x.ID, Status: x.Status, Reason: x.Reason})

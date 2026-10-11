@@ -1052,6 +1052,23 @@ func TestDB(t *testing.T) {
 		if _, body, _ := view("GET", "/.fired/db.js", "", true); !strings.Contains(body, "const canWrite = true;") {
 			t.Fatal("db.js for the owner")
 		}
+		// The job: everyone sees its status, only the owner runs it.
+		if code, body, _ := view("GET", "/.fired/job", "", false); code != 404 || !strings.Contains(body, "no_job") {
+			t.Fatalf("job status without a job: %d %s", code, body)
+		}
+		must(c.Publish(ctx, "app", pa.PublishRequest{BaseVersion: 1, Spec: &pa.Spec{View: &pa.View{Type: pa.ViewPage, Entry: "index.html"}, Job: &pa.Job{Run: "true"}}}))(t)
+		if code, body, _ := view("GET", "/.fired/job", "", false); code != 200 || !strings.Contains(body, `"state":"manual"`) {
+			t.Fatalf("job status for a viewer: %d %s", code, body)
+		}
+		if code, body, _ := view("POST", "/.fired/job/runs", `{"payload":{"q":1}}`, false); code != 403 {
+			t.Fatalf("a viewer runs the job: %d %s", code, body)
+		}
+		if code, body, _ := view("POST", "/.fired/job/runs", `{"payload":{"q":1}}`, true); code != 202 || !strings.Contains(body, `"trigger":"page"`) {
+			t.Fatalf("the owner runs the job: %d %s", code, body)
+		}
+		if code, _, _ := view("POST", "/.fired/job/runs", ``, true); code != 415 {
+			t.Fatalf("a run that isn't JSON: %d", code)
+		}
 		if code, _, _ := view("GET", "/.fired/other", "", true); code != 404 {
 			t.Fatalf("/.fired/other: %d", code)
 		}

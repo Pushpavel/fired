@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -352,9 +353,22 @@ func TestRunsInFired(t *testing.T) {
 		}
 	})
 
+	t.Run("a new allowlist makes a new runner", func(t *testing.T) {
+		before := must(fc.ListSandboxes(ctx, map[string]string{labelArtifact: id}, ""))(t)
+		h.svc.cfg.Runner.Egress = []string{"example.com"}
+		defer func() { h.svc.cfg.Runner.Egress = nil }()
+		if r := trigger("gen"); r.Status != pa.RunSucceeded {
+			t.Fatalf("run: %+v", r)
+		}
+		after := must(fc.ListSandboxes(ctx, map[string]string{labelArtifact: id}, ""))(t)
+		if len(before) != 1 || len(after) != 1 || after[0].ID == before[0].ID || !slices.Contains(after[0].Egress.Allow, "example.com") {
+			t.Fatalf("runner before %+v, after %+v", before, after)
+		}
+	})
+
 	t.Run("a fork copies the db but not _private/", func(t *testing.T) {
 		f := must(c.Fork(ctx, id, pa.ForkRequest{QuotaKey: "u2"}))(t)
-		if d := must(c.GetDoc(ctx, f.ID, "stats/result"))(t); string(d.Data) != `{"run":2,"token":"ok"}` || d.Rev != 1 {
+		if d := must(c.GetDoc(ctx, f.ID, "stats/result"))(t); string(d.Data) != `{"run":3,"token":"ok"}` || d.Rev != 1 {
 			t.Fatalf("fork: %+v", d)
 		}
 		_, err := c.GetDoc(ctx, f.ID, "_private/state")

@@ -782,22 +782,31 @@ const isTextPath = p => TEXT_EXT.test(p) || !/\.[^/]+$/.test(p);
 const DB_PY = `# The artifact's db, for its job: JSON documents at paths like
 # "collection/doc". Pages read them with /.fired/db.js; _private/ is only
 # the owner's and the job's.
-import json, os, urllib.error, urllib.parse, urllib.request
+import json, os, time, urllib.error, urllib.parse, urllib.request
 
 URL, TOKEN = os.environ["FIRED_DB_URL"], os.environ["FIRED_DB_TOKEN"]
 
 
 def call(method, path="", data=None):
-    req = urllib.request.Request(f"{URL}/{path}", method=method,
-                                 data=None if data is None else json.dumps(data).encode(),
-                                 headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return None if r.status == 204 else json.load(r)
-    except urllib.error.HTTPError as e:
-        if e.code == 404 and method == "GET":
-            return None
-        raise RuntimeError(f"db {method} {path or '(batch)'}: {e.code} {e.read().decode()}") from None
+    """One request; network hiccups (and 502-504) are retried a few times."""
+    for attempt in range(5):
+        req = urllib.request.Request(f"{URL}/{path}", method=method,
+                                     data=None if data is None else json.dumps(data).encode(),
+                                     headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return None if r.status == 204 else json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 404 and method == "GET":
+                return None
+            if e.code in (502, 503, 504) and attempt < 4:
+                time.sleep(2 ** attempt)
+                continue
+            raise RuntimeError(f"db {method} {path or '(batch)'}: {e.code} {e.read().decode()}") from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 4:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def get(path):
@@ -1675,15 +1684,26 @@ print("run", state["runs"])
 <style>
   body { font: 16px/1.5 system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #0f1d18; color: #e2ece6; }
   .n { font-size: 120px; font-weight: 800; line-height: 1; letter-spacing: -.04em; color: #46c7a6; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #46c7a6; background: none; color: inherit; cursor: pointer; }
 </style>
 </head>
 <body>
 <div>
   <div class="n" id="n">0</div>
   <p id="t">The job hasn't run yet.</p>
+  <p><button id="now" hidden>Refresh now</button> <small id="next"></small></p>
 </div>
 <script type="module">
-import { db } from "/.fired/db.js";
+import { db, job } from "/.fired/db.js";
+// Its owner can run the job from here; everyone sees when it runs next.
+const btn = document.getElementById("now");
+btn.hidden = !job.canRun;
+btn.onclick = async () => { btn.disabled = true; await job.run(); setTimeout(() => btn.disabled = false, 3000); };
+const showNext = async () => {
+  const st = await job.status();
+  document.getElementById("next").textContent = st?.next_run ? "Next run " + new Date(st.next_run).toLocaleTimeString() : "";
+};
+showNext(); setInterval(showNext, 30000);
 // Called now and after every run that changes it.
 db.doc("clock/now").onSnapshot(d => {
   if (!d) return;
@@ -1750,7 +1770,7 @@ db.collection("sales").orderBy("revenue", "desc").onSnapshot(rows => {
 `,
     } },
   { slug: "inbox", title: "An inbox that queues triggers", tab: "job",
-    about: "A job with no schedule and on_busy set to queue. Run it with a payload several times at once: every trigger waits its turn and adds a document to inbox/, which the page lists, newest first, as they arrive.",
+    about: "A job with no schedule and on_busy set to queue. Its owner sends messages from the page (or the Job tab, with a payload): every trigger waits its turn, and the job adds a document to inbox/, which the page lists, newest first, as they arrive.",
     files: {
       "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
         job: { run: "python3 handle.py", on_busy: "queue", queue: { max: 20, max_age: "1h" } } }, null, 2) + "\n",
@@ -1783,9 +1803,19 @@ time.sleep(2)
 <body>
 <h1>Inbox</h1>
 <p>Each run of the job adds its trigger here.</p>
+<form id="send" hidden><input id="msg" placeholder="A message for the job" required> <button>Send</button> <small id="sent"></small></form>
 <ul id="items"></ul>
 <script type="module">
-import { db } from "/.fired/db.js";
+import { db, job } from "/.fired/db.js";
+// The owner hands the job a message; it waits its turn in the queue.
+const form = document.getElementById("send");
+form.hidden = !job.canRun;
+form.onsubmit = async e => {
+  e.preventDefault();
+  const msg = document.getElementById("msg");
+  try { await job.run({ msg: msg.value }); msg.value = ""; document.getElementById("sent").textContent = "Queued."; }
+  catch (err) { document.getElementById("sent").textContent = err.message; }
+};
 db.collection("inbox").orderBy("at", "desc").onSnapshot(items => {
   document.getElementById("items").replaceChildren(...items.map(({ data }) => {
     const li = document.createElement("li"), at = document.createElement("code");

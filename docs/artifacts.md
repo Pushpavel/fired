@@ -370,17 +370,22 @@ Every job has a status:
 
 ### Triggers and `on_busy`
 
-A trigger is a schedule firing, `run_now` on publish, or
-`POST /v1/artifacts/{id}/job/runs {"payload": {...}}`. Each creates a
+A trigger is a schedule firing (`trigger: schedule`), `run_now` on publish
+(`publish`), `POST /v1/artifacts/{id}/job/runs {"payload": {...}}`
+(`manual`), or the owner's page (`page`, see The db). A blocked job refuses
+triggers (`409 needs_approval`); one whose schedule window has closed
+still runs when triggered. Each creates a
 **pending** run. Whether it starts right away depends on the limits below;
 until then, `on_busy` decides what happens:
 
 - **`latest`:** a new trigger replaces the pending run (`superseded`). Right
   for refreshes and polling: after a backlog, one run with the newest
   trigger is enough.
-- **`queue`:** triggers wait in order. When `max` is reached, a new trigger is
-  refused with `429 queue_full` (or recorded as `dropped` if it was a
-  schedule). Pending runs older than `max_age` are dropped as `expired`.
+- **`queue`:** triggers wait in order. `max` counts the waiting runs (not
+  the one running); when it's reached, a new trigger is refused with
+  `429 queue_full` (or recorded as `dropped` if it was a schedule). Runs
+  waiting longer than `max_age` are dropped as `expired` (checked every
+  scheduler tick).
 
 A schedule missed while the service was down fires once, not once per missed
 slot.
@@ -541,6 +546,19 @@ await db.collection("tasks").add({ title: "New" });        // a new id
 
 `db.canWrite` is true for the owner. A page's writes are JSON requests
 (`415` otherwise), so another site's form can't post to it.
+
+The same module runs the job from the owner's page (a "Refresh now"
+button, a form whose input the job handles):
+
+```js
+import { job } from "/.fired/db.js";
+const st = await job.status();             // the job's status (next_run, …), or null: anyone
+if (job.canRun) await job.run({ q: "x" }); // the owner: a run with this payload, trigger "page"
+```
+
+That's `GET /.fired/job` and `POST /.fired/job/runs {"payload"}` (owner
+only, `403 read_only` otherwise), the same as the API's trigger: the
+payload is in `$TRIGGER_FILE`, `on_busy` applies, a blocked job refuses.
 
 **From the job,** with any HTTP client:
 

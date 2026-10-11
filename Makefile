@@ -53,6 +53,7 @@ dev: build db
 dev-vm: docker db
 	docker rm -f fired-dev >/dev/null 2>&1 || true
 	docker run -d --name fired-dev --privileged --cgroupns=private --network host \
+	  --add-host fired-artifacts.internal:127.0.0.1 \
 	  --tmpfs /data/hot:exec,dev,mode=0755,size=8g \
 	  -v fired-dev-cold:/data/cold -v fired-dev-templates:/data/templates \
 	  -v $(CURDIR)/deploy/dev-vm.yaml:/etc/fired/config.yaml:ro \
@@ -64,8 +65,9 @@ dev-vm: docker db
 # that first), with its console on http://127.0.0.1:8444/ui/ (token "dev").
 # Its records are in the dev Postgres (`make db`, schema "artifacts") and
 # its blobs in .dev/artifacts. Jobs reach its db through fired's egress
-# proxy at 127-0-0-1.nip.io:8444 (a name, since sandboxes don't proxy
-# loopback addresses; deploy/dev-vm.yaml lets fired reach 127.0.0.1).
+# proxy at fired-artifacts.internal:8444: a name (sandboxes don't proxy
+# loopback addresses) that fired's container maps to 127.0.0.1 (make
+# dev-vm), which deploy/dev-vm.yaml lets fired reach.
 # Detached: `docker logs -f fired-dev-artifacts`, `docker stop fired-dev-artifacts`.
 # Jobs use fired's "base" template: create it with
 #   curl -H "X-Fired-Token: dev" -d '{"name":"base"}' http://127.0.0.1:8443/v1/templates
@@ -76,7 +78,7 @@ dev-artifacts: docker db
 	  -v $(CURDIR)/deploy/artifacts.yaml:/etc/fired-artifacts/artifacts.yaml:ro \
 	  -v $(CURDIR)/.dev/artifacts:/data/artifacts \
 	  -e FIRED_ARTIFACTS_TOKEN=dev -e FIRED_ARTIFACTS_UI=1 -e FIRED_ARTIFACTS_LISTEN=127.0.0.1:8444 \
-	  -e FIRED_ARTIFACTS_DATABASE_URL="$(DB_URL)" -e FIRED_ARTIFACTS_DB_URL=http://127-0-0-1.nip.io:8444 \
+	  -e FIRED_ARTIFACTS_DATABASE_URL="$(DB_URL)" -e FIRED_ARTIFACTS_DB_URL=http://fired-artifacts.internal:8444 \
 	  -e FIRED_URL=http://127.0.0.1:8443 -e FIRED_API_TOKEN=dev \
 	  --entrypoint fired-artifacts fired:latest serve -config /etc/fired-artifacts/artifacts.yaml
 

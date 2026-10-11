@@ -335,6 +335,7 @@ const (
 	TriggerSchedule = "schedule"
 	TriggerManual   = "manual"
 	TriggerPublish  = "publish" // run_now
+	TriggerPage     = "page"    // the owner's page (job.run in /.fired/db.js)
 )
 
 type Run struct {
