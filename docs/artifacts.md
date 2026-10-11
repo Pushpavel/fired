@@ -308,11 +308,40 @@ Runs).
     `X-Artifact-Owner: true` when the viewer owns the artifact: the owner
     writes the db and reads `_private/`; everyone else only reads the rest.
 
+  - `/.fired/job` is the job's status, for anyone; the owner runs it with
+    `POST /.fired/job/runs`.
+
   Responses are the same as the file API (ETag, `X-Artifact-Version`,
-  cache headers); only GET and HEAD are allowed, except the owner's db
-  writes. Strip these headers from what the viewer's browser
-  sends, and set your own security headers (such as `frame-ancestors`) at
-  your edge.
+  cache headers: a pinned version is cacheable forever); only GET and HEAD
+  are allowed, except the owner's db writes and job runs.
+
+  **Your viewing domain, as a checklist** (tried in playground 11 with a
+  stand-in proxy):
+  - **Its own registrable domain**, not your app's (`artifacts.example`
+    next to `example.com`), and **one origin per artifact**
+    (`<id>.artifacts.example`; a pinned version gets its own,
+    `<id>--v3.…`): pages are user-generated code, and an origin is what
+    keeps one from reading another's data.
+  - **Strip** `X-Artifact`, `X-Artifact-Version`, `X-Artifact-Owner`,
+    `X-Fired-Token` and `Authorization` from what the browser sends, then
+    set them yourself. The service trusts them: a forwarded
+    `X-Artifact-Owner` from a viewer would make them the owner. Don't
+    forward your cookies either; the service doesn't use them.
+  - **Decide the owner** from your own session (a cookie on the viewing
+    domain), per request.
+  - **Add `Content-Security-Policy: frame-ancestors`** for the origins
+    allowed to frame artifacts (your app), so another site can't frame one
+    and click through it.
+  - **Never add CORS headers** to these responses. Owner writes go to the
+    page's own origin as JSON (`415` otherwise), so a sibling artifact's
+    page (same site, so it gets your session cookie too) can't write
+    another's db: its JSON requests need a preflight nobody approves, and
+    forms, beacons and `no-cors` requests aren't JSON. Tried: all refused.
+  - **Render single-file views** (`X-Artifact-View` other than `page`)
+    in your frontend; their other files (a Markdown file's images) come
+    from the same origin.
+  - **Turn 404s into your own page**: they're JSON
+    (`not_found`, `no_view`).
 
 - **Files:** `GET /v1/artifacts/{id}/files/{path}?version=N` serves any one
   file, current version by default: the owner's raw access, not the view.
