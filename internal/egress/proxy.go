@@ -331,8 +331,18 @@ func (p *Proxy) pipe(sandboxID string, a, b net.Conn) {
 	wg.Wait()
 }
 
+// writeStatus answers with msg as the status line's reason too ("403 fired
+// egress: x.com:80 is not in this sandbox's allowlist"): most clients show
+// the reason, not the body (Python's "HTTP Error 403: …", curl's "CONNECT
+// tunnel failed").
 func writeStatus(w io.Writer, code int, msg string) {
 	body := msg + "\n"
+	reason := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, msg)
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nX-Fired-Egress: denied\r\n\r\n%s",
-		code, http.StatusText(code), len(body), body)
+		code, reason, len(body), body)
 }

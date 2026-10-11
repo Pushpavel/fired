@@ -83,6 +83,18 @@ func TestProxyBlocksPrivateAndUnlisted(t *testing.T) {
 	if code, _ := proxyRequest(t, p, "sb", "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"); code != 403 {
 		t.Fatalf("unlisted CONNECT should be denied, got %d", code)
 	}
+	// The reason is in the status line, which is what most clients print.
+	da, db := net.Pipe()
+	go p.ServeConn("sb", db)
+	go io.WriteString(da, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+	dresp, err := http.ReadResponse(bufio.NewReader(da), nil)
+	da.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dresp.Status != "403 fired egress: example.com:443 is not in this sandbox's allowlist" {
+		t.Fatalf("status line: %q", dresp.Status)
+	}
 	// Unknown sandbox.
 	if code, _ := proxyRequest(t, p, "other", "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"); code != 403 {
 		t.Fatalf("unknown sandbox should be denied, got %d", code)

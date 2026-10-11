@@ -49,6 +49,8 @@ type outcome struct {
 	// quota key is over its limits: overQuota).
 	retry     bool
 	overQuota bool
+	// reconnecting: fired became unavailable while the job ran.
+	reconnecting bool
 }
 
 // execute runs one job in the artifact's runner sandbox and records the
@@ -272,8 +274,27 @@ func (s *Service) follow(ctx context.Context, sb string, pid int, timeout time.D
 		}
 		po, err := poll(wait)
 		if err != nil {
+			// fired restarting or a network blip: the job goes on in its
+			// sandbox (a restart snapshots it, processes and all), so keep
+			// following the same process; only a gone sandbox or process
+			// ends the run.
+			if unavailable(err) && ctx.Err() == nil {
+				if !out.reconnecting {
+					s.log.Info("lost the run's process, reconnecting", "sandbox", sb, "pid", pid, "err", err)
+				}
+				out.reconnecting = true
+				select {
+				case <-ctx.Done():
+				case <-time.After(min(5*time.Second, max(time.Until(deadline), 0))):
+				}
+				continue
+			}
 			out.status, out.reason = pa.RunFailed, "follow: "+err.Error()
 			return
+		}
+		if out.reconnecting {
+			s.log.Info("reconnected to the run's process", "sandbox", sb, "pid", pid)
+			out.reconnecting = false
 		}
 		if !po.Running {
 			out.exitCode = po.ExitCode

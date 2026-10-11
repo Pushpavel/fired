@@ -470,8 +470,11 @@ Run statuses:
 
 If fired can't be reached or is out of capacity (a connection error, `502`,
 `503`, `504`) before the job starts, the run goes back to pending with
-`reason: "waiting: …"`, and runs wait 15s before trying again. When a run
-ends, whatever its job left in its process group is killed. `GET /v1/artifacts/{id}/runs/{run}/logs` returns the tail of
+`reason: "waiting: …"`, and runs wait 15s before trying again. If fired
+becomes unavailable while the job runs, the runner keeps following the same
+process (a restarting fired snapshots its sandboxes, processes included)
+until the run's timeout. When a run ends, whatever its job left in its
+process group is killed. `GET /v1/artifacts/{id}/runs/{run}/logs` returns the tail of
 stdout and stderr (`runner.log_bytes` each, with credential values
 redacted).
 

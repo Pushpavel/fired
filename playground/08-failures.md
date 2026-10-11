@@ -61,14 +61,24 @@ Deleted afterwards.
 
 ## Questions
 
-- A run whose fired connection drops while the job runs (`follow` fails)
-  is `failed`, though the job may still be running in the VM. Retrying
-  would risk running it twice; reconnecting to the same process would be
-  better.
+- ~~A run whose fired connection drops while the job runs is `failed`,
+  though the job may still be running.~~ Done after 08: the runner keeps
+  following the same process while fired is unavailable (until the run's
+  timeout). Tried with real VMs: `docker stop fired-dev` 12s into a 40s
+  job, started again 10s later. fired archived the sandbox with the
+  process in it, restored it when the runner asked for the process's
+  output, and the runner reconnected ("lost the run's process,
+  reconnecting" … "reconnected"); the job printed all 40 ticks, its db
+  write landed, and the run `succeeded` in 57s (the timeout counts the
+  outage).
+- ~~Python shows a bare `HTTP Error 403: Forbidden` for a blocked host.~~
+  Done after 08: fired's proxy puts its reason in the status line, so it's
+  `HTTP Error 403: fired egress: example.com:80 is not in this sandbox's
+  allowlist`.
 - ~~The broker being unreachable fails the run; should it wait like fired
   does?~~ Yes (decided after 08): an unreachable broker or its `502`/`503`/
   `504` puts the run back to pending ("waiting: broker unavailable: …")
   with the same 15s backoff; a refusal still fails it. Tested with a stub
   broker answering 503.
 - After rebuilding a template, fired could tell clients; here each run
-  asks for the template (one extra call per run).
+  asks for the template (one extra call per run). Left as is.
