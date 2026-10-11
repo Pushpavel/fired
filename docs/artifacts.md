@@ -455,7 +455,9 @@ created. A run:
      secret, `FIRED_DB_TOKEN`, valid for this artifact's db while the run
      runs (when `runner.db_url` is set);
    - the credentials as fired `secret_env` / `secret_files`, so they are
-     never stored and are redacted from output.
+     never stored and are redacted from output. `secret_files` are keyed
+     by file name (`{"key.pem": "…"}`, no paths): the job finds them in
+     `$SECRET_DIR` (mode 0600).
 4. **Follows its output** until it exits or hits its timeout. A timed-out
    run gets `SIGTERM`, then `SIGKILL`.
 5. **Records the outcome**, with `db_writes`, the documents it wrote or
@@ -465,7 +467,8 @@ created. A run:
    it wrote: write in a batch for all or nothing.
 
 A db write by a job that contains one of the run's credential values (or
-its base64 or URL encoding) is refused (`422 secret`): artifacts get
+its base64, URL or JSON encoding, or any line of 16+ characters of a
+multi-line one such as a key file) is refused (`422 secret`): artifacts get
 shared, so a run must never publish the credentials it ran with.
 
 Run statuses:

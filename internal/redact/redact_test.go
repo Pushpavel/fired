@@ -75,3 +75,21 @@ func TestFind(t *testing.T) {
 		t.Fatal("nil set")
 	}
 }
+
+func TestMultiLineSecret(t *testing.T) {
+	s := NewSet()
+	s.Add("KEY", "-----BEGIN KEY-----\nMIIEpAIBAAKCAQEAsecretline1\nshort\n-----END KEY-----\n")
+	for _, leak := range []string{
+		"line: MIIEpAIBAAKCAQEAsecretline1",                                                    // one line of it
+		`{"v":"-----BEGIN KEY-----\nMIIEpAIBAAKCAQEAsecretline1\nshort\n-----END KEY-----\n"}`, // the whole file in JSON
+	} {
+		if _, ok := s.Find([]byte(leak)); !ok {
+			t.Errorf("not found in %q", leak)
+		}
+	}
+	for _, fine := range []string{"-----BEGIN KEY-----", "short and sweet"} {
+		if _, ok := s.Find([]byte(fine)); ok {
+			t.Errorf("%q isn't secret", fine)
+		}
+	}
+}

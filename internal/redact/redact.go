@@ -7,8 +7,10 @@ package redact
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,6 +18,16 @@ import (
 // MinSecretLen: values shorter than this are not redacted (too many false
 // positives, e.g. a P4PORT like "1666").
 const MinSecretLen = 6
+
+// MinLineLen is the shortest line of a multi-line secret redacted on its
+// own.
+const MinLineLen = 16
+
+// jsonEscaped is value as it appears inside a JSON string.
+func jsonEscaped(value string) string {
+	b, _ := json.Marshal(value)
+	return string(b[1 : len(b)-1])
+}
 
 type secret struct {
 	name string
@@ -46,6 +58,18 @@ func (s *Set) Add(name, value string) {
 		base64.RawURLEncoding.EncodeToString([]byte(value)),
 		url.QueryEscape(value),
 		url.PathEscape(value),
+		jsonEscaped(value),
+	}
+	// A multi-line secret (a key file) leaks a line at a time: each line
+	// long enough to be secret on its own counts too, except PEM armor
+	// ("-----BEGIN … KEY-----"), which every such file has.
+	if strings.Contains(value, "\n") {
+		for _, l := range strings.Split(value, "\n") {
+			l = strings.TrimSpace(l)
+			if len(l) >= MinLineLen && !strings.HasPrefix(l, "-----") {
+				variants = append(variants, l)
+			}
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

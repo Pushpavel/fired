@@ -382,7 +382,10 @@ func TestRunsInFired(t *testing.T) {
 		bs.down = false
 		bs.mu.Unlock()
 		h.svc.mu.Lock()
-		h.svc.downWait = time.Time{} // skip the 15s backoff
+		if !h.svc.downWait.IsZero() || h.svc.quotaWait["u1"].IsZero() {
+			t.Errorf("a broker failure should hold back its key, not every run: %v %v", h.svc.downWait, h.svc.quotaWait)
+		}
+		delete(h.svc.quotaWait, "u1") // skip the 15s backoff
 		h.svc.mu.Unlock()
 		if r := waitRun(t, c, id, run.ID); r.Status != pa.RunSucceeded {
 			t.Fatalf("once the broker is back: %+v", r)

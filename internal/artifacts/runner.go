@@ -49,6 +49,9 @@ type outcome struct {
 	// quota key is over its limits: overQuota).
 	retry     bool
 	overQuota bool
+	// keyWait: only this quota key's runs back off (the broker failed for
+	// it); otherwise fired was unavailable and every run does.
+	keyWait bool
 	// reconnecting: fired became unavailable while the job ran.
 	reconnecting bool
 }
@@ -162,7 +165,8 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, lr *liveRun, timeou
 	if err != nil {
 		var down *brokerDown
 		if errors.As(err, &down) {
-			return &outcome{retry: true, reason: err.Error()}
+			// Per key: the broker may only be failing this owner's accounts.
+			return &outcome{retry: true, keyWait: true, reason: err.Error()}
 		}
 		return failed("credentials", err)
 	}
@@ -379,6 +383,8 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 		s.mu.Lock()
 		if out.overQuota {
 			s.quotaWait[a.QuotaKey] = s.now().Add(time.Duration(s.cfg.Runner.QuotaBackoff))
+		} else if out.keyWait {
+			s.quotaWait[a.QuotaKey] = s.now().Add(downBackoff)
 		} else {
 			s.downWait = s.now().Add(downBackoff)
 		}

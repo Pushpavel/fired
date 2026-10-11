@@ -31,7 +31,7 @@ Each use case gets its own file, `NN-name.md`, written as we go:
 - fired-artifacts charging runs to the user's `artifacts` pool;
 - the Helm chart, Skaffold and CD in [.k8s/](../.k8s/README.md).
 
-**Next: 10, credentials.**
+**Next: 11, sharing through your domain.**
 
 ## Use cases
 
@@ -46,7 +46,7 @@ Each use case gets its own file, `NN-name.md`, written as we go:
 | 07 | Triggers and backlogs | manual triggers with payloads the job reads from `$TRIGGER_FILE` and records in the db; `on_busy` latest (superseded) vs queue (max, max_age, `queue_full`, a schedule firing into a full queue); payload limits; triggering a job that's missing, blocked or expired; whether the owner's page can trigger its job | done: [07-triggers-and-backlogs.md](07-triggers-and-backlogs.md) |
 | 08 | Failures | non-zero exit, timeout (SIGTERM, then SIGKILL) and what its db token can still do, logs and their tail limit, a job that can't reach the db (no `db_url`, egress denied), fired unavailable or out of capacity (back to pending) | done: [08-failures.md](08-failures.md) |
 | 09 | Approvals | `timeout` / `active_for` above the defaults, blocked jobs, grants, revoking, a publish re-opening the window | done: [09-approvals.md](09-approvals.md) |
-| 10 | Credentials | the broker (`secret_env` / `secret_files`, refusals), log redaction, a job writing a credential into the db (`422 secret`), publishing a sandbox folder that holds a secret | not started |
+| 10 | Credentials | the broker (`secret_env` / `secret_files`, refusals), log redaction, a job writing a credential into the db (`422 secret`), publishing a sandbox folder that holds a secret | done: [10-credentials.md](10-credentials.md) |
 | 11 | Sharing through your domain | header routing as your backend would do it: `X-Artifact`, pinned versions, owner vs viewer (`X-Artifact-Owner`) on pages and `/.fired/`, single-file views rendered by the frontend, what to strip and which security headers to add | not started |
 | 12 | Forks and owners | fork to another quota key, the db copied without `_private/`, schedules off until the new owner publishes, shared blobs, forking an older version | not started |
 | 13 | Quotas and limits | storage (files and db), tiers and overrides, concurrent runs, fired's GB-hours per pool, min interval, db limits (doc size, docs, batch), the read rate limit | not started |

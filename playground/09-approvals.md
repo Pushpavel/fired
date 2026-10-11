@@ -62,13 +62,11 @@ runs). Deleted afterwards.
   tied to the job's command, with no upper bound from the service; a
   publish that changes nothing doesn't re-open the window.
 
-## Questions
+## Decided
 
-- **Should approval be tied to what runs?** Today the owner approves a
-  budget ("this artifact may run 2h jobs / stay scheduled 30 days"), and
-  the agent can change the command afterwards. Jobs within the defaults
-  run unapproved anyway, and credentials come from the broker either way,
-  so it's consistent; tying grants to a hash of the job would mean asking
-  again after every change to it.
-- **Should the service cap grants** (say `limits.max_grant_run`,
-  `max_grant_window`), or is that entirely the backend's call?
+- **Approval stays a budget** (2026-10-11): the owner approves how long an
+  artifact's job may run and stay scheduled, not one command. The job can
+  change and stay approved while it fits; a bigger `timeout` or window
+  asks again.
+- **No cap in the service:** what an owner may approve is the backend's
+  call (per plan, per user).
