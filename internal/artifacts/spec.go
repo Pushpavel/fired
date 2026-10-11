@@ -81,18 +81,6 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 	if len(s.Description) > 2000 {
 		add("description is longer than 2000 bytes")
 	}
-	// The job's paths are its data: it may not have produced them yet.
-	jobOwns := func(p string) bool {
-		if s.Job == nil {
-			return false
-		}
-		for _, w := range s.Job.Writes {
-			if c, err := cleanPath(w); err == nil && under(p, c) {
-				return true
-			}
-		}
-		return false
-	}
 	if v := s.View; v != nil {
 		exts, known := viewExts[v.Type]
 		if !known {
@@ -103,8 +91,8 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 		} else {
 			if ext := strings.ToLower(path.Ext(e)); known && exts != nil && !slices.Contains(exts, ext) {
 				add("view.entry: a %s view needs a %s file, not %q", v.Type, strings.Join(exts, " or "), v.Entry)
-			} else if _, ok := tree[e]; !ok && !jobOwns(e) {
-				add("view.entry: %q is not a file in this version (publish it, point the view at another file, or have the job write it)", v.Entry)
+			} else if _, ok := tree[e]; !ok && !(s.Job != nil && isOutput(e)) {
+				add("view.entry: %q is not a file in this version (publish it, point the view at another file, or have the job write it to %s/)", v.Entry, pa.OutputDir)
 			}
 			v.Entry = e
 		}
@@ -113,37 +101,6 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 		j := *s.Job
 		if strings.TrimSpace(j.Run) == "" {
 			add("job.run is required")
-		}
-		j.Writes = append([]string(nil), j.Writes...)
-		for k, w := range j.Writes {
-			c, err := cleanPath(w)
-			if err != nil {
-				add("job.writes[%d]: %v", k, err)
-				continue
-			}
-			if c == pa.SpecFile {
-				add("job.writes[%d]: a job can't write %s", k, pa.SpecFile)
-			}
-			j.Writes[k] = c
-		}
-		if j.State != "" {
-			c, err := cleanPath(j.State)
-			if err != nil {
-				add("job.state: %v", err)
-			} else {
-				for _, w := range j.Writes {
-					if under(c, w) || under(w, c) {
-						add("job.state %q overlaps writes path %q", c, w)
-					}
-				}
-				for p := range tree {
-					if under(p, c) {
-						add("job.state %q must not contain published files (found %q)", c, p)
-						break
-					}
-				}
-				j.State = c
-			}
 		}
 		if j.Schedule != "" {
 			if _, err := ParseCron(j.Schedule, j.Timezone); err != nil {

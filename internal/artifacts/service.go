@@ -137,7 +137,7 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 		return nil, err
 	}
 	s.emit(pa.Event{Type: "artifact.created", Artifact: id})
-	res, err := s.afterPublish(ctx, id, v, false, *req.Publish, nil)
+	res, err := s.afterPublish(ctx, id, v, false, *req.Publish, prep.skipped)
 	if err != nil {
 		return nil, err
 	}
@@ -590,7 +590,7 @@ type publishPrep struct {
 	specHash    string
 	specSize    int64
 	replaceDirs []string
-	shadowed    []string // set by commitEdit
+	skipped     []string // files given under .output/
 }
 
 func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*publishPrep, error) {
@@ -598,7 +598,8 @@ func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*p
 	if err != nil {
 		return nil, err
 	}
-	p := &publishPrep{ops: ops, replaceDirs: make([]string, 0, len(req.ReplaceDirs))}
+	ops, skipped := skipOutput(ops)
+	p := &publishPrep{ops: ops, skipped: skipped, replaceDirs: make([]string, 0, len(req.ReplaceDirs))}
 	for _, op := range ops {
 		if op.path == pa.SpecFile && op.delete {
 			return nil, badRequest("%s can't be deleted: every version has one (publish a new one to change it)", pa.SpecFile)
@@ -654,7 +655,7 @@ func (s *Service) Publish(ctx context.Context, id string, req pa.PublishRequest)
 	if err != nil {
 		return nil, err
 	}
-	return s.afterPublish(ctx, id, v, unchanged, req, prep.shadowed)
+	return s.afterPublish(ctx, id, v, unchanged, req, prep.skipped)
 }
 
 // checkBase checks that a publish or restore is on top of the current
@@ -725,7 +726,6 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 		if err := checkRunNow(req.RunNow, v.Spec); err != nil {
 			return nil, false, err
 		}
-		p.shadowed = shadowed(a, v.Spec, p.ops)
 		if req.Notify != "" {
 			if err := setNotify(ctx, q, id, v.Version, req.Notify); err != nil {
 				return nil, false, err
@@ -766,7 +766,6 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 	if err := putArtifact(ctx, q, a); err != nil {
 		return nil, false, err
 	}
-	p.shadowed = shadowed(a, spec, p.ops)
 	return v, false, s.syncJob(ctx, q, id, spec, now, true)
 }
 
@@ -777,25 +776,9 @@ func checkRunNow(runNow bool, spec pa.Spec) error {
 	return nil
 }
 
-// shadowed lists the files a publish put under the job's writes while the
-// job has an output: they're stored, but the output is what shows there.
-func shadowed(a *pa.Artifact, spec pa.Spec, ops []resolvedOp) []string {
-	if a.Output == 0 || spec.Job == nil {
-		return nil
-	}
-	var out []string
-	for _, op := range ops {
-		if !op.delete && !op.clear && owned(spec.Job, op.path) {
-			out = append(out, op.path)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 // afterPublish announces a committed version (unless the publish changed
 // nothing), starts the job if asked (run_now) and reports its status.
-func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, unchanged bool, req pa.PublishRequest, shadowed []string) (*pa.PublishResult, error) {
+func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, unchanged bool, req pa.PublishRequest, skipped []string) (*pa.PublishResult, error) {
 	if !unchanged {
 		s.emit(pa.Event{Type: "artifact.version", Artifact: id, Version: v.Version, Origin: v.Origin})
 	}
@@ -808,7 +791,7 @@ func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, un
 	if err != nil {
 		return nil, err
 	}
-	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Shadowed: shadowed, Job: job}, nil
+	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Skipped: skipped, Job: job}, nil
 }
 
 // checkNoFileDirClash rejects trees where a path is both a file and a
@@ -903,10 +886,10 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Job: job}, nil
 }
 
-// Fork creates a new artifact whose first version has what id@version
-// shows (the job's current data included). The job is copied (it's in
-// artifact.json) but inactive until the new artifact is published to or
-// granted; run state and older outputs are not copied.
+// Fork creates a new artifact whose first version has the files of
+// id@version, starting with the source's current output. The job is copied
+// (it's in artifact.json) but inactive until the new artifact is published
+// to or granted; older outputs are not copied.
 func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.Artifact, error) {
 	if req.QuotaKey == "" {
 		return nil, badRequest("quota_key is required")
@@ -942,9 +925,12 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		if _, err := getArtifact(ctx, q, newIDv); err == nil {
 			return errf(http.StatusConflict, "exists", "artifact %s already exists", newIDv)
 		}
-		// A fork gets what the source shows: its job's data becomes the
-		// fork's starting data.
-		tree, err := s.liveTree(ctx, q, src, n, old.Spec)
+		tree, err := getTree(ctx, q, id, n)
+		if err != nil {
+			return err
+		}
+		// The fork starts with the source's current output.
+		output, err := currentOutput(ctx, q, src)
 		if err != nil {
 			return err
 		}
@@ -965,6 +951,16 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		out = &pa.Artifact{ID: newIDv, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta,
 			ForkedFrom: &pa.VersionRef{Artifact: id, Version: n}, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
 		setCurrent(out, v)
+		if len(output) > 0 {
+			o := &pa.Output{Output: 1, Version: 1, FileCount: len(output), CreatedAt: now}
+			for _, f := range output {
+				o.SizeBytes += f.Size
+			}
+			if err := insertOutput(ctx, q, newIDv, o, output); err != nil {
+				return err
+			}
+			out.Output = 1
+		}
 		if err := putArtifact(ctx, q, out); err != nil {
 			return err
 		}

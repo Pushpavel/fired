@@ -31,8 +31,8 @@ Each use case gets its own file, `NN-name.md`, written as we go:
 - fired-artifacts charging runs to the user's `artifacts` pool;
 - the Helm chart, Skaffold and CD in [.k8s/](../.k8s/README.md).
 
-**Next: 06, job state and data** (one job per artifact and job outputs were
-decided at the end of 05: the `state` dir and the outputs across runs).
+**Next: 06, the job's output** (one job per artifact working in `.output/`
+was decided at the end of 05).
 
 ## Use cases
 
@@ -43,7 +43,7 @@ decided at the end of 05: the `state` dir and the outputs across runs).
 | 03 | The view | artifact.json `view`: a `page` (HTML plus its folder) or one file the frontend renders (markdown, csv, json, code, svg, image); validation; a view whose entry goes away; pages for the examples | done: [03-the-page.md](03-the-page.md) |
 | 04 | Uploading a build | blobs, `/blobs/missing` dedup, folder upload with `replace_dirs`, size and file limits | done: [04-uploading-a-build.md](04-uploading-a-build.md) |
 | 05 | A scheduled job | cron + timezone, `writes`, run versions, a run that changes nothing, the 12h activity window, expiry | done: [05-a-scheduled-job.md](05-a-scheduled-job.md) |
-| 06 | Job state and data | the `state` dir across runs, state on a failed run, state not copied on fork; outputs, reset, retain_outputs (one job per artifact since 05) | not started |
+| 06 | The job's output | `.output/` across runs (results and memory), a failed run, clearing, retain_outputs, fork (one job, `.output/`, decided at the end of 05) | not started |
 | 07 | Triggers and backlogs | manual triggers with payloads, `on_busy` latest (superseded) vs queue (max, max_age, queue_full) | not started |
 | 08 | Failures | non-zero exit, timeout (SIGTERM/SIGKILL), logs, retry behavior when fired is unavailable | not started |
 | 09 | Approvals | `timeout` / `active_for` above the defaults, blocked jobs, grants, revoking | not started |

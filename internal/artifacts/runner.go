@@ -30,12 +30,11 @@ const (
 const triggerDir = "/tmp/fired-artifacts"
 
 type startInfo struct {
-	run       *runRow
-	artifact  pa.Artifact
-	job       pa.Job
-	maxRun    time.Duration
-	tree      map[string]pa.File
-	stateHash string
+	run      *runRow
+	artifact pa.Artifact
+	job      pa.Job
+	maxRun   time.Duration
+	tree     map[string]pa.File // the version's files and the current output
 }
 
 type outcome struct {
@@ -48,7 +47,6 @@ type outcome struct {
 	retry     bool
 	overQuota bool
 	captured  map[string]pa.File
-	state     string // new state blob ("" clears it)
 }
 
 // execute runs one job in the artifact's runner sandbox and records the
@@ -157,17 +155,6 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, timeout time.Durati
 	if err := s.fired.UploadArchive(ctx, sb, w, s.treeArchive(si.tree)); err != nil {
 		return failed("upload files", err)
 	}
-	if si.stateHash != "" && j.State != "" {
-		rc, err := s.openContent(ctx, si.stateHash)
-		if err != nil {
-			return failed("open state", err)
-		}
-		err = s.fired.UploadArchive(ctx, sb, path.Join(w, j.State), rc)
-		rc.Close()
-		if err != nil {
-			return failed("upload state", err)
-		}
-	}
 	trig, _ := json.Marshal(map[string]any{"type": r.Trigger, "run_id": r.ID, "at": r.CreatedAt, "payload": json.RawMessage(orNull(r.Payload))})
 	triggerFile := path.Join(triggerDir, "trigger.json")
 	if _, err := s.fired.WriteFile(ctx, sb, triggerFile, strings.NewReader(string(trig)), 0o644); err != nil {
@@ -196,29 +183,21 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, timeout time.Durati
 	if out.status != pa.RunSucceeded {
 		return out
 	}
-	captured, err := s.capture(ctx, sb, w, j.Writes)
+	captured, err := s.capture(ctx, sb, w, []string{pa.OutputDir})
 	if err != nil {
-		out.status, out.reason = pa.RunFailed, "capture writes: "+err.Error()
+		out.status, out.reason = pa.RunFailed, "capture "+pa.OutputDir+": "+err.Error()
 		return out
 	}
 	// Artifacts get shared; a run must not publish the credentials it ran
 	// with. Refuse the result if any written file contains one.
 	if p, name, err := s.findSecret(captured, secrets); err != nil {
-		out.status, out.reason = pa.RunFailed, "scan writes: "+err.Error()
+		out.status, out.reason = pa.RunFailed, "scan "+pa.OutputDir+": "+err.Error()
 		return out
 	} else if p != "" {
 		out.status, out.reason = pa.RunFailed, fmt.Sprintf("result rejected: %s contains the value of credential %s", p, name)
 		return out
 	}
 	out.captured = captured
-	if j.State != "" {
-		h, err := s.captureState(ctx, sb, path.Join(w, j.State))
-		if err != nil {
-			out.status, out.reason = pa.RunFailed, "capture state: "+err.Error()
-			return out
-		}
-		out.state = h
-	}
 	return out
 }
 
@@ -435,27 +414,11 @@ func (s *Service) findSecret(files map[string]pa.File, secrets *redact.Set) (str
 	return "", "", nil
 }
 
-// captureState stores the job's state directory as one tar.gz blob.
-func (s *Service) captureState(ctx context.Context, sb, dir string) (string, error) {
-	if _, err := s.fired.Stat(ctx, sb, dir); client.IsNotFound(err) {
-		return "", nil
-	} else if err != nil {
-		return "", err
-	}
-	rc, err := s.fired.DownloadArchive(ctx, sb, dir)
-	if err != nil {
-		return "", err
-	}
-	defer rc.Close()
-	h, _, err := s.putContent(ctx, rc, s.cfg.Limits.MaxVersionBytes, "")
-	return h, err
-}
-
-// finishRun records a run's outcome: an output if its writes changed
-// anything, its state, logs and events.
+// finishRun records a run's outcome: an output if it changed .output/,
+// its logs and events.
 func (s *Service) finishRun(si *startInfo, out *outcome) error {
 	ctx := context.Background()
-	r, a, j := si.run, si.artifact, si.job
+	r, a := si.run, si.artifact
 	if out.retry {
 		if out.overQuota {
 			s.mu.Lock()
@@ -476,16 +439,11 @@ func (s *Service) finishRun(si *startInfo, out *outcome) error {
 	var notify string
 	err := s.st.tx(ctx, func(q querier) error {
 		if out.status == pa.RunSucceeded {
-			o, err := s.commitOutput(ctx, q, r, j, out.captured, now)
+			o, err := s.commitOutput(ctx, q, r, out.captured, now)
 			if err != nil {
 				out.status, out.reason = pa.RunFailed, "result rejected: "+err.Error()
 			} else {
 				output = o
-				if j.State != "" {
-					if err := putRunState(ctx, q, a.ID, out.state, now); err != nil {
-						return err
-					}
-				}
 			}
 		}
 		if output != nil {
@@ -509,7 +467,7 @@ func (s *Service) finishRun(si *startInfo, out *outcome) error {
 		return err
 	}
 	if output != nil {
-		s.emit(pa.Event{Type: "artifact.data", Artifact: a.ID, Version: r.Version, Output: output.Output, RunID: r.ID})
+		s.emit(pa.Event{Type: "artifact.output", Artifact: a.ID, Version: r.Version, Output: output.Output, RunID: r.ID})
 	}
 	s.emit(pa.Event{Type: "run.finished", Artifact: a.ID, Version: r.Version, Output: r.Output, RunID: r.ID, Status: r.Status, Reason: r.Reason, Notify: notify})
 	return nil

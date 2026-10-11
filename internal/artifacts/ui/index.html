@@ -642,7 +642,7 @@ async function loadArtifact(keepPane) {
       api("GET", `/artifacts/${enc(id)}`, undefined, { quiet: true }),
       api("GET", `/artifacts/${enc(id)}/versions`, undefined, { quiet: true }),
       api("GET", `/artifacts/${enc(id)}/job`, undefined, { quiet: true }).catch(() => null),
-      api("GET", `/artifacts/${enc(id)}/data`, undefined, { quiet: true }).catch(() => null),
+      api("GET", `/artifacts/${enc(id)}/outputs`, undefined, { quiet: true }).catch(() => null),
       api("GET", `/artifacts/${enc(id)}/runs?limit=100`, undefined, { quiet: true }).catch(() => ({ runs: [] })),
     ]);
     if (S.sel !== id) return;
@@ -699,7 +699,7 @@ function pickedLine(v) {
       `, ${v.file_count} ${v.file_count === 1 ? "file" : "files"}, ${fmtBytes(v.size_bytes)}, ${ago(v.created_at)}`,
       cur ? ". This is the current version." : ".",
     ].join("")),
-    cur && a.output ? h("button", { class: "btn small quiet", onclick: () => { S.tab = "job"; renderArtifact(); } }, `With the job's output ${a.output}`) : null,
+    cur && a.output ? h("button", { class: "btn small quiet", onclick: () => { S.tab = "job"; renderArtifact(); } }, `With output ${a.output}`) : null,
     !cur ? h("button", { class: "btn small", onclick: () => restore(v.version) }, `Restore v${v.version}`) : null,
     !cur ? h("button", { class: "btn small quiet", onclick: () => pickVersion(null) }, "Show the current version") : null);
 }
@@ -775,18 +775,19 @@ const isTextPath = p => TEXT_EXT.test(p) || !/\.[^/]+$/.test(p);
 // The sample job "Add a job" puts in artifact.json, with a working script:
 // triggered only, so publishing it as-is never schedules a failing run.
 const REFRESH_SH = `#!/bin/sh
-# Runs in the artifact's folder. Changes under data/ become a new version.
+# Runs in the artifact's folder. What it leaves in .output/ is the output.
 # Run it from the Job tab; add "schedule" (cron) in artifact.json to repeat it.
 set -e
 mkdir -p data
-date -u +%Y-%m-%dT%H:%M:%SZ > data/updated.txt
-echo "wrote data/updated.txt"
+mkdir -p .output
+date -u +%Y-%m-%dT%H:%M:%SZ > .output/updated.txt
+echo "wrote .output/updated.txt"
 `;
 // Stages the current artifact.json with a sample job added (and its script).
 function stageSampleJob(cur) {
   const paths = (cur?.files || []).map(f => f.path);
   const spec = { ...(cur?.spec || {}) };
-  spec.job = { run: "sh refresh.sh", writes: ["data"] };
+  spec.job = { run: "sh refresh.sh" };
   if (!paths.includes("refresh.sh")) stagePut("refresh.sh", REFRESH_SH);
   stagePut("artifact.json", JSON.stringify(spec, null, 2) + "\n");
 }
@@ -904,7 +905,7 @@ async function fillEditor(box, f, editable) {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); publish(); }
   });
   box.append(ta);
-  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. view is { type, entry }: a page (an HTML file that renders itself) or one file the frontend renders: markdown, csv, json, code, svg or image. Viewers reach the entry's folder; without a view, there's nothing to view. job (one per artifact) takes run, writes (the paths it owns), state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
+  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. view is { type, entry }: a page (an HTML file that renders itself) or one file the frontend renders: markdown, csv, json, code, svg or image. Viewers reach the entry's folder; without a view, there's nothing to view. job (one per artifact) takes run, schedule, timezone, timeout, active_for, on_busy, queue and template; it works in .output/, served at /.output/. Unknown fields fail the publish."));
 }
 
 function stagePut(path, content) { S.stage.set(path, { content, size: new Blob([content]).size, text: true }); }
@@ -1045,7 +1046,7 @@ async function publish() {
     const r = await api("POST", `/artifacts/${enc(a.id)}/versions`, req);
     toast(r.unchanged ? `Nothing changed: v${r.version.version} already has these files` : `Published v${r.version.version}`, "ok");
     if (r.job?.needs_approval?.length) toast(`The job needs approval: ${r.job.needs_approval.join("; ")}`);
-    if (r.shadowed?.length) toast(`The job's data still shows at ${r.shadowed.join(", ")}: the job owns those paths (reset its data in the Job tab to show what you published).`);
+    if (r.skipped?.length) toast(`Skipped ${r.skipped.length} ${r.skipped.length === 1 ? "file" : "files"} under .output/: that's the job's folder, never part of a version.`);
     S.stage.clear(); S.mirror = []; S.ver = null;
     if (runNow) { S.tab = "runs"; S.runSel = null; }
     await loadArtifact();
@@ -1113,7 +1114,7 @@ async function tabJob(p) {
   const s = cur?.spec?.job || {};
   if (!j) {
     p.append(h("div", { class: "empty" }, h("h3", {}, "No job"),
-      h("p", { class: "note" }, "An artifact can have one job, in artifact.json. It runs in a fired sandbox with the artifact's files, on a schedule or when triggered, and owns the paths in its writes: each run that changes them records an output that everyone sees there."),
+      h("p", { class: "note" }, "An artifact can have one job, in artifact.json. It runs in a fired sandbox with the artifact's files, on a schedule or when triggered, and works in .output/: each run starts with the last output there, and what it leaves is the next output, served at /.output/. Versions stay what you published."),
       h("p", {}, h("button", { class: "btn", onclick: () => {
         S.tab = "files"; stageSampleJob(cur); S.fileSel = "artifact.json"; renderArtifact(); } }, "Add a job"))));
     return;
@@ -1125,8 +1126,7 @@ async function tabJob(p) {
     j.next_run ? [h("dt", {}, "Next run"), h("dd", { title: when(j.next_run) }, until(j.next_run))] : null,
     j.active_until ? [h("dt", {}, "Schedule on until"), h("dd", { title: when(j.active_until) }, when(j.active_until))] : null,
     [h("dt", {}, "Longest run"), h("dd", {}, fmtDur(j.max_run) || "")],
-    s.writes?.length ? [h("dt", {}, "Owns"), h("dd", {}, s.writes.flatMap((w, i) => [i ? ", " : "", h("code", {}, w)]))] : [h("dt", {}, "Owns"), h("dd", {}, "nothing, so runs record no data")],
-    s.state ? [h("dt", {}, "Keeps state in"), h("dd", {}, h("code", {}, s.state))] : null,
+    [h("dt", {}, "Works in"), h("dd", {}, h("code", {}, ".output/"), ", served at ", h("code", {}, "/.output/"))],
     [h("dt", {}, "When busy"), h("dd", {}, s.on_busy === "queue" ? `queue every trigger (up to ${s.queue?.max || 100}, ${fmtDur(s.queue?.max_age) || "24h"} old)` : "keep only the newest trigger")],
     j.pending ? [h("dt", {}, "Waiting"), h("dd", {}, `${j.pending} ${j.pending === 1 ? "run" : "runs"}`)] : null,
     s.template ? [h("dt", {}, "Template"), h("dd", {}, s.template)] : null);
@@ -1141,26 +1141,25 @@ async function tabJob(p) {
       h("button", { class: "btn", disabled: j.state === "blocked", onclick: () => runDialog() }, "Run with payload"),
       h("button", { class: "btn" + (j.state === "blocked" ? " primary" : j.needs_approval?.length ? "" : " quiet"), onclick: () => grantDialog(j) }, "Approve"),
       h("button", { class: "btn quiet", onclick: () => setGrant({ active_until: "0001-01-01T00:00:00Z" }, "Grant revoked") }, "Revoke"))));
-  // Its data: the current output (what everyone sees under its writes) and
-  // the ones kept.
+  // Its output: the current one (what's in .output/) and the ones kept.
   const d = S.data || { current: 0, outputs: [] };
-  const sec = h("section", { class: "section" }, h("h3", {}, "Data"));
+  const sec = h("section", { class: "section" }, h("h3", {}, "Output"));
   if (!d.outputs.length) {
-    sec.append(h("p", { class: "note" }, d.current ? "" : "No output yet: the version's own files under the job's paths are shown (its seed)."));
+    sec.append(h("p", { class: "note" }, "No output yet: .output/ is empty until a run leaves something there."));
   } else {
     const curOut = d.outputs.find(o => o.output === d.current);
-    if (curOut) sec.append(h("p", {}, `Output ${curOut.output} is what everyone sees, from run `, h("code", {}, curOut.run_id), ` on v${curOut.version}, ${ago(curOut.created_at)}: `,
-      ...curOut.files.map((f, i) => [i ? ", " : "", h("a", { href: `/v1/artifacts/${enc(a.id)}/files/${encPath(f.path)}`, target: "_blank", rel: "noopener" }, f.path)])));
+    if (curOut) sec.append(h("p", {}, `Output ${curOut.output} is in .output/, from run `, h("code", {}, curOut.run_id || "(fork)"), ` on v${curOut.version}, ${ago(curOut.created_at)}: `,
+      ...curOut.files.map((f, i) => [i ? ", " : "", h("a", { href: `/v1/artifacts/${enc(a.id)}/files/${encPath(f.path)}`, target: "_blank", rel: "noopener" }, f.path.slice(8))])));
     const tb = h("tbody");
     for (const o of d.outputs) tb.append(h("tr", {}, h("td", {}, `#${o.output}`, o.output === d.current ? h("span", { class: "note" }, " current") : null),
-      h("td", {}, h("code", {}, o.run_id)), h("td", {}, `v${o.version}`), h("td", { class: "num" }, o.file_count), h("td", { class: "num" }, fmtBytes(o.size_bytes)),
+      h("td", {}, h("code", {}, o.run_id || "fork")), h("td", {}, `v${o.version}`), h("td", { class: "num" }, o.file_count), h("td", { class: "num" }, fmtBytes(o.size_bytes)),
       h("td", { title: when(o.created_at) }, ago(o.created_at))));
     sec.append(h("table", {}, h("thead", {}, h("tr", {}, ["Output", "Run", "On", "Files", "Size", "Recorded"].map(x => h("th", {}, x)))), tb),
       h("p", { class: "note" }, `The newest ${a.retain_outputs || S.info?.retain_outputs || 24} outputs are kept.`),
       h("p", {}, h("button", { class: "btn danger", onclick: async () => {
-        if (!confirm("Reset the job's data? Its outputs are removed, the version's own files under its paths show again, and the next run starts from them.")) return;
-        try { await guard(() => api("DELETE", `/artifacts/${enc(a.id)}/data`), "Data reset"); await loadArtifact(); } catch {}
-      } }, "Reset data")));
+        if (!confirm("Clear the outputs? .output/ is emptied and the next run starts from nothing.")) return;
+        try { await guard(() => api("DELETE", `/artifacts/${enc(a.id)}/outputs`), "Outputs cleared"); await loadArtifact(); } catch {}
+      } }, "Clear outputs")));
   }
   p.append(sec);
 }
@@ -1225,7 +1224,7 @@ function tabRuns(p) {
       h("td", { title: when(r.started_at || r.created_at) }, ago(r.started_at || r.created_at)),
       h("td", { class: "num" }, fmtMs(r.duration_ms)),
       h("td", {}, r.output ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); S.tab = "job"; renderArtifact(); } }, `output ${r.output}`)
-        : ["succeeded"].includes(r.status) ? h("span", { class: "note" }, "no changes") : null),
+        : ["succeeded"].includes(r.status) ? h("span", { class: "note" }, "no change") : null),
       h("td", { class: "note" }, r.reason || "")));
   }
   p.append(h("div", { class: "row" }, h("span", { class: "spacer" }), h("span", { class: "note" }, "Finished runs and their logs are kept for 30 days.")),
@@ -1352,7 +1351,7 @@ const dlgFork = $("#dlg-fork");
 function forkDialog(n) {
   const f = dlgFork.querySelector("form"); f.reset(); dlgFork.returnValue = ""; dlgFork.dataset.version = n;
   $("#dlg-fork-title").textContent = `Fork v${n}`;
-  $("#fork-note").textContent = "The fork starts with what this version shows, the job's current data included. Blobs are shared, not copied. The job comes along but its schedule stays off until the new owner publishes, and its run state and older outputs aren't copied.";
+  $("#fork-note").textContent = "The fork starts with this version's files and the current output. Blobs are shared, not copied. The job comes along but its schedule stays off until the new owner publishes, and older outputs aren't copied.";
   f.elements.quota_key.value = S.art.quota_key; f.elements.title.value = titleOf(S.art) + " (fork)";
   dlgFork.showModal();
 }
@@ -1390,7 +1389,7 @@ function drawerUpdate(kind) {
 function describe(e) {
   switch (e.type) {
     case "artifact.version": return `v${e.version}, ${ORIGIN[e.origin]?.toLowerCase() || e.origin}`;
-    case "artifact.data": return e.output ? `job data: output ${e.output}` : "job data reset";
+    case "artifact.output": return e.output ? `output ${e.output}` : "outputs cleared";
     case "run.started": return "run started";
     case "run.finished": return `run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.output ? `, output ${e.output}` : ""}${e.reason ? ": " + e.reason : ""}${e.notify ? `, notify ${e.notify}` : ""}`;
     case "run.dropped": return `run dropped: ${e.reason}`;
@@ -1414,7 +1413,7 @@ function connectEvents() {
   es = new EventSource("/v1/events");
   es.onopen = () => { S.live = true; renderStatus(); };
   es.onerror = () => { S.live = false; renderStatus(); };
-  for (const t of ["artifact.created", "artifact.deleted", "artifact.version", "artifact.data", "run.started", "run.finished", "run.dropped"]) {
+  for (const t of ["artifact.created", "artifact.deleted", "artifact.version", "artifact.output", "run.started", "run.finished", "run.dropped"]) {
     es.addEventListener(t, m => {
       let e; try { e = JSON.parse(m.data); } catch { return; }
       e.clock = clock(); events.push(e); if (events.length > 500) events.shift();
@@ -1440,7 +1439,7 @@ async function onChange(e) {
   const keep = (S.tab === "view" && $("#frame")) || S.tab === "settings" ? $("#pane") : null;
   await loadArtifact(keep);
   // New data shows without a new version: reload the view for it too.
-  if (keep && S.tab === "view" && S.art && (S.art.current_version !== before || e.type === "artifact.data")) reloadFrame();
+  if (keep && S.tab === "view" && S.art && (S.art.current_version !== before || e.type === "artifact.output")) reloadFrame();
 }
 
 // ---------- login
@@ -1469,7 +1468,7 @@ async function start() {
   let last = null; try { last = localStorage.getItem("fa.sel"); } catch {}
   if (last && S.list.find(a => a.id === last)) openArtifact(last); else renderHome();
 }
-setInterval(() => { if (S.view === "home") refreshList(); else if (S.view === "artifact" && S.tab === "jobs") loadArtifact(); }, 30000);
+setInterval(() => { if (S.view === "home") refreshList(); else if (S.view === "artifact" && S.tab === "job") loadArtifact(); }, 30000);
 
 function starterPage(title) {
   const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -1550,21 +1549,20 @@ A note kept as an artifact. Each edit is a version, so you can compare and resto
 `,
     } },
   { slug: "clock", title: "A page a job keeps fresh", tab: "runs", run_now: true,
-    about: "A scheduled job (every 5 minutes) writes data/now.json, and keeps a run counter in its state directory. Each run that changes the data adds a job-run version; the page shows it.",
+    about: "A scheduled job (every 5 minutes) writes .output/now.json with a run counter it keeps there too. Each run starts from the last output; the page fetches it. Versions stay what you published.",
     files: {
       "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
-        job: { run: "sh tick.sh", writes: ["data"], state: ".state", schedule: "*/5 * * * *", timeout: "2m" } }, null, 2) + "\n",
+        job: { run: "sh tick.sh", schedule: "*/5 * * * *", timeout: "2m" } }, null, 2) + "\n",
       "tick.sh": { content: `#!/bin/sh
 set -e
-mkdir -p data .state
-n=$(cat .state/count 2>/dev/null || echo 0)
+mkdir -p .output
+n=$(cat .output/count 2>/dev/null || echo 0)
 n=$((n + 1))
-echo "$n" > .state/count
+echo "$n" > .output/count
 printf '{"runs": %s, "at": "%s", "from_version": %s, "trigger": "%s"}\\n' \\
-  "$n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ARTIFACT_VERSION" "$TRIGGER" > data/now.json
-echo "run $n of $ARTIFACT_JOB, wrote data/now.json"
+  "$n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ARTIFACT_VERSION" "$TRIGGER" > .output/now.json
+echo "run $n, wrote .output/now.json"
 `, mode: 493 },
-      "data/now.json": `{"runs": 0, "at": null}\n`,
       "index.html": `<!doctype html>
 <html lang="en">
 <head>
@@ -1582,7 +1580,7 @@ echo "run $n of $ARTIFACT_JOB, wrote data/now.json"
   <p id="t">The job hasn't run yet.</p>
 </div>
 <script>
-fetch("data/now.json").then(r => r.json()).then(d => {
+fetch("/.output/now.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : { runs: 0 }).then(d => {
   document.getElementById("n").textContent = d.runs;
   if (d.at) document.getElementById("t").textContent = "runs so far. Last at " + new Date(d.at).toLocaleTimeString() + ", from version " + d.from_version + ".";
 });
@@ -1592,10 +1590,10 @@ fetch("data/now.json").then(r => r.json()).then(d => {
 `,
     } },
   { slug: "table", title: "A table a job rebuilds", tab: "runs", run_now: true,
-    about: "An hourly job regenerates data/sales.csv with awk; the page fetches it and draws the table, so each run's data shows without changing the page. The build folder is mirrored on every run.",
+    about: "An hourly job regenerates .output/sales.csv with awk; the page fetches /.output/sales.csv and draws the table, so each run's data shows without a new version.",
     files: {
       "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
-        job: { run: "sh build.sh", writes: ["data"], schedule: "@hourly" } }, null, 2) + "\n",
+        job: { run: "sh build.sh", schedule: "@hourly" } }, null, 2) + "\n",
       "index.html": `<!doctype html>
 <html lang="en">
 <head>
@@ -1613,46 +1611,47 @@ fetch("data/now.json").then(r => r.json()).then(d => {
 <body>
 <h1>Sales by region</h1>
 <table id="t"></table>
-<p class="note" id="note">Loading data/sales.csv…</p>
+<p class="note" id="note">Loading /.output/sales.csv…</p>
 <script type="module">
-const csv = await (await fetch("data/sales.csv", { cache: "no-cache" })).text();
+const res = await fetch("/.output/sales.csv", { cache: "no-cache" });
+const csv = res.ok ? await res.text() : "region,orders,revenue\\n";
 const [head, ...rows] = csv.trim().split("\\n").map(l => l.split(","));
 const t = document.getElementById("t"), num = i => i > 0;
 t.innerHTML = "<tr>" + head.map((h, i) => \`<th class="\${num(i) ? "n" : ""}">\${h}</th>\`).join("") + "</tr>" +
   rows.map(r => "<tr>" + r.map((c, i) => \`<td class="\${num(i) ? "n" : ""}">\${c}</td>\`).join("") + "</tr>").join("");
-document.getElementById("note").textContent = rows.length ? \`\${rows.length} regions, from data/sales.csv\` : "No data yet: run the build job from the Jobs tab.";
+document.getElementById("note").textContent = rows.length ? \`\${rows.length} regions, from .output/sales.csv\` : "No data yet: run the job from the Job tab.";
 <\/script>
 </body>
 </html>
 `,
       "build.sh": `#!/bin/sh
 set -e
-mkdir -p data
+mkdir -p .output
 awk -v seed="$(date +%s)" 'BEGIN {
   srand(seed); print "region,orders,revenue"
   split("North South East West Central", r, " ")
   for (i = 1; i <= 5; i++) { o = int(50 + rand() * 450); printf "%s,%d,%.2f\\n", r[i], o, o * (18 + rand() * 12) }
-}' > data/sales.csv
-echo "wrote $(wc -l < data/sales.csv) lines to data/sales.csv"
+}' > .output/sales.csv
+echo "wrote $(wc -l < .output/sales.csv) lines to .output/sales.csv"
 `,
-      "data/sales.csv": "region,orders,revenue\n",
-      "README.md": "# Sales\n\n`build.sh` rebuilds `data/sales.csv` every hour. Run it now from the Jobs tab to see a new version appear.\n",
+      "README.md": "# Sales\n\n`build.sh` rebuilds `.output/sales.csv` every hour. Run it now from the Job tab to see a new output appear.\n",
     } },
-  { slug: "inbox", title: "An inbox that queues triggers", tab: "jobs",
-    about: "A job with no schedule and on_busy set to queue. Run it with a payload several times at once: every trigger waits its turn and appends to inbox.md.",
+  { slug: "inbox", title: "An inbox that queues triggers", tab: "job",
+    about: "A job with no schedule and on_busy set to queue. Run it with a payload several times at once: every trigger waits its turn and appends to .output/inbox.md, shown as a markdown view.",
     files: {
-      "artifact.json": JSON.stringify({
-        job: { run: "sh handle.sh", writes: ["inbox.md"], on_busy: "queue", queue: { max: 20, max_age: "1h" } } }, null, 2) + "\n",
+      "artifact.json": JSON.stringify({ view: { type: "markdown", entry: ".output/inbox.md" },
+        job: { run: "sh handle.sh", on_busy: "queue", queue: { max: 20, max_age: "1h" } } }, null, 2) + "\n",
       "handle.sh": `#!/bin/sh
 set -e
 # Under the fake driver, guest paths live under the sandbox's root folder.
 f="$TRIGGER_FILE"; [ -f "$f" ] || f="$PWD/..$TRIGGER_FILE"
 payload=$(tr -d '\\n' < "$f")
-echo "- \\\`$(date -u +%H:%M:%S)\\\` $payload" >> inbox.md
+mkdir -p .output
+[ -f .output/inbox.md ] || printf '# Inbox\\n\\nEach run appends its trigger here.\\n\\n' > .output/inbox.md
+echo "- \\\`$(date -u +%H:%M:%S)\\\` $payload" >> .output/inbox.md
 echo "handled $ARTIFACT_RUN_ID"
 sleep 2
 `,
-      "inbox.md": "# Inbox\n\nEach run appends its trigger here.\n\n",
     } },
   { slug: "react", title: "A React app without a build", tab: "view",
     about: "React with htm instead of JSX, so app/App.js and app/Tally.js are plain ES modules: the browser follows their relative imports and an import map supplies react. No build step; JSX would need one (esbuild in a sandbox).",
@@ -1727,21 +1726,21 @@ export default function Tally({ marks }) {
 .tally span { width: 10px; border-radius: 2px 2px 0 0; }
 `,
     } },
-  { slug: "approval", title: "A job that needs approval", tab: "jobs",
+  { slug: "approval", title: "A job that needs approval", tab: "job",
     about: "Asks for a 2h timeout and a 30-day schedule, more than the defaults allow. It's blocked until you approve it, which is what your backend does with a grant.",
     files: {
       "artifact.json": JSON.stringify({
         job: { run: "echo long job; sleep 3; echo done", schedule: "@daily", timeout: "2h", active_for: "720h" } }, null, 2) + "\n",
-      "README.md": "# Nightly\n\nThis job wants to run for up to 2 hours, every day for 30 days. Open the Jobs tab and approve it.\n",
+      "README.md": "# Nightly\n\nThis job wants to run for up to 2 hours, every day for 30 days. Open the Job tab and approve it.\n",
     } },
   { slug: "failing", title: "A job that fails", tab: "runs", run_now: true,
     about: "Prints to stdout and stderr, then exits with status 3. A failed run creates no version and keeps no state; its logs say why.",
     files: {
       "artifact.json": JSON.stringify({
-        job: { run: "sh check.sh", writes: ["report.txt"] } }, null, 2) + "\n",
+        job: { run: "sh check.sh" } }, null, 2) + "\n",
       "check.sh": `#!/bin/sh
 echo "checking the report inputs"
-echo "report.txt would be written here" > report.txt
+mkdir -p .output && echo "this would be the output" > .output/report.txt
 echo "error: the upstream file is missing" >&2
 exit 3
 `,

@@ -154,12 +154,7 @@ CREATE TABLE runs (
 );
 CREATE INDEX runs_status ON runs(status, created_at);
 CREATE INDEX runs_artifact ON runs(artifact, created_at);
-CREATE TABLE run_state (
-	artifact   TEXT PRIMARY KEY,
-	hash       TEXT NOT NULL,
-	updated_at BIGINT NOT NULL
-);
--- The job's outputs: what each run that changed its writes wrote.
+-- The job's outputs: what each run that changed .output/ left there.
 CREATE TABLE outputs (
 	artifact   TEXT NOT NULL,
 	output     INT NOT NULL,
@@ -364,7 +359,7 @@ func touchArtifact(ctx context.Context, q querier, id string, t time.Time) error
 }
 
 func deleteArtifactRows(ctx context.Context, q querier, id string) error {
-	for _, t := range []string{"files", "versions", "jobs", "runs", "run_state", "notify", "outputs", "output_files"} {
+	for _, t := range []string{"files", "versions", "jobs", "runs", "notify", "outputs", "output_files"} {
 		if _, err := q.ExecContext(ctx, `DELETE FROM `+t+` WHERE artifact=?`, id); err != nil {
 			return err
 		}
@@ -689,26 +684,6 @@ func queryRuns(ctx context.Context, q querier, where string, args ...any) ([]*ru
 	return out, rows.Err()
 }
 
-// ---- run state
-
-func getRunState(ctx context.Context, q querier, id string) (string, error) {
-	var h string
-	err := q.QueryRowContext(ctx, `SELECT hash FROM run_state WHERE artifact=?`, id).Scan(&h)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return h, err
-}
-
-func putRunState(ctx context.Context, q querier, id, hash string, t time.Time) error {
-	if hash == "" {
-		_, err := q.ExecContext(ctx, `DELETE FROM run_state WHERE artifact=?`, id)
-		return err
-	}
-	_, err := q.ExecContext(ctx, `INSERT INTO run_state(artifact, hash, updated_at) VALUES(?,?,?) ON CONFLICT(artifact) DO UPDATE SET hash=excluded.hash, updated_at=excluded.updated_at`, id, hash, ms(t))
-	return err
-}
-
 // ---- outputs
 
 func insertOutput(ctx context.Context, q querier, id string, o *pa.Output, files map[string]pa.File) error {
@@ -853,7 +828,6 @@ func referencedBlobs(ctx context.Context, q querier) (map[string]bool, error) {
 	out := map[string]bool{}
 	for _, query := range []string{
 		`SELECT DISTINCT hash FROM files`,
-		`SELECT DISTINCT hash FROM run_state`,
 		`SELECT DISTINCT hash FROM output_files`,
 		`SELECT DISTINCT logs FROM runs WHERE logs<>''`,
 		`SELECT DISTINCT chunk FROM chunks`,

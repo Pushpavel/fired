@@ -255,17 +255,13 @@ func (s *Service) dispatch(ctx context.Context) error {
 			if err := putRun(ctx, q, cur); err != nil {
 				return err
 			}
-			// The job works on what everyone sees: its own latest output
-			// included, so it can build on it (append, update).
-			tree, err := s.liveTree(ctx, q, a, a.CurrentVersion, spec)
+			// The job starts from the version's files and its latest output
+			// in .output/, so it can build on it (append, update).
+			tree, err := s.liveTree(ctx, q, a, a.CurrentVersion)
 			if err != nil {
 				return err
 			}
-			stateHash, err := getRunState(ctx, q, a.ID)
-			if err != nil {
-				return err
-			}
-			start = &startInfo{run: cur, artifact: *a, job: j, maxRun: time.Duration(st.MaxRun), tree: tree, stateHash: stateHash}
+			start = &startInfo{run: cur, artifact: *a, job: j, maxRun: time.Duration(st.MaxRun), tree: tree}
 			return nil
 		})
 		for _, e := range events {

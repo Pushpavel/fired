@@ -90,6 +90,32 @@ v2, with `data/now.txt` shadowed and the job's file still showing; reset
 brought the agent's seed back. The clock and table examples render their
 job's data from output 1 with one version each.
 
+**Revised the same day: the job works in `.output/`.** The overlay above
+(job-owned `writes` paths shown over the version's, seeds, `shadowed`,
+reset) was a file-based imitation of a data store, with rules that only
+existed because source and data shared paths. Looked at how Claude's live
+artifacts do it: the page is versioned source, and data lives outside it
+(a `db` the page reads and Claude writes, connectors pulled at view
+time), never regenerated files. A data store is for later; for now:
+
+- The job has one fixed folder, **`.output/`**: its results and its
+  memory (counters, caches) together, so `writes` and `state` are gone and
+  the job config is `run` plus scheduling. Each run starts with the latest
+  output there; what a successful run leaves is the next output. It feels
+  like the source produces the output.
+- `.output/` is never in a version: a publish skips files there and lists
+  them in `skipped` (an exported zip or a sandbox folder carrying the
+  output publishes cleanly). Viewers get it at `/.output/…` from any page;
+  a view can point at it (a markdown view of `.output/inbox.md`).
+- Everything in it is public and kept in each output's history; a
+  credential in it still fails the run.
+- `GET/DELETE /artifacts/{id}/outputs`, `artifact.output` events; export
+  and fork carry the current output.
+
+Tried in Chromium with real VMs: the clock and table pages read
+`/.output/…`, the inbox's markdown view shows `.output/inbox.md` after a
+run, the failing job records no output; each has one version.
+
 ## Questions
 
 - A job's edits outside `writes` vanish without a word. An agent writing

@@ -250,8 +250,7 @@ func TestPublishSemantics(t *testing.T) {
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"view":{"type":"html","entry":"index.html"}}`)}},
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"jobs":{"a":{"run":"x","schedul":"* * * * *"}}}`)}},
 			{BaseVersion: cur, Spec: &pa.Spec{Job: &pa.Job{Run: "x", Schedule: "61 * * * *"}}},
-			{BaseVersion: cur, Spec: &pa.Spec{Job: &pa.Job{Run: "x", Writes: []string{pa.SpecFile}}}},
-			{BaseVersion: cur, Spec: &pa.Spec{Job: &pa.Job{Run: "x", Writes: []string{"out"}, State: "out/state"}}},
+			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"job":{"run":"x","writes":["out"]}}`)}},
 			{BaseVersion: cur, Spec: &pa.Spec{Job: &pa.Job{Run: " "}}},
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"jobs":{"a":{"run":"x"}}}`)}},
 		}
@@ -390,7 +389,7 @@ func TestJobWindowsAndTriggers(t *testing.T) {
 			Files: []pa.FileOp{pa.Text("README.md", "hi")}, Spec: &pa.Spec{Job: &job}}}))(t)
 		return res.Artifact.ID, res.Publish.Job
 	}
-	refresh, j := mk(pa.Job{Run: "python refresh.py", Writes: []string{"out"}, State: ".state", Schedule: "*/10 * * * *"})
+	refresh, j := mk(pa.Job{Run: "python refresh.py", Schedule: "*/10 * * * *"})
 	if j.State != pa.JobScheduled || j.ActiveUntil == nil || !j.ActiveUntil.Equal(h.now.Add(12*time.Hour)) ||
 		j.NextRun == nil || !j.NextRun.Equal(h.now.Add(10*time.Minute)) {
 		t.Fatalf("refresh: %+v", j)
@@ -875,4 +874,41 @@ func TestChunkedContent(t *testing.T) {
 	if cs, _, _ := chunkList(ctx, h.svc.st.db, op.Hash); cs != nil || h.svc.blobs.Has(chunks1[0].Hash) {
 		t.Fatalf("unreferenced chunks kept: list %v, chunk blob %v", cs != nil, h.svc.blobs.Has(chunks1[0].Hash))
 	}
+}
+
+// .output/ is at the root of every view, whatever folder the entry is in,
+// and in exports.
+func TestOutputInViews(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	must(h.c.Create(ctx, pa.CreateArtifactRequest{ID: "site", QuotaKey: "u", Publish: &pa.PublishRequest{
+		Files: []pa.FileOp{pa.Text("dist/index.html", "page")},
+		Spec:  &pa.Spec{View: &pa.View{Type: pa.ViewPage, Entry: "dist/index.html"}, Job: &pa.Job{Run: "true"}}}}))(t)
+	err := h.svc.st.tx(ctx, func(q querier) error {
+		h3 := must(h.svc.blobs.PutBytes([]byte("1,2")))(t)
+		if err := insertOutput(ctx, q, "site", &pa.Output{Output: 1, FileCount: 1, CreatedAt: h.now},
+			map[string]pa.File{".output/data.csv": {Path: ".output/data.csv", Hash: h3, Size: 3, Mode: 0o644}}); err != nil {
+			return err
+		}
+		a, err := getArtifact(ctx, q, "site")
+		if err != nil {
+			return err
+		}
+		a.Output = 1
+		return putArtifact(ctx, q, a)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("GET", h.srv.URL+"/.output/data.csv", nil)
+	req.Header.Set("X-Fired-Token", testToken)
+	req.Header.Set("X-Artifact", "site")
+	resp := must(http.DefaultClient.Do(req))(t)
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(b) != "1,2" {
+		t.Fatalf("view /.output/: %d %q", resp.StatusCode, b)
+	}
+	// A csv view can point at the job's output before it exists.
+	must(h.c.Publish(ctx, "site", pa.PublishRequest{BaseVersion: 1, Spec: &pa.Spec{View: &pa.View{Type: pa.ViewCSV, Entry: ".output/other.csv"}, Job: &pa.Job{Run: "true"}}}))(t)
 }

@@ -301,7 +301,13 @@ func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n
 			writeErr(w, badRequest("%v", err))
 			return
 		}
-		p = path.Join(path.Dir(view.Entry), c)
+		// .output/ is at the root for every view; other paths are in the
+		// entry's folder.
+		if isOutput(c) {
+			p = c
+		} else {
+			p = path.Join(path.Dir(view.Entry), c)
+		}
 		if p == pa.SpecFile {
 			writeErr(w, errf(http.StatusNotFound, "not_found", "%s isn't part of the view", pa.SpecFile))
 			return

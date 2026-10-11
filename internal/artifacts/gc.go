@@ -48,7 +48,7 @@ func (s *Service) GC(ctx context.Context) {
 	// Chunked files nothing references (past the grace period) go, and the
 	// chunks of the rest count as referenced.
 	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM chunked WHERE touched_at<?
-AND file NOT IN (SELECT hash FROM files UNION SELECT hash FROM output_files UNION SELECT hash FROM run_state UNION SELECT logs FROM runs)`, ms(now.Add(-blobGrace))); err != nil {
+AND file NOT IN (SELECT hash FROM files UNION SELECT hash FROM output_files UNION SELECT logs FROM runs)`, ms(now.Add(-blobGrace))); err != nil {
 		s.log.Error("gc: chunked files", "err", err)
 		return
 	}

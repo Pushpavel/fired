@@ -320,16 +320,16 @@ func (c *Client) Runs(ctx context.Context, id, status string) ([]Run, error) {
 	return out.Runs, c.do(ctx, "GET", ap(id)+"/runs?"+q.Encode(), nil, &out)
 }
 
-// Data returns the job's current output and the outputs kept, with files.
-func (c *Client) Data(ctx context.Context, id string) (*Data, error) {
-	var out Data
-	return &out, c.do(ctx, "GET", ap(id)+"/data", nil, &out)
+// Outputs returns the current output and the outputs kept, with files.
+func (c *Client) Outputs(ctx context.Context, id string) (*OutputList, error) {
+	var out OutputList
+	return &out, c.do(ctx, "GET", ap(id)+"/outputs", nil, &out)
 }
 
-// ResetData drops the job's outputs: the version's files under its writes
-// show again, and the next run starts from them.
-func (c *Client) ResetData(ctx context.Context, id string) error {
-	return c.do(ctx, "DELETE", ap(id)+"/data", nil, nil)
+// ClearOutputs drops the outputs: .output/ is empty again, and the next run
+// starts from nothing.
+func (c *Client) ClearOutputs(ctx context.Context, id string) error {
+	return c.do(ctx, "DELETE", ap(id)+"/outputs", nil, nil)
 }
 
 func (c *Client) Run(ctx context.Context, id, run string) (*Run, error) {

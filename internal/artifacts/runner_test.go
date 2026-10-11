@@ -147,16 +147,17 @@ case "$mode" in
 fail) echo boom >&2; exit 3 ;;
 slow) sleep 30 ;;
 same) exit 0 ;;
-leak) mkdir -p out && echo "$API_TOKEN" > out/leak.txt && echo "$API_TOKEN"; exit 0 ;;
+leak) mkdir -p .output && echo "$API_TOKEN" > .output/leak.txt && echo "$API_TOKEN"; exit 0 ;;
 esac
-mkdir -p out .state
-n=$(cat .state/count 2>/dev/null || echo 0)
+mkdir -p .output
+echo edited > README.md
+n=$(cat .output/count 2>/dev/null || echo 0)
 n=$((n+1))
-echo $n > .state/count
+echo $n > .output/count
 token=missing
 case "$API_TOKEN" in s3cret-$ARTIFACT_RUN_ID) token=ok ;; esac
-echo "run $n token=$token" > out/result.txt
-cp "$trig" out/trigger.json
+echo "run $n token=$token" > .output/result.txt
+cp "$trig" .output/trigger.json
 echo "hello from job"
 echo "a warning" >&2
 `
@@ -215,11 +216,14 @@ func TestRunsInFired(t *testing.T) {
 
 	script := genScript
 	res := must(c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
-		Files:  []pa.FileOp{{Path: "gen.sh", Content: &script, Mode: 0o755}, pa.Text("README.md", "source"), pa.Text("out/result.txt", "seed")},
-		Spec:   &pa.Spec{Job: &pa.Job{Run: "./gen.sh", Writes: []string{"out"}, State: ".state", Timeout: pa.Duration(2 * time.Second)}},
+		Files:  []pa.FileOp{{Path: "gen.sh", Content: &script, Mode: 0o755}, pa.Text("README.md", "source"), pa.Text(".output/result.txt", "never stored")},
+		Spec:   &pa.Spec{Job: &pa.Job{Run: "./gen.sh", Timeout: pa.Duration(2 * time.Second)}},
 		RunNow: true, Notify: "session-1",
 	}}))(t)
 	id := res.Artifact.ID
+	if strings.Join(res.Publish.Skipped, ",") != ".output/result.txt" || res.Publish.Version.FileCount != 3 {
+		t.Fatalf("publishing into .output/: skipped %v, %d files", res.Publish.Skipped, res.Publish.Version.FileCount)
+	}
 	trigger := func(mode string) *pa.Run {
 		t.Helper()
 		return waitRun(t, c, id, must(c.Trigger(ctx, id, json.RawMessage(`{"mode":"`+mode+`"}`)))(t).ID)
@@ -234,19 +238,23 @@ func TestRunsInFired(t *testing.T) {
 		logs, _ := c.RunLogs(ctx, id, r.ID)
 		t.Fatalf("first run: %+v logs: %+v", r, logs)
 	}
-	// A run records an output, not a version.
+	// A run records an output, not a version, and its changes outside
+	// .output/ don't land.
 	if a := must(c.Get(ctx, id))(t); a.CurrentVersion != 1 || a.Output != 1 {
 		t.Fatalf("after a run: version %d output %d", a.CurrentVersion, a.Output)
 	}
-	d := must(c.Data(ctx, id))(t)
-	if d.Current != 1 || len(d.Outputs) != 1 || d.Outputs[0].RunID != r.ID || len(d.Outputs[0].Files) != 2 {
-		t.Fatalf("data: %+v", d)
+	if b := must(c.ReadFile(ctx, id, "README.md", 0))(t); string(b) != "source" {
+		t.Fatalf("a run changed the source: %q", b)
 	}
-	if b := must(c.ReadFile(ctx, id, "out/result.txt", 0))(t); string(b) != "run 1 token=ok\n" {
+	d := must(c.Outputs(ctx, id))(t)
+	if d.Current != 1 || len(d.Outputs) != 1 || d.Outputs[0].RunID != r.ID || len(d.Outputs[0].Files) != 3 {
+		t.Fatalf("outputs: %+v", d)
+	}
+	if b := must(c.ReadFile(ctx, id, ".output/result.txt", 0))(t); string(b) != "run 1 token=ok\n" {
 		t.Fatalf("result: %q", b)
 	}
 	var trig map[string]any
-	_ = json.Unmarshal(must(c.ReadFile(ctx, id, "out/trigger.json", 0))(t), &trig)
+	_ = json.Unmarshal(must(c.ReadFile(ctx, id, ".output/trigger.json", 0))(t), &trig)
 	if trig["type"] != pa.TriggerPublish || trig["run_id"] != r.ID {
 		t.Fatalf("trigger file: %+v", trig)
 	}
@@ -260,16 +268,13 @@ func TestRunsInFired(t *testing.T) {
 	}
 	bs.mu.Unlock()
 
-	t.Run("state carries over", func(t *testing.T) {
+	t.Run("each run starts from the last output", func(t *testing.T) {
 		r := trigger("gen")
 		if r.Status != pa.RunSucceeded || r.Output != 2 {
 			t.Fatalf("second run: %+v", r)
 		}
-		if b := must(c.ReadFile(ctx, id, "out/result.txt", 0))(t); string(b) != "run 2 token=ok\n" {
+		if b := must(c.ReadFile(ctx, id, ".output/result.txt", 0))(t); string(b) != "run 2 token=ok\n" {
 			t.Fatalf("result: %q", b)
-		}
-		if _, err := c.ReadFile(ctx, id, ".state/count", 0); !client.IsNotFound(err) {
-			t.Fatalf("state leaked into the files: %v", err)
 		}
 	})
 
@@ -284,15 +289,9 @@ func TestRunsInFired(t *testing.T) {
 	})
 
 	t.Run("edits don't conflict with runs", func(t *testing.T) {
-		// Runs moved nothing: an edit against v1 still lands. One that puts
-		// files under the job's writes is told they're shadowed.
-		p := must(c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{
-			pa.Text("README.md", "edited"), pa.Text("out/result.txt", "new seed")}}))(t)
-		if p.Version.Version != 2 || strings.Join(p.Shadowed, ",") != "out/result.txt" || p.Job == nil {
+		p := must(c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{pa.Text("README.md", "edited")}}))(t)
+		if p.Version.Version != 2 || p.Job == nil {
 			t.Fatalf("publish: %+v", p)
-		}
-		if b := must(c.ReadFile(ctx, id, "out/result.txt", 0))(t); string(b) != "run 2 token=ok\n" {
-			t.Fatalf("the output should still show: %q", b)
 		}
 	})
 
@@ -314,10 +313,10 @@ func TestRunsInFired(t *testing.T) {
 
 	t.Run("credential values are never published", func(t *testing.T) {
 		r := trigger("leak")
-		if r.Status != pa.RunFailed || r.Reason != "result rejected: out/leak.txt contains the value of credential API_TOKEN" {
+		if r.Status != pa.RunFailed || r.Reason != "result rejected: .output/leak.txt contains the value of credential API_TOKEN" {
 			t.Fatalf("leaking run: %+v", r)
 		}
-		if _, err := c.ReadFile(ctx, id, "out/leak.txt", 0); !client.IsNotFound(err) {
+		if _, err := c.ReadFile(ctx, id, ".output/leak.txt", 0); !client.IsNotFound(err) {
 			t.Fatalf("leak published: %v", err)
 		}
 		if l := must(c.RunLogs(ctx, id, r.ID))(t); strings.Contains(l.Stdout, "s3cret") {
@@ -335,22 +334,28 @@ func TestRunsInFired(t *testing.T) {
 		}
 	})
 
-	t.Run("export and fork carry the data", func(t *testing.T) {
+	t.Run("export and fork carry the output", func(t *testing.T) {
 		f := must(c.Fork(ctx, id, pa.ForkRequest{QuotaKey: "u2"}))(t)
-		if b := must(c.ReadFile(ctx, f.ID, "out/result.txt", 0))(t); string(b) != "run 2 token=ok\n" || f.Output != 0 {
+		if b := must(c.ReadFile(ctx, f.ID, ".output/result.txt", 0))(t); string(b) != "run 2 token=ok\n" || f.Output != 1 {
 			t.Fatalf("fork: %q, output %d", b, f.Output)
+		}
+		if v := must(c.Version(ctx, f.ID, 1))(t); strings.Contains(strings.Join(paths(v), ","), ".output") {
+			t.Fatalf("the fork's version has output files: %v", paths(v))
 		}
 	})
 
-	t.Run("reset shows the seed again", func(t *testing.T) {
-		if err := c.ResetData(ctx, id); err != nil {
+	t.Run("clearing outputs empties .output", func(t *testing.T) {
+		if err := c.ClearOutputs(ctx, id); err != nil {
 			t.Fatal(err)
 		}
-		if b := must(c.ReadFile(ctx, id, "out/result.txt", 0))(t); string(b) != "new seed" {
-			t.Fatalf("after reset: %q", b)
+		if _, err := c.ReadFile(ctx, id, ".output/result.txt", 0); !client.IsNotFound(err) {
+			t.Fatalf("after clearing: %v", err)
 		}
-		if d := must(c.Data(ctx, id))(t); d.Current != 0 || len(d.Outputs) != 0 {
-			t.Fatalf("data after reset: %+v", d)
+		if r := trigger("gen"); r.Output != 1 {
+			t.Fatalf("a run after clearing starts over: %+v", r)
+		}
+		if b := must(c.ReadFile(ctx, id, ".output/result.txt", 0))(t); string(b) != "run 1 token=ok\n" {
+			t.Fatalf("after clearing, the count restarts: %q", b)
 		}
 	})
 
@@ -366,7 +371,7 @@ func TestRunsInFired(t *testing.T) {
 				t.Errorf("notify on a later run: %+v", e)
 			}
 			started = started || e.Type == "run.started"
-			data = data || (e.Type == "artifact.data" && e.Output == 1)
+			data = data || (e.Type == "artifact.output" && e.Output == 1)
 		}
 		if !notified || !started || !data {
 			t.Fatalf("events (notified %v started %v data %v): %+v", notified, started, data, evs)
@@ -516,7 +521,7 @@ func TestRunQuota(t *testing.T) {
 	}
 	ctx := context.Background()
 	c := h.c
-	spec := &pa.Spec{Job: &pa.Job{Run: "echo ran", Writes: []string{"out"}}}
+	spec := &pa.Spec{Job: &pa.Job{Run: "echo ran"}}
 	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "quota-art", QuotaKey: "u9", Publish: &pa.PublishRequest{
 		Files: []pa.FileOp{pa.Text("a", "x")}, Spec: spec}}))(t)
 

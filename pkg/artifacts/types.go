@@ -14,6 +14,12 @@ type Duration = api.Duration
 
 // ---- artifact.json
 
+// OutputDir is the job's folder. Runs read and write it; whatever a run
+// leaves there is the artifact's output, what viewers see at /.output/ and
+// what the next run starts from. It's never part of a version: a publish
+// skips files under it.
+const OutputDir = ".output"
+
 // SpecFile is the path of the config file inside an artifact's file tree.
 // Every version has one: the service writes an empty one when a create
 // doesn't bring one.
@@ -57,18 +63,12 @@ const (
 )
 
 // Job is a command run against the artifact's files on a schedule or on
-// demand. It owns the paths in Writes: a successful run that changes them
-// records an output (not a version), and the latest output is what
-// everyone sees there.
+// demand. It works in OutputDir: each run starts with the latest output
+// there, and a successful run that changes it records the next output (not
+// a version). Its changes anywhere else are discarded.
 type Job struct {
 	// Run is executed with /bin/sh -c in the artifact's directory.
 	Run string `json:"run"`
-	// Writes lists the paths (files or directories) the job owns. Its
-	// changes anywhere else are discarded.
-	Writes []string `json:"writes,omitempty"`
-	// State is a directory carried from one run to the next. It is not part
-	// of the artifact's files and is not copied when the artifact is forked.
-	State string `json:"state,omitempty"`
 	// Schedule is a 5-field cron expression (or @hourly, @daily, @weekly,
 	// @monthly, @yearly). Empty means the job only runs when triggered.
 	Schedule string `json:"schedule,omitempty"`
@@ -126,8 +126,7 @@ type Artifact struct {
 	// RetainOutputs is how many of the job's outputs to keep, the current
 	// one included. 0 = service default.
 	RetainOutputs int `json:"retain_outputs"`
-	// Output is the job's current output (0: none yet, the version's files
-	// under the job's writes are shown).
+	// Output is the current output (0: none yet, .output/ is empty).
 	Output       int         `json:"output,omitempty"`
 	ForkedFrom   *VersionRef `json:"forked_from,omitempty"`
 	CreatedAt    time.Time   `json:"created_at"`
@@ -242,11 +241,10 @@ type PublishResult struct {
 	// the files of the current version: no version was made, and Version is
 	// the current one.
 	Unchanged bool `json:"unchanged,omitempty"`
-	// Shadowed lists files this publish put under the job's writes while
-	// the job has an output: they're stored, but the output is what shows
-	// there (until the data is reset).
-	Shadowed []string   `json:"shadowed,omitempty"`
-	Job      *JobStatus `json:"job,omitempty"`
+	// Skipped lists files the publish gave under .output/: the job's
+	// folder is never part of a version (an exported zip carries it).
+	Skipped []string   `json:"skipped,omitempty"`
+	Job     *JobStatus `json:"job,omitempty"`
 }
 
 type CreateArtifactRequest struct {
@@ -376,9 +374,9 @@ type RunList struct {
 	Runs []Run `json:"runs"`
 }
 
-// Output is what one run wrote: the job's files under its writes. The
-// latest one is what everyone sees there; older ones are kept for a while
-// (retain_outputs) to look back at.
+// Output is what one run left in .output/. The latest one is what
+// everyone sees there and what the next run starts from; older ones are
+// kept for a while (retain_outputs) to look back at.
 type Output struct {
 	Output    int       `json:"output"`
 	RunID     string    `json:"run_id"`
@@ -389,9 +387,9 @@ type Output struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Data is an artifact's job data: the current output (0: none, the
-// version's files are shown) and the outputs kept.
-type Data struct {
+// OutputList is an artifact's outputs: the current one (0: none) and the
+// ones kept, newest first.
+type OutputList struct {
 	Current int      `json:"current"`
 	Outputs []Output `json:"outputs"`
 }
@@ -465,9 +463,9 @@ type CredentialsResponse struct {
 // ---- events
 
 type Event struct {
-	// Type: artifact.created, artifact.version, artifact.data (a run
-	// recorded an output), artifact.deleted, run.started, run.finished,
-	// run.dropped.
+	// Type: artifact.created, artifact.version, artifact.output (a run
+	// recorded an output, or the outputs were cleared), artifact.deleted,
+	// run.started, run.finished, run.dropped.
 	Type     string `json:"type"`
 	Artifact string `json:"artifact"`
 	Version  int    `json:"version,omitempty"`

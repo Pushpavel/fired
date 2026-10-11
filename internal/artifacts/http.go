@@ -48,8 +48,8 @@ func (s *Service) Handler() http.Handler {
 	h("GET /v1/artifacts/{id}/job", s.handleJob)
 	h("PUT /v1/artifacts/{id}/job/grant", s.handleGrant)
 	h("POST /v1/artifacts/{id}/job/runs", s.handleTrigger)
-	h("GET /v1/artifacts/{id}/data", s.handleData)
-	h("DELETE /v1/artifacts/{id}/data", s.handleResetData)
+	h("GET /v1/artifacts/{id}/outputs", s.handleOutputs)
+	h("DELETE /v1/artifacts/{id}/outputs", s.handleClearOutputs)
 	h("GET /v1/artifacts/{id}/runs", s.handleRuns)
 	h("GET /v1/artifacts/{id}/runs/{run}", s.handleRun)
 	h("GET /v1/artifacts/{id}/runs/{run}/logs", s.handleRunLogs)
@@ -446,8 +446,7 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 	if n == 0 {
 		n = a.CurrentVersion
 	}
-	v, err := getVersion(r.Context(), s.st.db, id, n)
-	if err != nil {
+	if _, err := getVersion(r.Context(), s.st.db, id, n); err != nil {
 		if err == errNotFound {
 			writeErr(w, errf(http.StatusNotFound, "not_found", "%s has no version %d", id, n))
 			return
@@ -455,8 +454,8 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 		writeErr(w, err)
 		return
 	}
-	// What everyone sees: the job's current data over its writes.
-	f, err := s.liveFile(r.Context(), s.st.db, a, n, v.Spec, p)
+	// What everyone sees: the version's files and the current output.
+	f, err := s.liveFile(r.Context(), s.st.db, a, n, p)
 	if err != nil {
 		if err == errNotFound {
 			if shown != "" {
@@ -532,8 +531,8 @@ func (s *Service) handleRouted(w http.ResponseWriter, r *http.Request, id string
 	s.serveView(w, r, id, n)
 }
 
-// handleExport streams what a version shows as a zip: its files, with the
-// job's current data over its writes, artifact.json included.
+// handleExport streams what a version shows as a zip: its files
+// (artifact.json included) and the current output under .output/.
 func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 	n, err := versionParam(r.PathValue("v"))
 	if err != nil {
@@ -550,7 +549,7 @@ func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	live, err := s.liveTree(r.Context(), s.st.db, a, v.Version, v.Spec)
+	live, err := s.liveTree(r.Context(), s.st.db, a, v.Version)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -583,7 +582,7 @@ func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 	_ = zw.Close()
 }
 
-// ---- the job, its runs and its data
+// ---- the job, its runs and its outputs
 
 func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
 	st, err := s.Job(r.Context(), r.PathValue("id"))
@@ -594,8 +593,8 @@ func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, st)
 }
 
-func (s *Service) handleData(w http.ResponseWriter, r *http.Request) {
-	d, err := s.Data(r.Context(), r.PathValue("id"))
+func (s *Service) handleOutputs(w http.ResponseWriter, r *http.Request) {
+	d, err := s.Outputs(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -603,8 +602,8 @@ func (s *Service) handleData(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, d)
 }
 
-func (s *Service) handleResetData(w http.ResponseWriter, r *http.Request) {
-	if err := s.ResetData(r.Context(), r.PathValue("id")); err != nil {
+func (s *Service) handleClearOutputs(w http.ResponseWriter, r *http.Request) {
+	if err := s.ClearOutputs(r.Context(), r.PathValue("id")); err != nil {
 		writeErr(w, err)
 		return
 	}
