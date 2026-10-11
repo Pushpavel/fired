@@ -758,11 +758,21 @@ function reloadFrame() {
 // ---------- Files tab: a working copy staged on top of the current version
 const TEXT_EXT = /\.(html?|css|m?js|jsx|tsx?|json|md|markdown|txt|csv|tsv|svg|xml|ya?ml|toml|ini|sh|py|rb|go|rs|java|c|h|cpp|sql|env|gitignore|lock|log)$/i;
 const isTextPath = p => TEXT_EXT.test(p) || !/\.[^/]+$/.test(p);
-// A starting artifact.json for these paths: a view only when there's no
-// index.html (that's the default), guessed from the first viewable file.
+// Stages a starting artifact.json for these paths: a view only when there's
+// no index.html (that's the default), guessed from the first viewable file;
+// and, when a job is wanted, a triggered-only job with a working script, so
+// publishing the template as-is never schedules a failing run.
 const VIEW_TYPES = [[/\.html?$/i, "html"], [/\.(jsx|tsx)$/i, "react"], [/\.(md|markdown)$/i, "md"], [/\.csv$/i, "csv"], [/\.json$/i, "json"],
   [/\.svg$/i, "svg"], [/\.(png|jpe?g|gif|webp)$/i, "image"], [/\.pdf$/i, "pdf"], [/\.txt$/i, "text"]];
-function specTemplate(paths) {
+const REFRESH_SH = `#!/bin/sh
+# Runs in the artifact's folder. Changes under data/ become a new version.
+# Run it from the Jobs tab; add "schedule" (cron) in artifact.json to repeat it.
+set -e
+mkdir -p data
+date -u +%Y-%m-%dT%H:%M:%SZ > data/updated.txt
+echo "wrote data/updated.txt"
+`;
+function stageSpecTemplate(paths, wantJob) {
   const spec = {};
   if (!paths.includes("index.html")) {
     for (const p of [...paths].sort()) {
@@ -770,8 +780,11 @@ function specTemplate(paths) {
       if (t) { spec.view = { type: t[1], entry: p }; break; }
     }
   }
-  spec.jobs = { refresh: { run: "sh refresh.sh", writes: ["data"], schedule: "*/15 * * * *" } };
-  return JSON.stringify(spec, null, 2) + "\n";
+  if (wantJob || !spec.view) {
+    spec.jobs = { refresh: { run: "sh refresh.sh", writes: ["data"] } };
+    if (!paths.includes("refresh.sh")) stagePut("refresh.sh", REFRESH_SH);
+  }
+  stagePut("artifact.json", JSON.stringify(spec, null, 2) + "\n");
 }
 
 async function workingTree() {
@@ -807,7 +820,7 @@ async function tabFiles(p) {
     h("button", { class: "btn small", onclick: newFile }, "New file"),
     h("button", { class: "btn small", onclick: () => upload.click() }, "Upload files"),
     h("button", { class: "btn small", onclick: () => uploadDir.click(), title: "Upload a folder. Files missing from it are removed from that folder in the artifact." }, "Upload folder"),
-    !tree.has("artifact.json") ? h("button", { class: "btn small quiet", onclick: () => { stagePut("artifact.json", specTemplate([...tree.keys()])); S.fileSel = "artifact.json"; renderArtifact(); } }, "Add artifact.json") : null,
+    !tree.has("artifact.json") ? h("button", { class: "btn small quiet", onclick: () => { stageSpecTemplate([...tree.keys()], false); S.fileSel = "artifact.json"; renderArtifact(); } }, "Add artifact.json") : null,
     upload, uploadDir)
     : h("div", { class: "tree-tools" }, h("span", { class: "note" }, `Version ${n} is read-only. Restore it to make it current, or show the current version to edit.`));
 
@@ -1013,7 +1026,7 @@ async function tabJobs(p) {
     p.append(h("div", { class: "empty" }, h("h3", {}, "No jobs"),
       h("p", { class: "note" }, "Jobs are commands in artifact.json. They run in a fired sandbox with the artifact's files, on a schedule or when triggered, and their writes become new versions."),
       h("p", {}, h("button", { class: "btn", onclick: () => {
-        S.tab = "files"; if (!cur?.files?.some(f => f.path === "artifact.json")) stagePut("artifact.json", specTemplate((cur?.files || []).map(f => f.path))); S.fileSel = "artifact.json"; renderArtifact(); } }, "Edit artifact.json"))));
+        S.tab = "files"; if (!cur?.files?.some(f => f.path === "artifact.json")) stageSpecTemplate((cur?.files || []).map(f => f.path), true); S.fileSel = "artifact.json"; renderArtifact(); } }, "Edit artifact.json"))));
     return;
   }
   for (const j of S.jobs) {
