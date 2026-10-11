@@ -75,9 +75,10 @@ func New(cfg Config, log *slog.Logger) (*Service, error) {
 	}
 	s := &Service{
 		cfg: cfg, st: st, blobs: blobs, bus: newBus(), log: log,
-		fired:   client.New(cfg.Fired.URL, cfg.Fired.Token),
-		broker:  newBroker(cfg.Broker),
-		now:     func() time.Time { return time.Now().UTC() },
+		fired:  client.New(cfg.Fired.URL, cfg.Fired.Token),
+		broker: newBroker(cfg.Broker),
+		// Milliseconds, as stored: what a write answers matches a read.
+		now:     func() time.Time { return time.Now().UTC().Truncate(time.Millisecond) },
 		running: map[string]string{}, waiting: map[string]string{}, live: map[string]*liveRun{}, buckets: map[string]*bucket{}, touched: map[string]time.Time{},
 		quotaWait: map[string]time.Time{}, tiers: map[string]tierEntry{},
 		wake: make(chan struct{}, 1), stop: make(chan struct{}),
@@ -135,6 +136,9 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 	}
 	if len(req.Meta) > 0 && !json.Valid(req.Meta) {
 		return nil, badRequest("meta must be valid JSON")
+	}
+	if err := checkDeleteAfter(req.DeleteAfter); err != nil {
+		return nil, err
 	}
 	prep, err := s.preparePublish(ctx, *req.Publish)
 	if err != nil {
@@ -238,6 +242,9 @@ func (s *Service) Update(ctx context.Context, id string, req pa.UpdateArtifactRe
 			a.Meta = meta
 		}
 		if req.DeleteAfter != nil {
+			if err := checkDeleteAfter(*req.DeleteAfter); err != nil {
+				return err
+			}
 			a.DeleteAfter = *req.DeleteAfter
 		}
 		a.UpdatedAt = s.now()
@@ -245,6 +252,16 @@ func (s *Service) Update(ctx context.Context, id string, req pa.UpdateArtifactRe
 		return putArtifact(ctx, q, a)
 	})
 	return out, err
+}
+
+// checkDeleteAfter refuses delete_after under a minute: reads count as
+// activity at most once a minute, so a shorter one could delete an
+// artifact someone is viewing. 0 is the service default, negative never.
+func checkDeleteAfter(d pa.Duration) error {
+	if d > 0 && time.Duration(d) < time.Minute {
+		return badRequest("delete_after must be at least 1m (or 0 for the service default, negative for never)")
+	}
+	return nil
 }
 
 // mergePatch applies a JSON merge patch (RFC 7386) to doc: object keys in

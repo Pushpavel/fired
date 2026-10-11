@@ -2,6 +2,7 @@ package artifacts
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	pa "github.com/Pushpavel/fired/pkg/artifacts"
@@ -310,6 +311,11 @@ func (s *Service) dispatch(ctx context.Context) error {
 				return nil
 			}
 			a, spec, err := s.currentSpec(ctx, q, p.Artifact)
+			if asError(err).Status == http.StatusNotFound {
+				// Its artifact is gone (deleted while this run waited).
+				_, err := q.ExecContext(ctx, `DELETE FROM runs WHERE id=?`, p.ID)
+				return err
+			}
 			if err != nil {
 				return err
 			}

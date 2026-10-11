@@ -2,7 +2,10 @@ package artifacts
 
 import (
 	"context"
+	"os"
 	"time"
+
+	pa "github.com/Pushpavel/fired/pkg/artifacts"
 )
 
 const (
@@ -13,14 +16,18 @@ const (
 	runHistory = 30 * 24 * time.Hour
 )
 
-// GC deletes artifacts past their delete_after, old run records, and
-// blobs nothing references any more.
-func (s *Service) GC(ctx context.Context) {
+// GC deletes artifacts past their delete_after, old run records and
+// events, and blobs nothing references any more (after blobGrace). It runs
+// every gc_interval, and on POST /v1/gc.
+func (s *Service) GC(ctx context.Context) { s.collect(ctx) }
+
+func (s *Service) collect(ctx context.Context) pa.GCResult {
+	var res pa.GCResult
 	now := s.now()
 	arts, err := listArtifacts(ctx, s.st.db, "")
 	if err != nil {
 		s.log.Error("gc: list artifacts", "err", err)
-		return
+		return res
 	}
 	for _, a := range arts {
 		ttl := time.Duration(a.DeleteAfter)
@@ -39,43 +46,63 @@ func (s *Service) GC(ctx context.Context) {
 		s.log.Info("gc: deleting inactive artifact", "artifact", a.ID, "last_active", a.LastActiveAt)
 		if err := s.Delete(ctx, a.ID); err != nil {
 			s.log.Error("gc: delete artifact", "artifact", a.ID, "err", err)
+		} else {
+			res.ArtifactsDeleted = append(res.ArtifactsDeleted, a.ID)
 		}
 	}
-	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM events WHERE at<?`, ms(now.Add(-time.Duration(s.cfg.Limits.EventRetention)))); err != nil {
-		s.log.Error("gc: prune events", "err", err)
+	// Rows of artifacts that are gone (a run that finished after its
+	// artifact was deleted, before that was handled).
+	for _, t := range []string{"runs", "jobs", "docs", "notify"} {
+		if _, err := s.st.db.ExecContext(ctx, `DELETE FROM `+t+` WHERE artifact NOT IN (SELECT id FROM artifacts)`); err != nil {
+			s.log.Error("gc: orphan rows", "table", t, "err", err)
+		}
 	}
-	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM runs WHERE finished_at>0 AND finished_at<? AND status NOT IN ('pending','running')`,
+	if r, err := s.st.db.ExecContext(ctx, `DELETE FROM events WHERE at<?`, ms(now.Add(-time.Duration(s.cfg.Limits.EventRetention)))); err != nil {
+		s.log.Error("gc: prune events", "err", err)
+	} else {
+		n, _ := r.RowsAffected()
+		res.EventsPruned = int(n)
+	}
+	if r, err := s.st.db.ExecContext(ctx, `DELETE FROM runs WHERE finished_at>0 AND finished_at<? AND status NOT IN ('pending','running')`,
 		ms(now.Add(-runHistory))); err != nil {
 		s.log.Error("gc: prune runs", "err", err)
+	} else {
+		n, _ := r.RowsAffected()
+		res.RunsPruned = int(n)
 	}
 	// Chunked files nothing references (past the grace period) go, and the
 	// chunks of the rest count as referenced.
 	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM chunked WHERE touched_at<?
 AND file NOT IN (SELECT hash FROM files UNION SELECT logs FROM runs)`, ms(now.Add(-blobGrace))); err != nil {
 		s.log.Error("gc: chunked files", "err", err)
-		return
+		return res
 	}
 	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM chunks WHERE file NOT IN (SELECT file FROM chunked)`); err != nil {
 		s.log.Error("gc: chunk lists", "err", err)
-		return
+		return res
 	}
 	refs, err := referencedBlobs(ctx, s.st.db)
 	if err != nil {
 		s.log.Error("gc: referenced blobs", "err", err)
-		return
+		return res
 	}
-	removed := 0
 	_ = s.blobs.Walk(func(h string, mod time.Time) error {
 		if refs[h] || now.Sub(mod) < blobGrace {
 			return nil
 		}
+		var size int64
+		if fi, err := os.Stat(s.blobs.path(h)); err == nil {
+			size = fi.Size()
+		}
 		if err := s.blobs.Remove(h); err == nil {
-			removed++
+			res.BlobsRemoved++
+			res.BytesFreed += size
 		}
 		return ctx.Err()
 	})
 	s.blobs.CleanTmp(blobGrace)
-	if removed > 0 {
-		s.log.Info("gc: removed unreferenced blobs", "count", removed)
+	if res.BlobsRemoved > 0 {
+		s.log.Info("gc: removed unreferenced blobs", "count", res.BlobsRemoved, "bytes", res.BytesFreed)
 	}
+	return res
 }

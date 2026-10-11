@@ -31,7 +31,7 @@ Each use case gets its own file, `NN-name.md`, written as we go:
 - fired-artifacts charging runs to the user's `artifacts` pool;
 - the Helm chart, Skaffold and CD in [.k8s/](../.k8s/README.md).
 
-**Next: 15, cleanup.**
+**All fifteen use cases are done** (2026-10-11).
 
 ## Use cases
 
@@ -51,7 +51,7 @@ Each use case gets its own file, `NN-name.md`, written as we go:
 | 12 | Forks and owners | fork to another quota key, the db copied without `_private/`, schedules off until the new owner publishes, shared blobs, forking an older version | done: [12-forks-and-owners.md](12-forks-and-owners.md) |
 | 13 | Quotas and limits | storage (files and db), tiers and overrides, concurrent runs, fired's GB-hours per pool, min interval, db limits (doc size, docs, batch), the read rate limit | done: [13-quotas-and-limits.md](13-quotas-and-limits.md) |
 | 14 | Events and agent feedback | `/v1/events` (`artifact.*`, `db.changed`, `run.*`), `run_now` + `notify` on publish, what an agent session would hear | done: [14-events-and-agent-feedback.md](14-events-and-agent-feedback.md) |
-| 15 | Cleanup | `delete_after`, delete (versions, db, runs, runner sandbox), run records after 30 days, blob GC | started: see [15-cleanup.md](15-cleanup.md) |
+| 15 | Cleanup | `delete_after`, delete (versions, db, runs, runner sandbox), run records after 30 days, blob GC | done: [15-cleanup.md](15-cleanup.md) |
 
 ## Design notes
 

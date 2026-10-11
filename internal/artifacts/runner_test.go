@@ -436,6 +436,29 @@ func TestRunsInFired(t *testing.T) {
 		}
 	})
 
+	t.Run("a run of an artifact deleted meanwhile leaves no record", func(t *testing.T) {
+		gone := must(c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
+			Files: []pa.FileOp{pa.Text("a", "a")}, Spec: &pa.Spec{Job: &pa.Job{Run: "sleep 2"}}}}))(t).Artifact.ID
+		run := must(c.Trigger(ctx, gone, nil))(t)
+		for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			if r := must(c.Run(ctx, gone, run.ID))(t); r.Status == pa.RunRunning {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the run didn't start")
+			}
+		}
+		if err := c.Delete(ctx, gone); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(4 * time.Second)
+		var n int
+		_ = h.svc.st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE artifact=?`, gone).Scan(&n)
+		if n != 0 {
+			t.Fatalf("%d run records of a deleted artifact", n)
+		}
+	})
+
 	t.Run("delete removes the runner sandbox", func(t *testing.T) {
 		if l := must(fc.ListSandboxes(ctx, map[string]string{labelArtifact: id}, ""))(t); len(l) != 1 {
 			t.Fatalf("runner sandboxes: %+v", l)

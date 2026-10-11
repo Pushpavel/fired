@@ -407,6 +407,13 @@ func (c *Client) SetQuota(ctx context.Context, key string, q Quota) (*QuotaStatu
 	return &out, c.do(ctx, "PUT", "/v1/quotas/"+url.PathEscape(key), q, &out)
 }
 
+// GC runs garbage collection now (it also runs every gc_interval) and
+// says what it removed.
+func (c *Client) GC(ctx context.Context) (*GCResult, error) {
+	var out GCResult
+	return &out, c.do(ctx, "POST", "/v1/gc", nil, &out)
+}
+
 // ---- events
 
 // Events streams events until ctx is done or the stream ends (the service

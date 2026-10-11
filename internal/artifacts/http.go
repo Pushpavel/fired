@@ -55,6 +55,8 @@ func (s *Service) Handler() http.Handler {
 	h("GET /v1/artifacts/{id}/runs/{run}", s.handleRun)
 	h("GET /v1/artifacts/{id}/runs/{run}/logs", s.handleRunLogs)
 
+	h("POST /v1/gc", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, s.collect(r.Context())) })
+
 	h("GET /v1/tiers", s.handleTiers)
 	h("GET /v1/tiers/{name}", s.handleGetTier)
 	h("PUT /v1/tiers/{name}", s.handlePutTier)

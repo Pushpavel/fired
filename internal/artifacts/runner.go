@@ -412,7 +412,36 @@ func logTail(l pa.RunLogs, max int) string {
 func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 	ctx := context.Background()
 	r, a := si.run, si.artifact
+	// The artifact may have been deleted while the run ran: then its
+	// record goes too, instead of coming back as an orphan.
+	gone := false
+	keep := func(q querier) (bool, error) {
+		if _, err := getArtifact(ctx, q, a.ID); err == errNotFound {
+			gone = true
+			_, err := q.ExecContext(ctx, `DELETE FROM runs WHERE id=?`, r.ID)
+			return false, err
+		} else if err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	defer func() {
+		if gone {
+			s.mu.Lock()
+			delete(s.waiting, r.ID)
+			s.mu.Unlock()
+		}
+	}()
 	if out.retry {
+		r.Status, r.StartedAt, r.Version, r.Reason = pa.RunPending, nil, 0, "waiting: "+out.reason
+		if err := s.st.tx(ctx, func(q querier) error {
+			if ok, err := keep(q); !ok {
+				return err
+			}
+			return putRun(ctx, q, r)
+		}); err != nil || gone {
+			return err
+		}
 		s.mu.Lock()
 		if out.overQuota {
 			s.quotaWait[a.QuotaKey] = s.now().Add(time.Duration(s.cfg.Runner.QuotaBackoff))
@@ -431,8 +460,7 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 			s.emit(pa.Event{Type: "run.waiting", Artifact: a.ID, RunID: r.ID, Status: pa.RunPending, Waiting: kind, Reason: out.reason})
 		}
 		s.log.Info("run waits", "run", r.ID, "quota_key", a.QuotaKey, "over_quota", out.overQuota, "reason", out.reason)
-		r.Status, r.StartedAt, r.Version, r.Reason = pa.RunPending, nil, 0, "waiting: "+out.reason
-		return putRun(ctx, s.st.db, r)
+		return nil
 	}
 	now := s.now()
 	if b, err := json.Marshal(out.logs); err == nil {
@@ -445,6 +473,9 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 	s.mu.Unlock()
 	var notify string
 	err := s.st.tx(ctx, func(q querier) error {
+		if ok, err := keep(q); !ok {
+			return err
+		}
 		r.Status, r.Reason, r.ExitCode, r.FinishedAt = out.status, out.reason, out.exitCode, &now
 		if r.StartedAt != nil {
 			r.DurationMS = now.Sub(*r.StartedAt).Milliseconds()
@@ -459,7 +490,7 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 		}
 		return touchArtifact(ctx, q, a.ID, now)
 	})
-	if err != nil {
+	if err != nil || gone {
 		return err
 	}
 	s.mu.Lock()

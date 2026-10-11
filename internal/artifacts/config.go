@@ -247,6 +247,9 @@ func (c *Config) Validate() error {
 		}
 		c.Runner.DBURL = strings.TrimRight(c.Runner.DBURL, "/")
 	}
+	if d := time.Duration(c.Limits.DeleteAfter); d > 0 && d < time.Minute {
+		return fmt.Errorf("limits.delete_after must be at least 1m (0 = never)")
+	}
 	if c.Limits.EventRetention <= 0 {
 		c.Limits.EventRetention = api.Duration(24 * time.Hour)
 	}

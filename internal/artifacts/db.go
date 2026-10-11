@@ -331,7 +331,7 @@ func (s *Service) Write(ctx context.Context, id string, writes []pa.DBWrite, acc
 			}
 		}
 	}
-	now := s.now().Truncate(time.Millisecond) // as stored, so a write's answer matches a read
+	now := s.now()
 	var out []pa.Doc
 	err := s.st.tx(ctx, func(q querier) error {
 		a, err := getArtifact(ctx, q, id)

@@ -673,14 +673,26 @@ derived from the owner's credentials).
 ## Retention and garbage collection
 
 - **Versions** are always kept; the db is kept with its artifact.
+- **Deleting an artifact** removes, at once, its versions and files, its
+  db, job, runs and runner sandbox, and its storage stops counting for
+  its quota key. Its events stay until `limits.event_retention`, its blobs
+  until GC (below). A run in progress at the time is stopped with its
+  runner and leaves no record.
 - **Inactive artifacts:** with `delete_after` set (on the artifact, else
   `limits.delete_after`; 0 means never, negative means never for that
-  artifact), an artifact with no reads, publishes or runs for that long is
-  deleted, along with its runner sandbox.
+  artifact; at least 1m, since reads count as activity once a minute), an
+  artifact with no reads, publishes or runs for that long is deleted,
+  along with its runner sandbox. A schedule's runs are activity, but a
+  schedule stops at the end of its window.
 - **Run records:** finished runs and their logs are kept for 30 days.
-- **Blobs:** blobs that no version or log references are deleted on
-  the next GC (`gc_interval`). Blobs younger than 2 hours are kept, which
-  covers uploads waiting for their publish.
+- **Events** are kept for `limits.event_retention` (24h).
+- **Blobs:** blobs (and chunked files) that no version or log references
+  are deleted by GC, every `gc_interval` (1h), once they're 2 hours old,
+  which covers uploads waiting for their publish. Blobs are shared, so a
+  file other artifacts have stays.
+- **`POST /v1/gc`** runs GC now and answers what it removed:
+  `{"artifacts_deleted", "runs_pruned", "events_pruned", "blobs_removed",
+  "bytes_freed"}` (Go: `GC`).
 
 ## API
 
@@ -706,7 +718,7 @@ left alone; `labels` and `meta` are merged as a JSON merge patch (RFC 7386):
 | Db | `GET/PUT/PATCH/DELETE /artifacts/{id}/db/{path}`, `POST /artifacts/{id}/db` (batch), `DELETE /artifacts/{id}/db` (see The db) |
 | Runs | `GET /artifacts/{id}/runs?status=&limit=`, `GET /artifacts/{id}/runs/{run}`, `GET …/runs/{run}/logs` |
 | Quotas | `GET/PUT /quotas/{key}` |
-| Ops | `GET /events` (SSE), `GET /healthz` |
+| Ops | `GET /events` (SSE), `POST /gc`, `GET /healthz` |
 
 ## Running it
 

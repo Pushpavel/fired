@@ -577,6 +577,13 @@ func TestGC(t *testing.T) {
 	}
 	h.svc.GC(ctx)
 	must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{{Path: "a", Hash: orphan}}}}))(t)
+
+	// Under a minute is refused: reads count as activity once a minute.
+	_, err := h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u", DeleteAfter: pa.Duration(2 * time.Second), Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", "x")}}})
+	wantCode(t, err, 400, "invalid_request")
+	short := pa.Duration(time.Second)
+	_, err = h.c.Update(ctx, keep.Artifact.ID, pa.UpdateArtifactRequest{DeleteAfter: &short})
+	wantCode(t, err, 400, "invalid_request")
 }
 
 func TestCreateNeedsFirstVersion(t *testing.T) {

@@ -434,6 +434,22 @@ type CredentialsResponse struct {
 	SecretFiles map[string]string `json:"secret_files,omitempty"`
 }
 
+// ---- garbage collection
+
+// GCResult is what a garbage collection removed (POST /v1/gc).
+type GCResult struct {
+	// ArtifactsDeleted were past their delete_after.
+	ArtifactsDeleted []string `json:"artifacts_deleted,omitempty"`
+	// RunsPruned finished more than 30 days ago; EventsPruned are older
+	// than limits.event_retention.
+	RunsPruned   int `json:"runs_pruned"`
+	EventsPruned int `json:"events_pruned"`
+	// BlobsRemoved and BytesFreed (compressed, on disk): blobs nothing
+	// references, older than the 2h grace for uploads awaiting a publish.
+	BlobsRemoved int   `json:"blobs_removed"`
+	BytesFreed   int64 `json:"bytes_freed"`
+}
+
 // ---- events
 
 // MaxEventPaths is the most paths a db.changed event lists.
