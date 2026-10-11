@@ -887,7 +887,8 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 
 // Fork creates a new artifact whose first version has the files of
 // id@version, with a copy of the source's db except _private/ (the
-// source's owner's). The job is copied (it's in artifact.json) but inactive
+// source's owner's) when that's the current version (an older version's
+// fork starts with an empty db). The job is copied (it's in artifact.json) but inactive
 // until the new artifact is published to or granted.
 func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.Artifact, error) {
 	if req.QuotaKey == "" {
@@ -948,8 +949,12 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		if err := putArtifact(ctx, q, out); err != nil {
 			return err
 		}
-		if err := copyDocs(ctx, q, id, newIDv, now); err != nil {
-			return err
+		// The db is the current version's data: an older version's page
+		// may expect another shape, so its fork starts with an empty one.
+		if n == src.CurrentVersion {
+			if err := copyDocs(ctx, q, id, newIDv, now); err != nil {
+				return err
+			}
 		}
 		// The files were checked against the new key's storage; the
 		// documents it gets count too.

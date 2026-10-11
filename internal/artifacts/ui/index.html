@@ -1461,7 +1461,7 @@ const dlgFork = $("#dlg-fork");
 function forkDialog(n) {
   const f = dlgFork.querySelector("form"); f.reset(); dlgFork.returnValue = ""; dlgFork.dataset.version = n;
   $("#dlg-fork-title").textContent = `Fork v${n}`;
-  $("#fork-note").textContent = "The fork starts with this version's files and a copy of the db, except _private/. Blobs are shared, not copied. The job comes along but its schedule stays off until the new owner publishes.";
+  $("#fork-note").textContent = "The fork starts with this version's files and, if it's the current version, a copy of the db except _private/ (an older version's fork starts with an empty db). Blobs are shared, not copied. The job comes along but its schedule stays off until the new owner publishes.";
   f.elements.quota_key.value = S.art.quota_key; f.elements.title.value = titleOf(S.art) + " (fork)";
   dlgFork.showModal();
 }

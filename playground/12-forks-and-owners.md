@@ -39,10 +39,10 @@ of documents, forked into a key limited to 100 kB. Deleted afterwards.
   fork is now `413 quota_exceeded` ("500600 > 100000") and leaves nothing;
   with 1 MB it goes through. Tested.
 
-## Questions
+## Decided
 
-- **Should forking an older version copy the db?** The db is the current
-  version's data; an older version's page may expect another shape (the
-  same reason pinned views are read-only). Options: copy it only when
-  forking the current version (an older version starts empty), or always
-  copy it, or never.
+- **Only a fork of the current version gets the db** (after 12): an
+  older version's fork starts with an empty db. The backend decides who
+  forks what: someone forking an artifact shared with them gets its latest
+  version (they never see the others); an owner duplicating their own
+  artifact may pick any version.

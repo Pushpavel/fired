@@ -360,8 +360,14 @@ Runs).
   `"unchanged": true`, like a publish.
 - **Fork:** `POST /v1/artifacts/{id}/fork {"quota_key": "u2", "version": 4}`
   creates a new artifact whose v1 has v4's files (blobs are shared, nothing
-  is copied) and a copy of the source's db, except `_private/`, which was
-  the source owner's; `"title"` renames the fork in its `artifact.json`.
+  is copied) and, if v4 is the current version (the default), a copy of
+  the source's db except `_private/`, which was the source owner's. A fork
+  of an older version starts with an empty db: the db is the current
+  version's data, which an older page may not understand. `"title"`
+  renames the fork in its `artifact.json`. Which versions someone may fork
+  is your backend's call (say, the latest of an artifact shared with them,
+  any of their own); the fork's storage, documents included, counts
+  against its new quota key.
   The job comes along, but its schedule is off until the new owner
   publishes or a grant turns it on.
 - **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of the

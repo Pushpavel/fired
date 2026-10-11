@@ -1140,6 +1140,22 @@ func TestDB(t *testing.T) {
 		}
 	})
 
+	t.Run("only a fork of the current version gets the db", func(t *testing.T) {
+		cur := must(c.Fork(ctx, "app", pa.ForkRequest{ID: "app-cur", QuotaKey: "u"}))(t)
+		old := must(c.Fork(ctx, "app", pa.ForkRequest{ID: "app-old", QuotaKey: "u", Version: 1}))(t)
+		if l := must(c.Query(ctx, cur.ID, "", pa.DocQuery{}))(t); len(l.Docs) == 0 {
+			t.Fatal("a fork of the current version has no db")
+		}
+		if l := must(c.Query(ctx, old.ID, "", pa.DocQuery{}))(t); len(l.Docs) != 0 {
+			t.Fatalf("a fork of v1 got the current db: %+v", l.Docs)
+		}
+		for _, id := range []string{cur.ID, old.ID} {
+			if err := c.Delete(ctx, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+
 	t.Run("a fork's documents count against its key's storage", func(t *testing.T) {
 		// Room for the version's files, not for its documents.
 		must(c.SetDoc(ctx, "app", "other/x", map[string]any{"s": strings.Repeat("x", 180)}))(t)
