@@ -31,8 +31,8 @@ Each use case gets its own file, `NN-name.md`, written as we go:
 - fired-artifacts charging runs to the user's `artifacts` pool;
 - the Helm chart, Skaffold and CD in [.k8s/](../.k8s/README.md).
 
-**Next: 05, a scheduled job** (cron + timezone, `writes`, run versions, a
-run that changes nothing, the 12h activity window, expiry).
+**Next: 06, job state** (the `state` dir across runs, state on a failed run,
+state not copied on fork).
 
 ## Use cases
 
@@ -42,7 +42,7 @@ run that changes nothing, the 12h activity window, expiry).
 | 02 | Editing over time | publish as a patch, labels, `base_version` conflicts (409), compare, restore, zip export | done: [02-editing.md](02-editing.md) |
 | 03 | The view | artifact.json `view`: a `page` (HTML plus its folder) or one file the frontend renders (markdown, csv, json, code, svg, image); validation; a view whose entry goes away; pages for the examples | done: [03-the-page.md](03-the-page.md) |
 | 04 | Uploading a build | blobs, `/blobs/missing` dedup, folder upload with `replace_dirs`, size and file limits | done: [04-uploading-a-build.md](04-uploading-a-build.md) |
-| 05 | A scheduled job | cron + timezone, `writes`, run versions, a run that changes nothing, the 12h activity window, expiry | not started |
+| 05 | A scheduled job | cron + timezone, `writes`, run versions, a run that changes nothing, the 12h activity window, expiry | done: [05-a-scheduled-job.md](05-a-scheduled-job.md) |
 | 06 | Job state | the `state` dir across runs, state on a failed run, state not copied on fork | not started |
 | 07 | Triggers and backlogs | manual triggers with payloads, `on_busy` latest (superseded) vs queue (max, max_age, queue_full) | not started |
 | 08 | Failures | non-zero exit, timeout (SIGTERM/SIGKILL), logs, retry behavior when fired is unavailable | not started |

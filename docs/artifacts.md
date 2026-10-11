@@ -132,7 +132,7 @@ and an entry that goes away fails the publish.
 | Field | Meaning |
 |---|---|
 | `run` | Command, run with `/bin/sh -c` in the artifact's directory. Required. |
-| `writes` | Files or directories the job may change. A successful run's changes under these paths become a new version; everything else is read-only to the job. A job can't write `artifact.json`. |
+| `writes` | Files or directories the job may change. A successful run's changes under these paths become a new version; changes anywhere else are discarded (the job can make them in its sandbox, they just don't land). A job can't write `artifact.json`. |
 | `state` | A directory carried from one run to the next (cursors, caches). It is not part of the files, not served, and not copied by a fork. It must not overlap `writes` or contain published files. |
 | `schedule` | 5-field cron (`minute hour day month weekday`) or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`. Empty means the job only runs when triggered. |
 | `timezone` | IANA zone for the schedule (default UTC). |
@@ -396,7 +396,9 @@ A pending run starts only when all of these allow it:
   (`503`) is retried on the next tick.
 
 Separately, schedule firings closer together than the quota key's
-`min_interval` (and `limits.min_interval`) are skipped.
+`min_interval` (and `limits.min_interval`) are skipped. A job's `next_run`
+already accounts for that (it's the next slot that will fire), and is left
+out when that's after the window closes.
 
 This service's per-key limits are storage and `min_interval`, from
 **tiers**. Which tier a key is in is fired's single mapping

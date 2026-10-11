@@ -472,8 +472,20 @@ func TestScheduleFiring(t *testing.T) {
 	ctx := context.Background()
 	must(h.c.PutTier(ctx, pa.Tier{Name: pa.DefaultTier, Limits: pa.Quota{MinInterval: pa.Duration(15 * time.Minute)}}))(t)
 	res := must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
-		Spec: &pa.Spec{Jobs: map[string]pa.Job{"poll": {Run: "true", Schedule: "*/5 * * * *"}}}}}))(t)
+		Spec: &pa.Spec{Jobs: map[string]pa.Job{"poll": {Run: "true", Schedule: "*/5 * * * *"}, "daily": {Run: "true", Schedule: "0 3 * * *"}}}}}))(t)
 	id := res.Artifact.ID
+	next := func(job string) *time.Time {
+		for _, j := range must(h.c.Jobs(ctx, id))(t) {
+			if j.Name == job {
+				return j.NextRun
+			}
+		}
+		return nil
+	}
+	// 03:00 tomorrow is after the 12h window: no next run to show.
+	if n := next("daily"); n != nil {
+		t.Fatalf("next run past the window: %v", n)
+	}
 	fire := func() {
 		if err := h.svc.fireSchedules(ctx); err != nil {
 			t.Fatal(err)
@@ -490,7 +502,11 @@ func TestScheduleFiring(t *testing.T) {
 	if r := runs(); len(r) != 1 || r[0].Status != pa.RunPending || r[0].Trigger != pa.TriggerSchedule {
 		t.Fatalf("after 5m: %+v", r)
 	}
-	// The quota's 15m minimum interval skips the next two slots.
+	// The quota's 15m minimum interval skips the next two slots, and
+	// next_run says so.
+	if n := next("poll"); n == nil || !n.Equal(h.now.Add(15*time.Minute)) {
+		t.Fatalf("next run after firing: %v, want %v", n, h.now.Add(15*time.Minute))
+	}
 	h.now = h.now.Add(5 * time.Minute)
 	fire()
 	h.now = h.now.Add(5 * time.Minute)
@@ -504,11 +520,31 @@ func TestScheduleFiring(t *testing.T) {
 	if len(r) != 2 || r[1].Status != pa.RunSuperseded {
 		t.Fatalf("after 20m (latest replaces pending): %+v", r)
 	}
-	// Missed slots while down fire once.
-	h.now = h.now.Add(3 * time.Hour)
+	// Intervals count from the slot, not from when the scheduler got to
+	// it: with a 5m minimum, a */5 schedule fired 3s late keeps its pace.
+	must(h.c.PutTier(ctx, pa.Tier{Name: pa.DefaultTier, Limits: pa.Quota{MinInterval: pa.Duration(5 * time.Minute)}}))(t)
+	h.svc.tiers = map[string]tierEntry{}
+	h.now = h.now.Add(15*time.Minute + 3*time.Second) // the 10:35 slot, 3s late
 	fire()
-	if n := len(runs()); n != 3 {
-		t.Fatalf("catch-up fired %d times", n-2)
+	if n := next("poll"); n == nil || !n.Equal(h.now.Truncate(time.Minute).Add(5*time.Minute)) {
+		t.Fatalf("next run after a late firing: %v (now %v)", n, h.now)
+	}
+	h.now = h.now.Add(5 * time.Minute)
+	before := len(runs())
+	fire()
+	if len(runs()) != before+1 {
+		t.Fatal("the next slot after a late firing was skipped")
+	}
+	// Missed slots while down fire once.
+	before = len(runs())
+	h.now = h.now.Add(3*time.Hour + 4*time.Minute + 55*time.Second) // 13:44:58, 2s before a slot
+	fire()
+	if n := len(runs()); n != before+1 {
+		t.Fatalf("catch-up fired %d times", n-before)
+	}
+	// The slot 2s after a catch-up firing is too close to it.
+	if n := next("poll"); n == nil || n.Sub(h.now) < 5*time.Minute-h.svc.fireSlack() {
+		t.Fatalf("next run %v right after a catch-up at %v", n, h.now)
 	}
 }
 

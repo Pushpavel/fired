@@ -82,6 +82,41 @@ func dueJobs(ctx context.Context, q querier, now time.Time) ([][2]string, error)
 	return out, rows.Err()
 }
 
+// minInterval is the shortest gap between firings of a key's schedules:
+// limits.min_interval, or the key's own if longer.
+func (s *Service) minInterval(ctx context.Context, q querier, key string) (time.Duration, error) {
+	quota, err := s.effectiveQuota(ctx, q, key)
+	if err != nil {
+		return 0, err
+	}
+	interval := time.Duration(s.cfg.Limits.MinInterval)
+	if m := time.Duration(quota.MinInterval); m > interval {
+		interval = m
+	}
+	return interval, nil
+}
+
+// nextFire is the first slot of c a schedule that last fired at last may
+// fire at, so next_run is always a time it will run: firings are at least
+// interval apart, less slack for the scheduler getting to a slot a few
+// seconds late (or an every-minute schedule would skip every other slot).
+// A catch-up firing after downtime counts from when it happened, so the
+// next slot can't follow it a second later.
+func nextFire(c *Cron, last, now time.Time, interval, slack time.Duration) time.Time {
+	if !last.IsZero() {
+		if from := last.Add(interval - slack); from.After(now) {
+			// the first slot at or after from
+			return c.Next(from.Add(time.Minute - time.Nanosecond).Truncate(time.Minute).Add(-time.Second))
+		}
+	}
+	return c.Next(now)
+}
+
+// fireSlack is how late the scheduler may get to a due slot.
+func (s *Service) fireSlack() time.Duration {
+	return time.Duration(s.cfg.SchedulerInterval) + time.Second
+}
+
 // fireSchedules turns due schedules into pending runs. A schedule missed
 // while the service was down fires once, not once per missed slot.
 func (s *Service) fireSchedules(ctx context.Context) error {
@@ -113,27 +148,24 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 				r.SchedKey, r.NextAt = "", time.Time{}
 				return putJob(ctx, q, r)
 			}
-			r.NextAt = c.Next(now)
-			if st := s.jobStatus(job, raw, r, 0, now); st.State != pa.JobScheduled {
-				return putJob(ctx, q, r)
-			}
 			a, err := getArtifact(ctx, q, id)
 			if err != nil {
 				return err
 			}
-			quota, err := s.effectiveQuota(ctx, q, a.QuotaKey)
+			interval, err := s.minInterval(ctx, q, a.QuotaKey)
 			if err != nil {
 				return err
 			}
-			interval := time.Duration(s.cfg.Limits.MinInterval)
-			if m := time.Duration(quota.MinInterval); m > interval {
-				interval = m
+			r.NextAt = nextFire(c, r.LastFireAt, now, interval, s.fireSlack())
+			if st := s.jobStatus(job, raw, r, 0, now); st.State != pa.JobScheduled {
+				return putJob(ctx, q, r)
 			}
-			if !r.LastFireAt.IsZero() && now.Sub(r.LastFireAt) < interval-time.Second {
+			if !r.LastFireAt.IsZero() && now.Before(r.LastFireAt.Add(interval-s.fireSlack())) {
 				s.log.Debug("schedule skipped: min interval", "artifact", id, "job", job, "interval", interval)
 				return putJob(ctx, q, r)
 			}
 			r.LastFireAt = now
+			r.NextAt = nextFire(c, now, now, interval, s.fireSlack())
 			if err := putJob(ctx, q, r); err != nil {
 				return err
 			}

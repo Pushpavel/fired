@@ -40,7 +40,15 @@ func (s *Service) syncJobs(ctx context.Context, q querier, id string, spec pa.Sp
 				if err != nil {
 					return badRequest("jobs.%s: %v", name, err)
 				}
-				r.SchedKey, r.NextAt = key, c.Next(now)
+				a, err := getArtifact(ctx, q, id)
+				if err != nil {
+					return err
+				}
+				interval, err := s.minInterval(ctx, q, a.QuotaKey)
+				if err != nil {
+					return err
+				}
+				r.SchedKey, r.NextAt = key, nextFire(c, r.LastFireAt, now, interval, s.fireSlack())
 			}
 		}
 		if err := putJob(ctx, q, r); err != nil {
@@ -79,7 +87,8 @@ func (s *Service) jobStatus(name string, raw pa.Job, r jobRow, pending int, now 
 		if u := r.activeUntil(); !u.IsZero() {
 			st.ActiveUntil = &u
 		}
-		if st.State == pa.JobScheduled && !r.NextAt.IsZero() {
+		// Only a run that will happen: not one past the window's end.
+		if st.State == pa.JobScheduled && !r.NextAt.IsZero() && r.NextAt.Before(r.activeUntil()) {
 			n := r.NextAt
 			st.NextRun = &n
 		}
