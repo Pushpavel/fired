@@ -6,8 +6,9 @@ design is in [docs/artifacts.md](../docs/artifacts.md).
 
 Setup (from 2026-10-10, real VMs): `make dev-vm` runs fired from its image
 with Firecracker (KVM in WSL2), on 127.0.0.1:8443 with its console at /ui/;
-`make dev-artifacts` runs fired-artifacts (console at
-http://127.0.0.1:8444/ui/). Token `dev` for both. fired's `base` template is
+`make dev-artifacts` runs fired-artifacts from the same image, as its own
+container (console at http://127.0.0.1:8444/ui/, data in `.dev/artifacts`).
+Only Docker is needed, no Go toolchain. Token `dev` for both. fired's `base` template is
 `python:3.12-slim-bookworm`. (01 was done on the fake driver, where jobs
 couldn't open `$TRIGGER_FILE`; that quirk doesn't exist with real VMs.)
 
@@ -31,8 +32,8 @@ Each use case gets its own file, `NN-name.md`, written as we go:
 
 **Next: resume with 02, editing over time.** The `hello-page` artifact from
 01 is still in the dev service (fired-artifacts keeps its own SQLite; fired's
-dev state moved to Postgres, so 01's runner sandbox and template are gone:
-recreate the `base` template before job use cases).
+dev state moved to Postgres; the `base` template was recreated there on
+2026-10-10 and is ready).
 
 ## Use cases
 
