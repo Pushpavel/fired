@@ -12,7 +12,7 @@ def owner_of(aid):
         except Exception: o = (None, time.time())
         owners[aid] = o
     return o[0]
-STRIP = {"x-artifact", "x-artifact-version", "x-artifact-owner", "x-fired-token", "authorization", "cookie", "host"}
+STRIP = {"x-artifact", "x-artifact-version", "x-artifact-owner", "x-artifact-viewer", "x-fired-token", "authorization", "cookie", "host"}
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def handle_one(self):
@@ -31,6 +31,7 @@ class H(BaseHTTPRequestHandler):
         hdrs.update({"X-Fired-Token": TOKEN, "X-Artifact": aid})
         if ver: hdrs["X-Artifact-Version"] = ver
         if user and user == owner_of(aid): hdrs["X-Artifact-Owner"] = "true"
+        hdrs["X-Artifact-Viewer"] = user or self.client_address[0]  # for read limits
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0)) or None
         conn = http.client.HTTPConnection(API, timeout=300)
         conn.request(self.command, self.path, body=body, headers=hdrs)

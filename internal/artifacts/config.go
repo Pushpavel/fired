@@ -81,9 +81,14 @@ type LimitsConfig struct {
 	MaxConcurrentRuns int `yaml:"max_concurrent_runs"`
 	// MinInterval is the shortest schedule interval for anyone.
 	MinInterval api.Duration `yaml:"min_interval"`
-	// ServeRPS / ServeBurst rate-limit file reads per artifact.
+	// ServeRPS / ServeBurst rate-limit reads (view files, the db) per
+	// viewer of an artifact (X-Artifact-Viewer, from your backend).
 	ServeRPS   float64 `yaml:"serve_rps"`
 	ServeBurst int     `yaml:"serve_burst"`
+	// ServeArtifactRPS / ServeArtifactBurst cap an artifact's reads across
+	// all its viewers.
+	ServeArtifactRPS   float64 `yaml:"serve_artifact_rps"`
+	ServeArtifactBurst int     `yaml:"serve_artifact_burst"`
 	// MaxDocBytes caps one db document, MaxDocs the documents of one
 	// artifact, MaxBatchWrites the writes of one batch.
 	MaxDocBytes    int `yaml:"max_doc_bytes"`
@@ -145,6 +150,8 @@ func DefaultConfig() Config {
 			MinInterval:        api.Duration(time.Minute),
 			ServeRPS:           50,
 			ServeBurst:         100,
+			ServeArtifactRPS:   1000,
+			ServeArtifactBurst: 2000,
 			MaxDocBytes:        1 << 20,
 			MaxDocs:            10000,
 			MaxBatchWrites:     500,

@@ -281,12 +281,12 @@ func (s *Service) previewTarget(hostport string) (id string, n int, owner, ok bo
 // service's: /.fired/db.js is the client for pages, /.fired/db/ the db,
 // which owner may write, and /.fired/job the job, which owner may run
 // (not in a view pinned to a version).
-func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n int, owner bool) {
+func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n int, owner bool, viewer string) {
 	if p, ok := strings.CutPrefix(r.URL.Path, "/.fired/"); ok {
 		// A view pinned to a version is a look at the past: its page reads
 		// the (unversioned) db but doesn't write it or run the job, even
 		// for the owner, so an old page can't write an old shape of data.
-		s.serveViewDB(w, r, id, p, owner && n == 0)
+		s.serveViewDB(w, r, id, p, owner && n == 0, viewer)
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -294,7 +294,7 @@ func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n
 		return
 	}
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	if !s.allowRead(id) {
+	if !s.allowRead(id, viewer) {
 		w.Header().Set("Retry-After", "1")
 		writeErr(w, errf(http.StatusTooManyRequests, "rate_limited", "too many requests for this artifact"))
 		return
@@ -337,9 +337,9 @@ func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n
 var dbJS string
 
 // serveViewDB serves /.fired/{p} of a view: the client, the db and the job.
-func (s *Service) serveViewDB(w http.ResponseWriter, r *http.Request, id, p string, owner bool) {
+func (s *Service) serveViewDB(w http.ResponseWriter, r *http.Request, id, p string, owner bool, viewer string) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	if !s.allowRead(id) {
+	if !s.allowRead(id, viewer) {
 		w.Header().Set("Retry-After", "1")
 		writeErr(w, errf(http.StatusTooManyRequests, "rate_limited", "too many requests for this artifact"))
 		return

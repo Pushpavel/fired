@@ -41,8 +41,10 @@ limits:
   # mapping, compute from fired's tiers. See docs/cluster.md.
   max_concurrent_runs: 8        # runs this service drives at once
   min_interval: 1m              # shortest schedule interval for anyone
-  serve_rps: 50                 # file reads per artifact per second
+  serve_rps: 50                 # reads (view files, db) per viewer of an artifact per second
   serve_burst: 100
+  serve_artifact_rps: 1000      # an artifact's reads across all its viewers
+  serve_artifact_burst: 2000
   max_doc_bytes: 1048576        # one db document
   max_docs: 10000               # documents per artifact
   max_batch_writes: 500

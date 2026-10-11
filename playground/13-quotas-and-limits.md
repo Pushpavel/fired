@@ -68,6 +68,13 @@ overrides and artifacts were removed afterwards.
   failed). Tested (fake driver, a free-space hook) and with real VMs: the
   ten-run burst again, all ten `succeeded`, 7 sandboxes archived for room,
   no snapshot failures, the hot tier at 54% afterwards.
-- **Reads are limited per viewer**, with a higher limit per artifact (see
-  below).
+- **Reads are limited per viewer, with a higher limit per artifact:**
+  your backend names the viewer in `X-Artifact-Viewer` (a user ID, or the
+  client's address); each viewer of an artifact gets `serve_rps` (50/s,
+  bursts of 100), the artifact `serve_artifact_rps` (1000/s, bursts of
+  2000) across all of them. Reads without a viewer share one "anonymous"
+  one; the files API counts as one viewer, console previews as another.
+  Idle limits are dropped after 5 minutes. Tested: one viewer over their
+  limit doesn't hold back another; many viewers together hit the
+  artifact's.
 - **GB-hours at admission, and waiting until the day resets:** kept as is.

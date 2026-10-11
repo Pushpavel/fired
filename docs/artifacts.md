@@ -297,7 +297,9 @@ Runs).
   domain artifacts are viewed on and decides who may see what. It forwards
   a viewer's request unchanged (same path and query) with the API token
   and `X-Artifact: <id>`, plus optionally `X-Artifact-Version: <n>` (absent
-  or `current` follows the current version). It gets the artifact's view:
+  or `current` follows the current version) and `X-Artifact-Viewer: <id>`
+  (who's viewing, opaque: a user ID, or the client's address for anonymous
+  visitors; reads are rate limited per viewer). It gets the artifact's view:
   - `/` is the entry, as it is, with `X-Artifact-View: <type>` and
     `X-Artifact-View-Name: <file name>`. For a `page`, frame it and you're
     done; for other types, render it (and "copy source" is this response).
@@ -326,12 +328,14 @@ Runs).
     `<id>--v3.…`): pages are user-generated code, and an origin is what
     keeps one from reading another's data.
   - **Strip** `X-Artifact`, `X-Artifact-Version`, `X-Artifact-Owner`,
-    `X-Fired-Token` and `Authorization` from what the browser sends, then
+    `X-Artifact-Viewer`, `X-Fired-Token` and `Authorization` from what the browser sends, then
     set them yourself. The service trusts them: a forwarded
     `X-Artifact-Owner` from a viewer would make them the owner. Don't
     forward your cookies either; the service doesn't use them.
   - **Decide the owner** from your own session (a cookie on the viewing
-    domain), per request.
+    domain), per request, and **name the viewer** in `X-Artifact-Viewer`
+    (their user ID, else their address), so one busy viewer is limited
+    without holding back everyone else.
   - **Add `Content-Security-Policy: frame-ancestors`** for the origins
     allowed to frame artifacts (your app), so another site can't frame one
     and click through it.
@@ -350,7 +354,12 @@ Runs).
   file, current version by default: the owner's raw access, not the view.
   There are no index files; `?download` makes it an attachment. Responses carry `ETag` (the blob hash) and
   `X-Artifact-Version`. With `?version=` they are cacheable forever; without
-  it, `no-cache`. Reads are rate limited per artifact (`limits.serve_rps`).
+  it, `no-cache`. Reads are rate limited: per viewer of an artifact
+  (`limits.serve_rps`, 50/s, bursts of 100; `X-Artifact-Viewer`, see
+  above; routed reads without it share one "anonymous" viewer, this API
+  counts as one viewer) and per artifact across its viewers
+  (`limits.serve_artifact_rps`, 1000/s, bursts of 2000). Over a limit is
+  `429` with `Retry-After`.
   Serve artifact files to viewers from a separate registrable domain, since
   they are user-generated HTML and JS.
 - **Restore:** `POST /v1/artifacts/{id}/restore {"version": 3,

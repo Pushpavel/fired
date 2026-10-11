@@ -36,8 +36,10 @@ type Service struct {
 	mu      sync.Mutex
 	running map[string]string   // artifact → run id
 	live    map[string]*liveRun // run id → what a running job's requests need
-	buckets map[string]*bucket
-	touched map[string]time.Time
+	buckets map[string]*bucket  // read limits: artifact, and artifact+viewer
+	// bucketsPruned is when idle buckets were last dropped.
+	bucketsPruned time.Time
+	touched       map[string]time.Time
 	// quotaWait: until when a quota key's runs wait, after fired refused
 	// one for that key's limits.
 	quotaWait map[string]time.Time

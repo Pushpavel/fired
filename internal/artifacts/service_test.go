@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	mrand "math/rand/v2"
@@ -1229,5 +1230,37 @@ func TestRunWaitsForFired(t *testing.T) {
 	r := must(h.c.Run(ctx, "waits", run.ID))(t)
 	if r.Status != pa.RunPending || !strings.HasPrefix(r.Reason, "waiting: ") {
 		t.Fatalf("with fired down: %+v", r)
+	}
+}
+
+// Reads are limited per viewer, and per artifact across its viewers.
+func TestReadLimits(t *testing.T) {
+	h := newHarness(t, func(c *Config) {
+		c.Limits.ServeRPS, c.Limits.ServeBurst = 0.01, 2
+		c.Limits.ServeArtifactRPS, c.Limits.ServeArtifactBurst = 0.01, 5
+	})
+	ctx := context.Background()
+	must(h.c.Create(ctx, pa.CreateArtifactRequest{ID: "busy", QuotaKey: "u", Publish: &pa.PublishRequest{
+		Files: []pa.FileOp{pa.Text("index.html", "hi")}, Spec: &pa.Spec{View: &pa.View{Type: pa.ViewPage, Entry: "index.html"}}}}))(t)
+	get := func(viewer string) int {
+		req, _ := http.NewRequest("GET", h.srv.URL+"/", nil)
+		req.Header.Set("X-Fired-Token", testToken)
+		req.Header.Set("X-Artifact", "busy")
+		if viewer != "" {
+			req.Header.Set("X-Artifact-Viewer", viewer)
+		}
+		resp := must(http.DefaultClient.Do(req))(t)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	var codes []int
+	for _, v := range []string{"alice", "alice", "alice", "bob", "bob", "", "carol", "dave"} {
+		codes = append(codes, get(v))
+	}
+	// alice's third read is over her limit; bob isn't held back by her;
+	// the artifact's five reads are used up by carol's.
+	want := []int{200, 200, 429, 200, 200, 200, 429, 429}
+	if fmt.Sprint(codes) != fmt.Sprint(want) {
+		t.Fatalf("codes %v, want %v", codes, want)
 	}
 }

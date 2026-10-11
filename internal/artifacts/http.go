@@ -67,7 +67,7 @@ func (s *Service) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		if id, n, owner, ok := s.previewTarget(r.Host); ok {
-			s.serveView(w, r, id, n, owner)
+			s.serveView(w, r, id, n, owner, "preview")
 			return
 		}
 		// Header-routed requests always need the token: "/" is otherwise
@@ -369,38 +369,80 @@ func (s *Service) handleFork(w http.ResponseWriter, r *http.Request) {
 
 // ---- serving
 
-// bucket is a token bucket for per-artifact read rate limiting.
+// bucket is a token bucket for read rate limiting.
 type bucket struct {
 	tokens float64
 	last   time.Time
 }
 
-func (s *Service) allowRead(id string) bool {
-	rate, burst := s.cfg.Limits.ServeRPS, float64(s.cfg.Limits.ServeBurst)
-	if rate <= 0 {
-		return true
-	}
-	if burst < 1 {
-		burst = 1
-	}
-	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	b := s.buckets[id]
-	if b == nil {
-		b = &bucket{tokens: burst, last: now}
-		s.buckets[id] = b
-	}
+// refill adds the tokens earned since b.last, up to burst.
+func (b *bucket) refill(now time.Time, rate, burst float64) {
 	b.tokens += now.Sub(b.last).Seconds() * rate
 	if b.tokens > burst {
 		b.tokens = burst
 	}
 	b.last = now
-	if b.tokens < 1 {
-		return false
+}
+
+// anonymousViewer is who a routed read without X-Artifact-Viewer counts
+// as: they all share one limit, so send a viewer (a user ID, or the
+// client's address for anonymous visitors).
+const anonymousViewer = "anonymous"
+
+// allowRead applies the read limits: viewer's on artifact id
+// (limits.serve_rps) and the artifact's across all viewers
+// (limits.serve_artifact_rps).
+func (s *Service) allowRead(id, viewer string) bool {
+	l := s.cfg.Limits
+	type limit struct {
+		key         string
+		rate, burst float64
 	}
-	b.tokens--
+	var limits []limit
+	if l.ServeRPS > 0 {
+		limits = append(limits, limit{id + "\x00" + viewer, l.ServeRPS, max(float64(l.ServeBurst), 1)})
+	}
+	if l.ServeArtifactRPS > 0 {
+		limits = append(limits, limit{id, l.ServeArtifactRPS, max(float64(l.ServeArtifactBurst), 1)})
+	}
+	if len(limits) == 0 {
+		return true
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneBuckets(now)
+	bs := make([]*bucket, len(limits))
+	for i, lm := range limits {
+		b := s.buckets[lm.key]
+		if b == nil {
+			b = &bucket{tokens: lm.burst, last: now}
+			s.buckets[lm.key] = b
+		}
+		b.refill(now, lm.rate, lm.burst)
+		if b.tokens < 1 {
+			return false
+		}
+		bs[i] = b
+	}
+	for _, b := range bs {
+		b.tokens--
+	}
 	return true
+}
+
+// pruneBuckets drops buckets idle long enough to be full again, at most
+// once a minute (under s.mu).
+func (s *Service) pruneBuckets(now time.Time) {
+	if now.Sub(s.bucketsPruned) < time.Minute {
+		return
+	}
+	s.bucketsPruned = now
+	for k, b := range s.buckets {
+		if now.Sub(b.last) > 5*time.Minute {
+			delete(s.buckets, k)
+		}
+	}
 }
 
 // noteRead records activity for delete_after, at most once a minute.
@@ -424,7 +466,7 @@ const memServeLimit = 8 << 20
 // ?download makes it an attachment.
 func (s *Service) handleFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.allowRead(id) {
+	if !s.allowRead(id, "api") {
 		w.Header().Set("Retry-After", "1")
 		writeErr(w, errf(http.StatusTooManyRequests, "rate_limited", "too many requests for this artifact"))
 		return
@@ -530,7 +572,8 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 // API token. It gets the artifact's view: "/" is the page, other paths are
 // files of the page's folder, and /.fired/ is the db. X-Artifact-Owner: true
 // says the viewer is the artifact's owner, who may write the db and read
-// _private/; everyone else only reads the rest.
+// _private/; everyone else only reads the rest. X-Artifact-Viewer names
+// the viewer (opaque) for read limits.
 func (s *Service) handleRouted(w http.ResponseWriter, r *http.Request, id string) {
 	n, err := versionParam(r.Header.Get("X-Artifact-Version"))
 	if err != nil {
@@ -538,7 +581,11 @@ func (s *Service) handleRouted(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	owner, _ := strconv.ParseBool(r.Header.Get("X-Artifact-Owner"))
-	s.serveView(w, r, id, n, owner)
+	viewer := r.Header.Get("X-Artifact-Viewer")
+	if viewer == "" {
+		viewer = anonymousViewer
+	}
+	s.serveView(w, r, id, n, owner, viewer)
 }
 
 // handleExport streams a version's files as a zip, artifact.json
