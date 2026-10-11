@@ -56,20 +56,18 @@ overrides and artifacts were removed afterwards.
   fired (usually cached) before computing its next slot, and the service
   learns the tiers of every scheduled key at startup (at most 10s).
 
-## Questions
+## Decided and built (after 13)
 
-- **fired should make room in hot storage itself**, as it does for memory
-  (`evict_idle`): archive the least recently used suspended sandboxes to
-  cold storage when free space drops below a watermark. Without it, a
-  burst of suspended sandboxes blocks the host for up to `archive_after`.
-  (Separately, runners could use a shorter `archive_after` than 1h:
-  resuming an archived runner took ~1.5s.)
-- **The read rate limit is per artifact, shared by all viewers:** one page
-  load is several requests, so a popular shared page hits 50/s at a few
-  loads a second. Options: limit per viewer (your backend passes a viewer
-  key) with a higher per-artifact ceiling, or raise the defaults and leave
-  the rest to your CDN.
-- **GB-hours are checked at admission only**, so a key can overshoot by
-  one run; and a run over budget waits (retrying every minute) until the
-  day resets. Fine for `on_busy: latest` (one waiting run); a `queue` job
-  drops runs by `max_age`.
+- **fired makes room in hot storage itself:** `capacity.min_free_hot_mb`
+  (2048) is kept free; before a start, a memory snapshot or an unarchive,
+  and on every reaper tick, fired archives the least recently used
+  suspended or stopped sandboxes to cold storage until there's room. Room
+  is reserved for writes in flight, so concurrent snapshots don't all
+  count the same free space (the first version didn't: 8 runners
+  suspending in the same millisecond all saw ~8 GB free, and 8 snapshots
+  failed). Tested (fake driver, a free-space hook) and with real VMs: the
+  ten-run burst again, all ten `succeeded`, 7 sandboxes archived for room,
+  no snapshot failures, the hot tier at 54% afterwards.
+- **Reads are limited per viewer**, with a higher limit per artifact (see
+  below).
+- **GB-hours at admission, and waiting until the day resets:** kept as is.

@@ -68,8 +68,13 @@ mem_limit (56g)
  └─ sandbox disks + overhead         (~12g)
 ```
 
-- **If hot snapshots pile up**, shorten `ttl.archive_after` so suspended
-  sandboxes move to the HDD sooner.
+- **Hot snapshots can't fill the hot tier:** `capacity.min_free_hot_mb`
+  (2048) is kept free there. When a start, a memory snapshot or the reaper
+  would leave less, fired archives the least recently used suspended or
+  stopped sandboxes to the HDD first; only if nothing can be archived does
+  a create or resume fail, with `503 no_space`. Size the hot tier for the
+  memory of the sandboxes you want suspended there plus this; shorten
+  `ttl.archive_after` to move idle ones sooner.
 - **`capacity.evict_idle`** suspends the least recently used idle sandbox
   when a create or resume would exceed the budget. Without it, the call
   fails with `503 capacity`.

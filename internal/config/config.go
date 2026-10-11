@@ -137,6 +137,11 @@ type CapacityConfig struct {
 	// EvictIdle suspends the least recently used idle sandbox when a
 	// create/resume would exceed MaxRunningMemoryMB.
 	EvictIdle bool `yaml:"evict_idle"`
+	// MinFreeHotMB is kept free in the hot directory: when a start, a
+	// memory snapshot or the reaper would leave less, the least recently
+	// used suspended or stopped sandboxes are archived to cold storage
+	// first. 0 turns it off.
+	MinFreeHotMB int `yaml:"min_free_hot_mb"`
 }
 
 type DefaultsConfig struct {
@@ -211,6 +216,7 @@ func Default() Config {
 			MaxRunningMemoryMB: 16384,
 			MaxSandboxes:       0,
 			EvictIdle:          true,
+			MinFreeHotMB:       2048,
 		},
 		Defaults: DefaultsConfig{
 			VCPUs:    2,

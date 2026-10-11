@@ -103,4 +103,7 @@ func (m *Manager) ReapOnce(ctx context.Context) {
 		}(e, action)
 	}
 	wg.Wait()
+	// Suspended sandboxes' snapshots add up: keep the hot tier's minimum
+	// free (a burst of suspends is archived now, not at archive_after).
+	m.makeHotRoom(ctx, nil, 0)()
 }

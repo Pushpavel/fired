@@ -59,6 +59,10 @@ capacity:
   max_running_memory_mb: 32768
   max_sandboxes: 0
   evict_idle: true
+  # Kept free in the hot directory: when a start, a memory snapshot or the
+  # reaper would leave less, the least recently used suspended or stopped
+  # sandboxes are archived to the cold tier first. 0 turns it off.
+  min_free_hot_mb: 2048
 
 defaults:
   template: node

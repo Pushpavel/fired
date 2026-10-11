@@ -115,6 +115,11 @@ as busy and `idle_suspend` won't act on it.
   `capacity.evict_idle` is on, fired suspends the least recently active
   sandbox that has nothing in progress. Otherwise the request fails with
   `503 capacity`.
+- **Hot storage pressure.** Suspended sandboxes keep their memory snapshot
+  in the hot directory. When a start, a suspend or the reaper would leave
+  less than `capacity.min_free_hot_mb` free there, fired archives the least
+  recently active suspended or stopped sandboxes to the cold tier first
+  (`503 no_space` if that isn't enough).
 - **Explicit calls.** `POST /suspend`, `/archive` and `/resume` do the
   transition immediately. They are idempotent.
 - **Daemon shutdown.** On SIGTERM, `shutdown_action` decides what happens to

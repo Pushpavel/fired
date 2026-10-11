@@ -35,6 +35,14 @@ import (
 )
 
 type Manager struct {
+	// hotFreeHook replaces reading the hot directory's free space (tests).
+	hotFreeHook func() (int64, bool)
+	// hotMu serializes making room in the hot directory; hotPending (MB,
+	// under hotMu) is what writes in flight there (snapshots, starts) were
+	// promised, not yet visible in its free space.
+	hotMu      sync.Mutex
+	hotPending int64
+
 	cfg     config.Config
 	store   *store.Store
 	drv     vmm.Driver
@@ -529,16 +537,97 @@ func (m *Manager) reserveMem(ctx context.Context, self *entry, mb int) error {
 // capacity error, or returns nil. A sandbox's own disk being full is the
 // sandbox's problem, not capacity, so only the host's free space counts.
 func (m *Manager) hotFull(e *entry) error {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(m.cfg.Data.HotDir, &st); err != nil {
+	freeMB, ok := m.hotFreeMB()
+	if !ok {
 		return nil
 	}
-	freeMB := int64(st.Bavail) * int64(st.Bsize) >> 20
 	if need := int64(e.snapshot().MemoryMB) + 256; freeMB < need {
 		return errf(http.StatusServiceUnavailable, "no_space", "the host's hot storage is full (%d MB free, this sandbox needs about %d MB); try again later", freeMB, need)
 	}
 	return nil
 }
+
+// hotFreeMB is the free space in the hot directory.
+func (m *Manager) hotFreeMB() (int64, bool) {
+	if m.hotFreeHook != nil {
+		return m.hotFreeHook()
+	}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(m.cfg.Data.HotDir, &st); err != nil {
+		return 0, false
+	}
+	return int64(st.Bavail) * int64(st.Bsize) >> 20, true
+}
+
+// makeHotRoom keeps capacity.min_free_hot_mb free in the hot directory,
+// plus needMB for what's about to be written there (a sandbox starting, a
+// memory snapshot): it archives the least recently used suspended or
+// stopped sandboxes to cold storage until there's room, as evict_idle does
+// for memory. Without it, suspended sandboxes' snapshots fill the hot tier
+// and nothing can start until archive_after. self is never archived.
+//
+// It reserves needMB until the returned release is called (when the write
+// is done), so concurrent snapshots don't all count the same free space.
+func (m *Manager) makeHotRoom(ctx context.Context, self *entry, needMB int64) (release func()) {
+	keep := int64(m.cfg.Capacity.MinFreeHotMB)
+	if keep <= 0 {
+		return func() {}
+	}
+	m.hotMu.Lock()
+	defer m.hotMu.Unlock()
+	reserve := func() func() {
+		m.hotPending += needMB
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				m.hotMu.Lock()
+				m.hotPending -= needMB
+				m.hotMu.Unlock()
+			})
+		}
+	}
+	free, ok := m.hotFreeMB()
+	free -= m.hotPending
+	if !ok || free >= keep+needMB {
+		return reserve()
+	}
+	m.mu.Lock()
+	var cands []*entry
+	for _, e := range m.entries {
+		if e == self || e.busy.Load() > 0 {
+			continue
+		}
+		if st := e.snapshot().State; st == api.StateSuspended || st == api.StateStopped {
+			cands = append(cands, e)
+		}
+	}
+	m.mu.Unlock()
+	sort.Slice(cands, func(i, j int) bool { return cands[i].lastActive.Load() < cands[j].lastActive.Load() })
+	for _, c := range cands {
+		if free >= keep+needMB {
+			break
+		}
+		if !c.op.TryLock() {
+			continue
+		}
+		if st := c.snapshot().State; st == api.StateSuspended || st == api.StateStopped {
+			if err := m.archiveLocked(ctx, c); err != nil {
+				m.log.Warn("archive for hot storage room failed", "sandbox", c.id, "err", err)
+			} else {
+				m.log.Info("archived idle sandbox for hot storage room", "sandbox", c.id, "for", idOf(self))
+			}
+		}
+		c.op.Unlock()
+		if free, ok = m.hotFreeMB(); !ok {
+			break
+		}
+		free -= m.hotPending
+	}
+	return reserve()
+}
+
+// SetHotFree replaces the hot directory's free space reading (for tests).
+func (m *Manager) SetHotFree(f func() (int64, bool)) { m.hotFreeHook = f }
 
 func idOf(e *entry) string {
 	if e == nil {
@@ -706,6 +795,8 @@ func (m *Manager) Create(ctx context.Context, req api.CreateSandboxRequest) (*ap
 // startLocked boots/restores the VM, waits for the agent and syncs the
 // guest. Caller holds e.op and has reserved memory.
 func (m *Manager) startLocked(ctx context.Context, e *entry, mode vmm.Mode, t *api.Template) error {
+	release := m.makeHotRoom(ctx, e, int64(e.snapshot().MemoryMB)+256)
+	defer release()
 	err := m.startOnce(ctx, e, mode, t, false)
 	if err == nil {
 		return nil
@@ -917,7 +1008,13 @@ func (m *Manager) resumeLocked(ctx context.Context, e *entry) error {
 		}
 		m.setState(e, api.StateResuming, "")
 		start := time.Now()
-		if err := fsutil.Unpack(m.archivePath(e.id), m.drv.Workdir(e.id)); err != nil {
+		release := func() {}
+		if st, err := os.Stat(m.archivePath(e.id)); err == nil {
+			release = m.makeHotRoom(ctx, e, st.Size()>>20+int64(e.snapshot().MemoryMB))
+		}
+		err := fsutil.Unpack(m.archivePath(e.id), m.drv.Workdir(e.id))
+		release()
+		if err != nil {
 			_ = m.drv.Remove(e.id)
 			m.setState(e, api.StateArchived, "restore from archive failed: "+err.Error())
 			if full := m.hotFull(e); full != nil {
@@ -1010,9 +1107,13 @@ func (m *Manager) suspendIf(ctx context.Context, e *entry, cond func(*entry) boo
 		return nil
 	}
 	start := time.Now()
+	// The memory snapshot is written to the hot directory.
+	release := m.makeHotRoom(ctx, e, int64(e.snapshot().MemoryMB)+64)
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 	defer cancel()
-	if err := vm.Snapshot(sctx); err != nil {
+	err := vm.Snapshot(sctx)
+	release()
+	if err != nil {
 		m.log.Error("snapshot failed; stopping VM (disk is kept)", "sandbox", e.id, "err", err)
 		_ = vm.Stop()
 		m.release(e)

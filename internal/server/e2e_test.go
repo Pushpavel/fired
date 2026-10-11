@@ -624,6 +624,46 @@ func TestCapacityEviction(t *testing.T) {
 	}
 }
 
+// Suspended sandboxes' snapshots fill the hot tier: fired archives the
+// least recently used ones to keep capacity.min_free_hot_mb free.
+func TestHotStorageRoom(t *testing.T) {
+	e := newEnv(t, t.TempDir(), func(c *config.Config) { c.Capacity.MinFreeHotMB = 1000 })
+	defer e.close("")
+	ctx := context.Background()
+	e.template("small", false)
+	var ids []string
+	for i := 0; i < 3; i++ {
+		sb := must(e.c.CreateSandbox(ctx, api.CreateSandboxRequest{Template: "small", MemoryMB: 512}))(t)
+		ids = append(ids, sb.ID)
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, id := range ids {
+		must(e.c.Suspend(ctx, id))(t)
+	}
+	// Each sandbox not archived takes 2000 MB of a 5000 MB hot tier.
+	e.mgr.SetHotFree(func() (int64, bool) {
+		free := int64(5000)
+		for _, id := range ids {
+			if s, err := e.mgr.Get(id); err == nil && s.State != api.StateArchived && s.State != api.StateArchiving {
+				free -= 2000
+			}
+		}
+		return free, true
+	})
+	e.mgr.ReapOnce(ctx)
+	want := []api.SandboxState{api.StateArchived, api.StateSuspended, api.StateSuspended}
+	for i, id := range ids {
+		if s := must(e.c.GetSandbox(ctx, id))(t); s.State != want[i] {
+			t.Fatalf("sandbox %d (oldest first): %s, want %s", i, s.State, want[i])
+		}
+	}
+	// Starting one makes room for itself: the next oldest goes.
+	must(e.c.Resume(ctx, ids[2]))(t)
+	if s := must(e.c.GetSandbox(ctx, ids[1]))(t); s.State != api.StateArchived {
+		t.Fatalf("to resume the newest, the next oldest should be archived: %s", s.State)
+	}
+}
+
 func get(t *testing.T, url string, hdr map[string]string) (int, string) {
 	t.Helper()
 	req, _ := http.NewRequest("GET", url, nil)
