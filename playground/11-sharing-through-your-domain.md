@@ -52,9 +52,11 @@ a page attacking `u11-notes`). Chromium with `*.art.localhost` mapped to
   JSON 404s into your own pages. `/.fired/job` was missing from the list
   of view paths.
 
-## Questions
+## Decided
 
-- **Should an old pinned version's page write the db?** It may write an
-  older shape of data into the current db. Options: pinned views are
-  read-only for the db (the owner edits from the current version), or
-  leave it to pages.
+- **A pinned view is read-only** (after 11): with `X-Artifact-Version: <n>`
+  the page reads the db as any viewer does (not `_private/`), and neither
+  writes it nor runs the job, even for the owner. That holds even when n
+  is still the current version, so a pinned link doesn't change behaviour
+  when the next version is published. The console's Owner/Viewer switch
+  only shows on the current version.

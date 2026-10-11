@@ -307,6 +307,9 @@ Runs).
   - `/.fired/db.js` and `/.fired/db/…` are the db, for the page. Add
     `X-Artifact-Owner: true` when the viewer owns the artifact: the owner
     writes the db and reads `_private/`; everyone else only reads the rest.
+    A view pinned to a version (`X-Artifact-Version: <n>`) is read-only
+    for everyone, the owner included: the db isn't versioned, so an old
+    page mustn't write an old shape of data into it.
 
   - `/.fired/job` is the job's status, for anyone; the owner runs it with
     `POST /.fired/job/runs`.

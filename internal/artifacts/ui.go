@@ -279,10 +279,14 @@ func (s *Service) previewTarget(hostport string) (id string, n int, owner, ok bo
 // nothing outside it, not artifact.json). ?download on any of them is an
 // attachment. Without a view there is nothing to serve. /.fired/ is the
 // service's: /.fired/db.js is the client for pages, /.fired/db/ the db,
-// which owner may write, and /.fired/job the job, which owner may run.
+// which owner may write, and /.fired/job the job, which owner may run
+// (not in a view pinned to a version).
 func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n int, owner bool) {
 	if p, ok := strings.CutPrefix(r.URL.Path, "/.fired/"); ok {
-		s.serveViewDB(w, r, id, p, owner)
+		// A view pinned to a version is a look at the past: its page reads
+		// the (unversioned) db but doesn't write it or run the job, even
+		// for the owner, so an old page can't write an old shape of data.
+		s.serveViewDB(w, r, id, p, owner && n == 0)
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {

@@ -1030,6 +1030,24 @@ func TestDB(t *testing.T) {
 		if code, body, _ := view("GET", "/.fired/db/_private/state", "", true); code != 200 || !strings.Contains(body, `"cursor":7`) {
 			t.Fatalf("owner reads _private/: %d %s", code, body)
 		}
+		// Pinned to a version, even the owner only reads.
+		pinned := func(method, p, body string) int {
+			req, _ := http.NewRequest(method, h.srv.URL+p, strings.NewReader(body))
+			req.Header.Set("X-Fired-Token", testToken)
+			req.Header.Set("X-Artifact", "app")
+			req.Header.Set("X-Artifact-Version", "1")
+			req.Header.Set("X-Artifact-Owner", "true")
+			req.Header.Set("Content-Type", "application/json")
+			resp := must(http.DefaultClient.Do(req))(t)
+			resp.Body.Close()
+			return resp.StatusCode
+		}
+		if code := pinned("PATCH", "/.fired/db/tasks/t1", `{"n":0}`); code != 403 {
+			t.Fatalf("owner writing from a pinned view: %d", code)
+		}
+		if code := pinned("GET", "/.fired/db/_private/state", ""); code != 404 {
+			t.Fatalf("owner reading _private/ from a pinned view: %d", code)
+		}
 		if code, body, _ := view("PATCH", "/.fired/db/tasks/t1", `{"n":4}`, true); code != 200 || !strings.Contains(body, `"rev":3`) {
 			t.Fatalf("owner writes: %d %s", code, body)
 		}

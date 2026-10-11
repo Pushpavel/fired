@@ -747,12 +747,13 @@ async function tabView(p) {
   // A page renders itself: shown on the artifact's own origin, exactly as
   // viewers get it.
   let origin;
-  try { origin = await previewOrigin(a.id, atCurrent() ? 0 : n, !!S.asViewer); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
+  try { origin = await previewOrigin(a.id, atCurrent() ? 0 : n, atCurrent() && !!S.asViewer); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
   const src = origin;
   const frame = h("iframe", { class: "frame", id: "frame", title: `The page, ${vw.entry}`, src: src + "?t=" + Date.now(),
     sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads", referrerpolicy: "no-referrer" });
   bar.append(
-    h("div", { class: "seg", role: "group", "aria-label": "See it as" },
+    // A pinned version's page only reads the db: there's no owner view of it.
+    !atCurrent() ? null : h("div", { class: "seg", role: "group", "aria-label": "See it as" },
       h("button", { type: "button", "aria-pressed": String(!S.asViewer), title: "Writes the db and reads _private/", onclick: () => { S.asViewer = false; renderTab(); } }, "Owner"),
       h("button", { type: "button", "aria-pressed": String(!!S.asViewer), title: "Reads the db, without _private/", onclick: () => { S.asViewer = true; renderTab(); } }, "Viewer")),
     h("button", { class: "btn small", onclick: () => { frame.src = src + "?t=" + Date.now(); } }, "Reload"),
