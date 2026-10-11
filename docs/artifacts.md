@@ -353,9 +353,10 @@ Every job has a status:
 | `expired` | Has a schedule, but the window has closed. Publishing re-opens it. |
 | `blocked` | Its `timeout` exceeds the allowed max run; nothing runs until approved. |
 
-- **Windows:** each publish (or restore) opens the schedule's window for
-  `active_for`, capped at `limits.default_active_for`. Like a sandbox's idle
-  timer, publishing is activity. A forgotten automation stops on its own
+- **Windows:** each publish (or restore) that makes a version opens the
+  schedule's window for `active_for`, capped at
+  `limits.default_active_for` (a publish that changes nothing doesn't).
+  Like a sandbox's idle timer, publishing is activity. A forgotten automation stops on its own
   instead of running indefinitely.
 - **Longer windows and runs need a grant.** A job asking for more than the
   defaults is listed with `needs_approval`. A longer `active_for` still runs
@@ -366,7 +367,11 @@ Every job has a status:
   PUT /v1/artifacts/{id}/job/grant  {"active_until": "2026-11-10T00:00:00Z", "max_run": "2h"}
   ```
 
-  A zero grant revokes it.
+  The grant is replaced as a whole (`{}` revokes it); an `active_until` in
+  the past is no grant. It's a budget for the artifact, not an approval of
+  one command: the job can change and stay approved as long as it fits
+  (a `timeout` above `max_run` blocks it again). The service puts no upper
+  bound on it: your backend decides what an owner may approve.
 
 ### Triggers and `on_busy`
 

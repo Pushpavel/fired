@@ -1303,7 +1303,8 @@ function grantDialog(j) {
   $("#dlg-grant-title").textContent = "Approve the job";
   $("#grant-needs").replaceChildren(...(j.needs_approval || []).map(x => h("li", {}, x)));
   const d = new Date(Date.now() + 30 * 86400e3); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  f.elements.active_until.value = d.toISOString().slice(0, 16);
+  // A schedule's window only matters for a job with a schedule.
+  if (j.schedule) f.elements.active_until.value = d.toISOString().slice(0, 16);
   const m = (j.needs_approval || []).join(" ").match(/timeout (\S+)/); if (m) f.elements.max_run.value = m[1];
   dlgGrant.showModal();
 }

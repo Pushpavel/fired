@@ -596,9 +596,11 @@ func TestRunQuota(t *testing.T) {
 	if r := waitRun(t, c, "quota-art", run.ID); r.Status != pa.RunSucceeded {
 		t.Fatalf("run: %+v", r)
 	}
+	// The runner is suspended once the run is over, so it stops counting.
+	runners = must(fc.ListSandboxes(ctx, map[string]string{labelArtifact: "quota-art"}, ""))(t)
 	q := must(fc.Quota(ctx, "u9", "artifacts"))(t)
-	if q.RunningMB == 0 {
-		t.Fatalf("the running runner should count for u9: %+v", q)
+	if len(runners) != 1 || runners[0].State != api.StateSuspended || q.RunningMB != 0 {
+		t.Fatalf("after the run: runners %+v, quota %+v", runners, q)
 	}
 }
 

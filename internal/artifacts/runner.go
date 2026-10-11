@@ -87,6 +87,12 @@ func (s *Service) execute(si *startInfo) {
 	if err := s.finishRun(si, lr, out); err != nil {
 		s.log.Error("finish run", "run", si.run.ID, "err", err)
 	}
+	if !out.retry {
+		// Its runner is suspended: the key's waiting runs may fit now.
+		s.mu.Lock()
+		delete(s.quotaWait, si.artifact.QuotaKey)
+		s.mu.Unlock()
+	}
 }
 
 // unavailable reports fired being out of capacity or unreachable (down,
@@ -225,6 +231,10 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, lr *liveRun, timeou
 	// Whatever the job left running in its process group ends with the
 	// run: the next run starts clean, and nothing outlives its db token.
 	_, _ = s.fired.Kill(ctx, sb, started.PID, "KILL")
+	// Give the memory back now: a running runner counts against the quota
+	// key's limits in fired until it's suspended, holding up the key's other
+	// runs. Resuming it next time is quick.
+	_, _ = s.fired.Suspend(ctx, sb)
 	out.logs.Stdout = string(secrets.Bytes([]byte(out.logs.Stdout)))
 	out.logs.Stderr = string(secrets.Bytes([]byte(out.logs.Stderr)))
 	return out
