@@ -81,8 +81,9 @@ type LimitsConfig struct {
 	// ServeRPS / ServeBurst rate-limit file reads per artifact.
 	ServeRPS   float64 `yaml:"serve_rps"`
 	ServeBurst int     `yaml:"serve_burst"`
-	// RetainRuns is how many run-produced versions each artifact keeps.
-	RetainRuns int `yaml:"retain_runs"`
+	// RetainOutputs is how many of the job's outputs each artifact keeps,
+	// the current one included.
+	RetainOutputs int `yaml:"retain_outputs"`
 	// DeleteAfter deletes artifacts with no reads, publishes or runs for
 	// this long. 0 disables it.
 	DeleteAfter api.Duration `yaml:"delete_after"`
@@ -133,7 +134,7 @@ func DefaultConfig() Config {
 			MinInterval:        api.Duration(time.Minute),
 			ServeRPS:           50,
 			ServeBurst:         100,
-			RetainRuns:         24,
+			RetainOutputs:      24,
 			DeleteAfter:        0,
 			QueueMax:           100,
 			QueueMaxAge:        api.Duration(24 * time.Hour),
@@ -210,8 +211,8 @@ func (c *Config) Validate() error {
 	if c.Runner.Workdir == "" || !filepath.IsAbs(c.Runner.Workdir) || c.Runner.Workdir == "/" {
 		return fmt.Errorf("runner.workdir must be an absolute path other than /")
 	}
-	if c.Limits.RetainRuns <= 0 {
-		c.Limits.RetainRuns = 24
+	if c.Limits.RetainOutputs <= 0 {
+		c.Limits.RetainOutputs = 24
 	}
 	if c.SchedulerInterval <= 0 {
 		c.SchedulerInterval = api.Duration(5 * time.Second)

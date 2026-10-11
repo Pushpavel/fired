@@ -120,7 +120,7 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 	s.tierOf(ctx, req.QuotaKey)
 	now := s.now()
 	a := &pa.Artifact{ID: id, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta, DeleteAfter: req.DeleteAfter,
-		RetainRuns: req.RetainRuns, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
+		RetainOutputs: req.RetainOutputs, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
 	var v *pa.Version
 	err = s.st.tx(ctx, func(q querier) error {
 		if _, err := getArtifact(ctx, q, id); err == nil {
@@ -137,7 +137,7 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 		return nil, err
 	}
 	s.emit(pa.Event{Type: "artifact.created", Artifact: id})
-	res, err := s.afterPublish(ctx, id, v, false, *req.Publish)
+	res, err := s.afterPublish(ctx, id, v, false, *req.Publish, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -217,8 +217,8 @@ func (s *Service) Update(ctx context.Context, id string, req pa.UpdateArtifactRe
 		if req.DeleteAfter != nil {
 			a.DeleteAfter = *req.DeleteAfter
 		}
-		if req.RetainRuns != nil {
-			a.RetainRuns = *req.RetainRuns
+		if req.RetainOutputs != nil {
+			a.RetainOutputs = *req.RetainOutputs
 		}
 		a.UpdatedAt = s.now()
 		out = a
@@ -590,6 +590,7 @@ type publishPrep struct {
 	specHash    string
 	specSize    int64
 	replaceDirs []string
+	shadowed    []string // set by commitEdit
 }
 
 func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*publishPrep, error) {
@@ -625,11 +626,6 @@ func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*p
 		}
 		p.replaceDirs = append(p.replaceDirs, c)
 	}
-	for _, j := range req.RunNow {
-		if !jobNameRE.MatchString(j) {
-			return nil, badRequest("run_now: %q is not a job name", j)
-		}
-	}
 	return p, nil
 }
 
@@ -658,7 +654,7 @@ func (s *Service) Publish(ctx context.Context, id string, req pa.PublishRequest)
 	if err != nil {
 		return nil, err
 	}
-	return s.afterPublish(ctx, id, v, unchanged, req)
+	return s.afterPublish(ctx, id, v, unchanged, req, prep.shadowed)
 }
 
 // checkBase checks that a publish or restore is on top of the current
@@ -729,6 +725,7 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 		if err := checkRunNow(req.RunNow, v.Spec); err != nil {
 			return nil, false, err
 		}
+		p.shadowed = shadowed(a, v.Spec, p.ops)
 		if req.Notify != "" {
 			if err := setNotify(ctx, q, id, v.Version, req.Notify); err != nil {
 				return nil, false, err
@@ -769,34 +766,49 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 	if err := putArtifact(ctx, q, a); err != nil {
 		return nil, false, err
 	}
-	return v, false, s.syncJobs(ctx, q, id, spec, now, true)
+	p.shadowed = shadowed(a, spec, p.ops)
+	return v, false, s.syncJob(ctx, q, id, spec, now, true)
 }
 
-func checkRunNow(jobs []string, spec pa.Spec) error {
-	for _, j := range jobs {
-		if _, ok := spec.Jobs[j]; !ok {
-			return badRequest("run_now: job %q is not defined in this version", j)
-		}
+func checkRunNow(runNow bool, spec pa.Spec) error {
+	if runNow && spec.Job == nil {
+		return badRequest("run_now: this version has no job")
 	}
 	return nil
 }
 
+// shadowed lists the files a publish put under the job's writes while the
+// job has an output: they're stored, but the output is what shows there.
+func shadowed(a *pa.Artifact, spec pa.Spec, ops []resolvedOp) []string {
+	if a.Output == 0 || spec.Job == nil {
+		return nil
+	}
+	var out []string
+	for _, op := range ops {
+		if !op.delete && !op.clear && owned(spec.Job, op.path) {
+			out = append(out, op.path)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // afterPublish announces a committed version (unless the publish changed
-// nothing), starts run_now jobs and reports every job's status.
-func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, unchanged bool, req pa.PublishRequest) (*pa.PublishResult, error) {
+// nothing), starts the job if asked (run_now) and reports its status.
+func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, unchanged bool, req pa.PublishRequest, shadowed []string) (*pa.PublishResult, error) {
 	if !unchanged {
 		s.emit(pa.Event{Type: "artifact.version", Artifact: id, Version: v.Version, Origin: v.Origin})
 	}
-	for _, j := range req.RunNow {
-		if _, err := s.Trigger(ctx, id, j, pa.TriggerRequest{}, pa.TriggerManual); err != nil {
-			s.log.Warn("run_now", "artifact", id, "job", j, "err", err)
+	if req.RunNow {
+		if _, err := s.Trigger(ctx, id, pa.TriggerRequest{}, pa.TriggerPublish); err != nil {
+			s.log.Warn("run_now", "artifact", id, "err", err)
 		}
 	}
-	jobs, err := s.Jobs(ctx, id)
+	job, err := s.jobOrNil(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Jobs: jobs}, nil
+	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Shadowed: shadowed, Job: job}, nil
 }
 
 // checkNoFileDirClash rejects trees where a path is both a file and a
@@ -876,7 +888,7 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 		if err := putArtifact(ctx, q, a); err != nil {
 			return err
 		}
-		return s.syncJobs(ctx, q, id, old.Spec, now, true)
+		return s.syncJob(ctx, q, id, old.Spec, now, true)
 	})
 	if err != nil {
 		return nil, err
@@ -884,16 +896,17 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 	if !unchanged {
 		s.emit(pa.Event{Type: "artifact.version", Artifact: id, Version: v.Version, Origin: v.Origin})
 	}
-	jobs, err := s.Jobs(ctx, id)
+	job, err := s.jobOrNil(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Jobs: jobs}, nil
+	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Job: job}, nil
 }
 
-// Fork creates a new artifact whose first version has the files of
-// id@version. Jobs are copied (they're in artifact.json) but inactive until
-// the new artifact is published to or granted; run state is not copied.
+// Fork creates a new artifact whose first version has what id@version
+// shows (the job's current data included). The job is copied (it's in
+// artifact.json) but inactive until the new artifact is published to or
+// granted; run state and older outputs are not copied.
 func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.Artifact, error) {
 	if req.QuotaKey == "" {
 		return nil, badRequest("quota_key is required")
@@ -929,7 +942,9 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		if _, err := getArtifact(ctx, q, newIDv); err == nil {
 			return errf(http.StatusConflict, "exists", "artifact %s already exists", newIDv)
 		}
-		tree, err := getTree(ctx, q, id, n)
+		// A fork gets what the source shows: its job's data becomes the
+		// fork's starting data.
+		tree, err := s.liveTree(ctx, q, src, n, old.Spec)
 		if err != nil {
 			return err
 		}
@@ -956,7 +971,7 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		if err := insertVersion(ctx, q, v, tree); err != nil {
 			return err
 		}
-		return s.syncJobs(ctx, q, newIDv, spec, now, false)
+		return s.syncJob(ctx, q, newIDv, spec, now, false)
 	})
 	if err != nil {
 		return nil, err

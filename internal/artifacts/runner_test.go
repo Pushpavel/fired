@@ -138,8 +138,17 @@ func (b *brokerStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, pa.CredentialsResponse{SecretEnv: map[string]string{"API_TOKEN": "s3cret-" + req.RunID}})
 }
 
+// genScript is the test job: the trigger payload's "mode" picks what it does.
 const genScript = `#!/bin/sh
 set -e
+trig="$PWD/../tmp/fired-artifacts/trigger.json"
+mode=$(sed -n 's/.*"mode":"\([a-z]*\)".*/\1/p' "$trig")
+case "$mode" in
+fail) echo boom >&2; exit 3 ;;
+slow) sleep 30 ;;
+same) exit 0 ;;
+leak) mkdir -p out && echo "$API_TOKEN" > out/leak.txt && echo "$API_TOKEN"; exit 0 ;;
+esac
 mkdir -p out .state
 n=$(cat .state/count 2>/dev/null || echo 0)
 n=$((n+1))
@@ -147,7 +156,7 @@ echo $n > .state/count
 token=missing
 case "$API_TOKEN" in s3cret-$ARTIFACT_RUN_ID) token=ok ;; esac
 echo "run $n token=$token" > out/result.txt
-cp "$PWD/../tmp/fired-artifacts/trigger.json" out/trigger.json
+cp "$trig" out/trigger.json
 echo "hello from job"
 echo "a warning" >&2
 `
@@ -206,40 +215,39 @@ func TestRunsInFired(t *testing.T) {
 
 	script := genScript
 	res := must(c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
-		Files: []pa.FileOp{{Path: "gen.sh", Content: &script, Mode: 0o755}, pa.Text("README.md", "source")},
-		Spec: &pa.Spec{Jobs: map[string]pa.Job{
-			"gen":  {Run: "./gen.sh", Writes: []string{"out"}, State: ".state"},
-			"same": {Run: "true", Writes: []string{"out"}},
-			"fail": {Run: "echo boom >&2; exit 3", Writes: []string{"out"}},
-			"slow": {Run: "sleep 30", Timeout: pa.Duration(2 * time.Second)},
-			"leak": {Run: "mkdir -p out && echo \"$API_TOKEN\" > out/leak.txt && echo \"$API_TOKEN\"", Writes: []string{"out"}},
-		}},
-		RunNow: []string{"gen"}, Notify: "session-1",
+		Files:  []pa.FileOp{{Path: "gen.sh", Content: &script, Mode: 0o755}, pa.Text("README.md", "source"), pa.Text("out/result.txt", "seed")},
+		Spec:   &pa.Spec{Job: &pa.Job{Run: "./gen.sh", Writes: []string{"out"}, State: ".state", Timeout: pa.Duration(2 * time.Second)}},
+		RunNow: true, Notify: "session-1",
 	}}))(t)
 	id := res.Artifact.ID
+	trigger := func(mode string) *pa.Run {
+		t.Helper()
+		return waitRun(t, c, id, must(c.Trigger(ctx, id, json.RawMessage(`{"mode":"`+mode+`"}`)))(t).ID)
+	}
 
-	runs := must(c.Runs(ctx, id, "gen", ""))(t)
+	runs := must(c.Runs(ctx, id, ""))(t)
 	if len(runs) != 1 {
 		t.Fatalf("run_now: %+v", runs)
 	}
 	r := waitRun(t, c, id, runs[0].ID)
-	if r.Status != pa.RunSucceeded || r.Version != 1 || r.ResultVersion != 2 || r.ExitCode == nil || *r.ExitCode != 0 {
+	if r.Status != pa.RunSucceeded || r.Version != 1 || r.Output != 1 || r.ExitCode == nil || *r.ExitCode != 0 || r.Trigger != pa.TriggerPublish {
 		logs, _ := c.RunLogs(ctx, id, r.ID)
 		t.Fatalf("first run: %+v logs: %+v", r, logs)
 	}
-	v := must(c.Version(ctx, id, 2))(t)
-	if v.Origin != pa.OriginRun || v.RunID != r.ID || v.Job != "gen" {
-		t.Fatalf("run version: %+v", v)
+	// A run records an output, not a version.
+	if a := must(c.Get(ctx, id))(t); a.CurrentVersion != 1 || a.Output != 1 {
+		t.Fatalf("after a run: version %d output %d", a.CurrentVersion, a.Output)
 	}
-	if got := strings.Join(paths(v), ","); got != "README.md,artifact.json,gen.sh,out/result.txt,out/trigger.json" {
-		t.Fatalf("run version files: %s", got)
+	d := must(c.Data(ctx, id))(t)
+	if d.Current != 1 || len(d.Outputs) != 1 || d.Outputs[0].RunID != r.ID || len(d.Outputs[0].Files) != 2 {
+		t.Fatalf("data: %+v", d)
 	}
 	if b := must(c.ReadFile(ctx, id, "out/result.txt", 0))(t); string(b) != "run 1 token=ok\n" {
 		t.Fatalf("result: %q", b)
 	}
 	var trig map[string]any
 	_ = json.Unmarshal(must(c.ReadFile(ctx, id, "out/trigger.json", 0))(t), &trig)
-	if trig["type"] != "manual" || trig["run_id"] != r.ID {
+	if trig["type"] != pa.TriggerPublish || trig["run_id"] != r.ID {
 		t.Fatalf("trigger file: %+v", trig)
 	}
 	logs := must(c.RunLogs(ctx, id, r.ID))(t)
@@ -247,14 +255,14 @@ func TestRunsInFired(t *testing.T) {
 		t.Fatalf("logs: %+v", logs)
 	}
 	bs.mu.Lock()
-	if len(bs.reqs) != 1 || bs.reqs[0].Artifact != id || bs.reqs[0].Job != "gen" || bs.reqs[0].QuotaKey != "u1" {
+	if len(bs.reqs) != 1 || bs.reqs[0].Artifact != id || bs.reqs[0].QuotaKey != "u1" {
 		t.Fatalf("broker requests: %+v", bs.reqs)
 	}
 	bs.mu.Unlock()
 
 	t.Run("state carries over", func(t *testing.T) {
-		r := waitRun(t, c, id, must(c.Trigger(ctx, id, "gen", json.RawMessage(`{"x":1}`)))(t).ID)
-		if r.Status != pa.RunSucceeded || r.ResultVersion != 3 {
+		r := trigger("gen")
+		if r.Status != pa.RunSucceeded || r.Output != 2 {
 			t.Fatalf("second run: %+v", r)
 		}
 		if b := must(c.ReadFile(ctx, id, "out/result.txt", 0))(t); string(b) != "run 2 token=ok\n" {
@@ -265,19 +273,32 @@ func TestRunsInFired(t *testing.T) {
 		}
 	})
 
-	t.Run("no change, no version", func(t *testing.T) {
-		r := waitRun(t, c, id, must(c.Trigger(ctx, id, "same", nil))(t).ID)
-		if r.Status != pa.RunSucceeded || r.ResultVersion != 0 {
+	t.Run("no change, no output", func(t *testing.T) {
+		r := trigger("same")
+		if r.Status != pa.RunSucceeded || r.Output != 0 {
 			t.Fatalf("unchanged run: %+v", r)
 		}
-		if cur := must(c.Get(ctx, id))(t).CurrentVersion; cur != 3 {
-			t.Fatalf("current version %d", cur)
+		if a := must(c.Get(ctx, id))(t); a.Output != 2 || a.CurrentVersion != 1 {
+			t.Fatalf("after an unchanged run: %+v", a)
+		}
+	})
+
+	t.Run("edits don't conflict with runs", func(t *testing.T) {
+		// Runs moved nothing: an edit against v1 still lands. One that puts
+		// files under the job's writes is told they're shadowed.
+		p := must(c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{
+			pa.Text("README.md", "edited"), pa.Text("out/result.txt", "new seed")}}))(t)
+		if p.Version.Version != 2 || strings.Join(p.Shadowed, ",") != "out/result.txt" || p.Job == nil {
+			t.Fatalf("publish: %+v", p)
+		}
+		if b := must(c.ReadFile(ctx, id, "out/result.txt", 0))(t); string(b) != "run 2 token=ok\n" {
+			t.Fatalf("the output should still show: %q", b)
 		}
 	})
 
 	t.Run("failure", func(t *testing.T) {
-		r := waitRun(t, c, id, must(c.Trigger(ctx, id, "fail", nil))(t).ID)
-		if r.Status != pa.RunFailed || r.Reason != "exit status 3" || r.ResultVersion != 0 {
+		r := trigger("fail")
+		if r.Status != pa.RunFailed || r.Reason != "exit status 3" || r.Output != 0 {
 			t.Fatalf("failed run: %+v", r)
 		}
 		if l := must(c.RunLogs(ctx, id, r.ID))(t); !strings.Contains(l.Stderr, "boom") {
@@ -286,14 +307,13 @@ func TestRunsInFired(t *testing.T) {
 	})
 
 	t.Run("timeout", func(t *testing.T) {
-		r := waitRun(t, c, id, must(c.Trigger(ctx, id, "slow", nil))(t).ID)
-		if r.Status != pa.RunTimedOut {
+		if r := trigger("slow"); r.Status != pa.RunTimedOut {
 			t.Fatalf("slow run: %+v", r)
 		}
 	})
 
 	t.Run("credential values are never published", func(t *testing.T) {
-		r := waitRun(t, c, id, must(c.Trigger(ctx, id, "leak", nil))(t).ID)
+		r := trigger("leak")
 		if r.Status != pa.RunFailed || r.Reason != "result rejected: out/leak.txt contains the value of credential API_TOKEN" {
 			t.Fatalf("leaking run: %+v", r)
 		}
@@ -310,16 +330,34 @@ func TestRunsInFired(t *testing.T) {
 		bs.fail = true
 		bs.mu.Unlock()
 		defer func() { bs.mu.Lock(); bs.fail = false; bs.mu.Unlock() }()
-		r := waitRun(t, c, id, must(c.Trigger(ctx, id, "gen", nil))(t).ID)
-		if r.Status != pa.RunFailed || !strings.Contains(r.Reason, "owner_gone") {
+		if r := trigger("gen"); r.Status != pa.RunFailed || !strings.Contains(r.Reason, "owner_gone") {
 			t.Fatalf("refused run: %+v", r)
+		}
+	})
+
+	t.Run("export and fork carry the data", func(t *testing.T) {
+		f := must(c.Fork(ctx, id, pa.ForkRequest{QuotaKey: "u2"}))(t)
+		if b := must(c.ReadFile(ctx, f.ID, "out/result.txt", 0))(t); string(b) != "run 2 token=ok\n" || f.Output != 0 {
+			t.Fatalf("fork: %q, output %d", b, f.Output)
+		}
+	})
+
+	t.Run("reset shows the seed again", func(t *testing.T) {
+		if err := c.ResetData(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		if b := must(c.ReadFile(ctx, id, "out/result.txt", 0))(t); string(b) != "new seed" {
+			t.Fatalf("after reset: %q", b)
+		}
+		if d := must(c.Data(ctx, id))(t); d.Current != 0 || len(d.Outputs) != 0 {
+			t.Fatalf("data after reset: %+v", d)
 		}
 	})
 
 	t.Run("events", func(t *testing.T) {
 		evMu.Lock()
 		defer evMu.Unlock()
-		var notified, started, version bool
+		var notified, started, data bool
 		for _, e := range evs {
 			if e.Type == "run.finished" && e.Notify == "session-1" && e.Status == pa.RunSucceeded {
 				notified = true
@@ -328,10 +366,10 @@ func TestRunsInFired(t *testing.T) {
 				t.Errorf("notify on a later run: %+v", e)
 			}
 			started = started || e.Type == "run.started"
-			version = version || (e.Type == "artifact.version" && e.Origin == pa.OriginRun)
+			data = data || (e.Type == "artifact.data" && e.Output == 1)
 		}
-		if !notified || !started || !version {
-			t.Fatalf("events (notified %v started %v version %v): %+v", notified, started, version, evs)
+		if !notified || !started || !data {
+			t.Fatalf("events (notified %v started %v data %v): %+v", notified, started, data, evs)
 		}
 	})
 
@@ -478,13 +516,13 @@ func TestRunQuota(t *testing.T) {
 	}
 	ctx := context.Background()
 	c := h.c
-	spec := &pa.Spec{Jobs: map[string]pa.Job{"go": {Run: "echo ran", Writes: []string{"out"}}}}
+	spec := &pa.Spec{Job: &pa.Job{Run: "echo ran", Writes: []string{"out"}}}
 	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "quota-art", QuotaKey: "u9", Publish: &pa.PublishRequest{
 		Files: []pa.FileOp{pa.Text("a", "x")}, Spec: spec}}))(t)
 
 	// u9 may not run anything in the artifacts pool.
 	must(fc.SetQuota(ctx, "u9", "artifacts", api.Quota{MaxMemoryMB: 1}))(t)
-	run := must(c.Trigger(ctx, "quota-art", "go", nil))(t)
+	run := must(c.Trigger(ctx, "quota-art", nil))(t)
 	time.Sleep(time.Second)
 	if r := must(c.Run(ctx, "quota-art", run.ID))(t); r.Status != pa.RunPending {
 		t.Fatalf("over quota, the run should wait: %+v", r)

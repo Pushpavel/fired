@@ -146,7 +146,7 @@ func (s *Service) handleUIInfo(w http.ResponseWriter, r *http.Request) {
 		"min_interval":       l.MinInterval,
 		"max_inline_bytes":   l.MaxInlineBytes,
 		"max_payload_bytes":  l.MaxPayloadBytes,
-		"retain_runs":        l.RetainRuns,
+		"retain_outputs":     l.RetainOutputs,
 	})
 }
 

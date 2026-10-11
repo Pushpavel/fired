@@ -43,7 +43,7 @@ limits:
   min_interval: 1m              # shortest schedule interval for anyone
   serve_rps: 50                 # file reads per artifact per second
   serve_burst: 100
-  retain_runs: 24               # run-produced versions kept per artifact
+  retain_outputs: 24            # job outputs kept per artifact (the current one included)
   delete_after: 0s              # delete artifacts inactive this long (0 = never)
   queue_max: 100                # defaults for on_busy: queue
   queue_max_age: 24h

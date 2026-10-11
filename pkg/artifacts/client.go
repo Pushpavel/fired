@@ -293,33 +293,43 @@ func escapePath(p string) string {
 	return strings.Join(parts, "/")
 }
 
-// ---- jobs and runs
+// ---- the job, its runs and its data
 
-func (c *Client) Jobs(ctx context.Context, id string) ([]JobStatus, error) {
-	var out JobList
-	return out.Jobs, c.do(ctx, "GET", ap(id)+"/jobs", nil, &out)
-}
-
-func (c *Client) Grant(ctx context.Context, id, job string, g Grant) (*JobStatus, error) {
+// Job returns the status of the artifact's job (404 if it has none).
+func (c *Client) Job(ctx context.Context, id string) (*JobStatus, error) {
 	var out JobStatus
-	return &out, c.do(ctx, "PUT", ap(id)+"/jobs/"+url.PathEscape(job)+"/grant", g, &out)
+	return &out, c.do(ctx, "GET", ap(id)+"/job", nil, &out)
 }
 
-func (c *Client) Trigger(ctx context.Context, id, job string, payload json.RawMessage) (*Run, error) {
+func (c *Client) Grant(ctx context.Context, id string, g Grant) (*JobStatus, error) {
+	var out JobStatus
+	return &out, c.do(ctx, "PUT", ap(id)+"/job/grant", g, &out)
+}
+
+func (c *Client) Trigger(ctx context.Context, id string, payload json.RawMessage) (*Run, error) {
 	var out Run
-	return &out, c.do(ctx, "POST", ap(id)+"/jobs/"+url.PathEscape(job)+"/runs", TriggerRequest{Payload: payload}, &out)
+	return &out, c.do(ctx, "POST", ap(id)+"/job/runs", TriggerRequest{Payload: payload}, &out)
 }
 
-func (c *Client) Runs(ctx context.Context, id, job, status string) ([]Run, error) {
+func (c *Client) Runs(ctx context.Context, id, status string) ([]Run, error) {
 	q := url.Values{}
-	if job != "" {
-		q.Set("job", job)
-	}
 	if status != "" {
 		q.Set("status", status)
 	}
 	var out RunList
 	return out.Runs, c.do(ctx, "GET", ap(id)+"/runs?"+q.Encode(), nil, &out)
+}
+
+// Data returns the job's current output and the outputs kept, with files.
+func (c *Client) Data(ctx context.Context, id string) (*Data, error) {
+	var out Data
+	return &out, c.do(ctx, "GET", ap(id)+"/data", nil, &out)
+}
+
+// ResetData drops the job's outputs: the version's files under its writes
+// show again, and the next run starts from them.
+func (c *Client) ResetData(ctx context.Context, id string) error {
+	return c.do(ctx, "DELETE", ap(id)+"/data", nil, nil)
 }
 
 func (c *Client) Run(ctx context.Context, id, run string) (*Run, error) {

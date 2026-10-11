@@ -5,16 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
-	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
 	pa "github.com/Pushpavel/fired/pkg/artifacts"
 )
-
-var jobNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,47}$`)
 
 // cleanPath validates a tree path: relative, slash-separated, no "." or
 // ".." segments, no empty segments.
@@ -85,6 +81,18 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 	if len(s.Description) > 2000 {
 		add("description is longer than 2000 bytes")
 	}
+	// The job's paths are its data: it may not have produced them yet.
+	jobOwns := func(p string) bool {
+		if s.Job == nil {
+			return false
+		}
+		for _, w := range s.Job.Writes {
+			if c, err := cleanPath(w); err == nil && under(p, c) {
+				return true
+			}
+		}
+		return false
+	}
 	if v := s.View; v != nil {
 		exts, known := viewExts[v.Type]
 		if !known {
@@ -95,49 +103,42 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 		} else {
 			if ext := strings.ToLower(path.Ext(e)); known && exts != nil && !slices.Contains(exts, ext) {
 				add("view.entry: a %s view needs a %s file, not %q", v.Type, strings.Join(exts, " or "), v.Entry)
-			} else if _, ok := tree[e]; !ok {
-				add("view.entry: %q is not a file in this version (publish it, or point the view at another file)", v.Entry)
+			} else if _, ok := tree[e]; !ok && !jobOwns(e) {
+				add("view.entry: %q is not a file in this version (publish it, point the view at another file, or have the job write it)", v.Entry)
 			}
 			v.Entry = e
 		}
 	}
-	names := make([]string, 0, len(s.Jobs))
-	for n := range s.Jobs {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		j := s.Jobs[n]
-		if !jobNameRE.MatchString(n) {
-			add("jobs: name %q must match %s", n, jobNameRE)
-		}
+	if s.Job != nil {
+		j := *s.Job
 		if strings.TrimSpace(j.Run) == "" {
-			add("jobs.%s.run is required", n)
+			add("job.run is required")
 		}
+		j.Writes = append([]string(nil), j.Writes...)
 		for k, w := range j.Writes {
 			c, err := cleanPath(w)
 			if err != nil {
-				add("jobs.%s.writes[%d]: %v", n, k, err)
+				add("job.writes[%d]: %v", k, err)
 				continue
 			}
 			if c == pa.SpecFile {
-				add("jobs.%s.writes[%d]: a job can't write %s", n, k, pa.SpecFile)
+				add("job.writes[%d]: a job can't write %s", k, pa.SpecFile)
 			}
 			j.Writes[k] = c
 		}
 		if j.State != "" {
 			c, err := cleanPath(j.State)
 			if err != nil {
-				add("jobs.%s.state: %v", n, err)
+				add("job.state: %v", err)
 			} else {
 				for _, w := range j.Writes {
 					if under(c, w) || under(w, c) {
-						add("jobs.%s.state %q overlaps writes path %q", n, c, w)
+						add("job.state %q overlaps writes path %q", c, w)
 					}
 				}
 				for p := range tree {
 					if under(p, c) {
-						add("jobs.%s.state %q must not contain published files (found %q)", n, c, p)
+						add("job.state %q must not contain published files (found %q)", c, p)
 						break
 					}
 				}
@@ -146,29 +147,29 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 		}
 		if j.Schedule != "" {
 			if _, err := ParseCron(j.Schedule, j.Timezone); err != nil {
-				add("jobs.%s: %v", n, err)
+				add("job: %v", err)
 			}
 		} else if j.Timezone != "" {
-			add("jobs.%s.timezone is set without a schedule", n)
+			add("job.timezone is set without a schedule")
 		}
 		if j.Timeout < 0 || j.ActiveFor < 0 {
-			add("jobs.%s: timeout and active_for must be positive", n)
+			add("job: timeout and active_for must be positive")
 		}
 		switch j.OnBusy {
 		case "":
 		case pa.OnBusyLatest, pa.OnBusyQueue:
 		default:
-			add("jobs.%s.on_busy must be %q or %q", n, pa.OnBusyLatest, pa.OnBusyQueue)
+			add("job.on_busy must be %q or %q", pa.OnBusyLatest, pa.OnBusyQueue)
 		}
 		if j.Queue != nil {
 			if j.OnBusy != pa.OnBusyQueue {
-				add("jobs.%s.queue is only used with on_busy %q", n, pa.OnBusyQueue)
+				add("job.queue is only used with on_busy %q", pa.OnBusyQueue)
 			}
 			if j.Queue.Max < 0 || j.Queue.MaxAge < 0 {
-				add("jobs.%s.queue: max and max_age must be positive", n)
+				add("job.queue: max and max_age must be positive")
 			}
 		}
-		s.Jobs[n] = j
+		s.Job = &j
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid %s: %s", pa.SpecFile, strings.Join(errs, "; "))

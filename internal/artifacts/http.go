@@ -45,9 +45,11 @@ func (s *Service) Handler() http.Handler {
 	h("POST /v1/artifacts/{id}/fork", s.handleFork)
 	h("GET /v1/artifacts/{id}/files/{path...}", s.handleFile)
 
-	h("GET /v1/artifacts/{id}/jobs", s.handleJobs)
-	h("PUT /v1/artifacts/{id}/jobs/{job}/grant", s.handleGrant)
-	h("POST /v1/artifacts/{id}/jobs/{job}/runs", s.handleTrigger)
+	h("GET /v1/artifacts/{id}/job", s.handleJob)
+	h("PUT /v1/artifacts/{id}/job/grant", s.handleGrant)
+	h("POST /v1/artifacts/{id}/job/runs", s.handleTrigger)
+	h("GET /v1/artifacts/{id}/data", s.handleData)
+	h("DELETE /v1/artifacts/{id}/data", s.handleResetData)
 	h("GET /v1/artifacts/{id}/runs", s.handleRuns)
 	h("GET /v1/artifacts/{id}/runs/{run}", s.handleRun)
 	h("GET /v1/artifacts/{id}/runs/{run}/logs", s.handleRunLogs)
@@ -444,7 +446,17 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 	if n == 0 {
 		n = a.CurrentVersion
 	}
-	f, err := getFile(r.Context(), s.st.db, id, n, p)
+	v, err := getVersion(r.Context(), s.st.db, id, n)
+	if err != nil {
+		if err == errNotFound {
+			writeErr(w, errf(http.StatusNotFound, "not_found", "%s has no version %d", id, n))
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+	// What everyone sees: the job's current data over its writes.
+	f, err := s.liveFile(r.Context(), s.st.db, a, n, v.Spec, p)
 	if err != nil {
 		if err == errNotFound {
 			if shown != "" {
@@ -520,19 +532,30 @@ func (s *Service) handleRouted(w http.ResponseWriter, r *http.Request, id string
 	s.serveView(w, r, id, n)
 }
 
-// handleExport streams a version as a zip of its files, artifact.json
-// included.
+// handleExport streams what a version shows as a zip: its files, with the
+// job's current data over its writes, artifact.json included.
 func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 	n, err := versionParam(r.PathValue("v"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	v, err := s.Version(r.Context(), r.PathValue("id"), n, true)
+	a, err := s.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	v, err := s.Version(r.Context(), a.ID, n, false)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	live, err := s.liveTree(r.Context(), s.st.db, a, v.Version, v.Spec)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	v.Files = sortedFiles(live)
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-v%d.zip"`, v.Artifact, v.Version))
 	zw := zip.NewWriter(w)
@@ -560,15 +583,32 @@ func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 	_ = zw.Close()
 }
 
-// ---- jobs and runs
+// ---- the job, its runs and its data
 
-func (s *Service) handleJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.Jobs(r.Context(), r.PathValue("id"))
+func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
+	st, err := s.Job(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, 200, pa.JobList{Jobs: jobs})
+	writeJSON(w, 200, st)
+}
+
+func (s *Service) handleData(w http.ResponseWriter, r *http.Request) {
+	d, err := s.Data(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, d)
+}
+
+func (s *Service) handleResetData(w http.ResponseWriter, r *http.Request) {
+	if err := s.ResetData(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Service) handleGrant(w http.ResponseWriter, r *http.Request) {
@@ -577,7 +617,7 @@ func (s *Service) handleGrant(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	st, err := s.SetGrant(r.Context(), r.PathValue("id"), r.PathValue("job"), g)
+	st, err := s.SetGrant(r.Context(), r.PathValue("id"), g)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -593,7 +633,7 @@ func (s *Service) handleTrigger(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	run, err := s.Trigger(r.Context(), r.PathValue("id"), r.PathValue("job"), req, pa.TriggerManual)
+	run, err := s.Trigger(r.Context(), r.PathValue("id"), req, pa.TriggerManual)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -604,7 +644,7 @@ func (s *Service) handleTrigger(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleRuns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	runs, err := s.Runs(r.Context(), r.PathValue("id"), q.Get("job"), q.Get("status"), limit)
+	runs, err := s.Runs(r.Context(), r.PathValue("id"), q.Get("status"), limit)
 	if err != nil {
 		writeErr(w, err)
 		return

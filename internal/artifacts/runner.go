@@ -123,7 +123,7 @@ func failed(reason string, err error) *outcome {
 func (s *Service) runJob(ctx context.Context, si *startInfo, timeout time.Duration) *outcome {
 	r, j, a := si.run, si.job, si.artifact
 	creds, err := s.broker.credentials(ctx, pa.CredentialsRequest{Artifact: a.ID, QuotaKey: a.QuotaKey, Labels: a.Labels,
-		Version: r.Version, Job: r.Job, RunID: r.ID})
+		Version: r.Version, RunID: r.ID})
 	if err != nil {
 		return failed("credentials", err)
 	}
@@ -168,13 +168,13 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, timeout time.Durati
 			return failed("upload state", err)
 		}
 	}
-	trig, _ := json.Marshal(map[string]any{"type": r.Trigger, "run_id": r.ID, "job": r.Job, "at": r.CreatedAt, "payload": json.RawMessage(orNull(r.Payload))})
+	trig, _ := json.Marshal(map[string]any{"type": r.Trigger, "run_id": r.ID, "at": r.CreatedAt, "payload": json.RawMessage(orNull(r.Payload))})
 	triggerFile := path.Join(triggerDir, "trigger.json")
 	if _, err := s.fired.WriteFile(ctx, sb, triggerFile, strings.NewReader(string(trig)), 0o644); err != nil {
 		return failed("write trigger", err)
 	}
 	env := map[string]string{
-		"ARTIFACT_ID": a.ID, "ARTIFACT_VERSION": fmt.Sprint(r.Version), "ARTIFACT_JOB": r.Job,
+		"ARTIFACT_ID": a.ID, "ARTIFACT_VERSION": fmt.Sprint(r.Version),
 		"ARTIFACT_RUN_ID": r.ID, "TRIGGER": r.Trigger, "TRIGGER_FILE": triggerFile,
 	}
 	started, err := s.fired.Exec(ctx, sb, api.ExecRequest{Cmd: j.Run, Cwd: w, Env: env, SecretEnv: creds.SecretEnv,
@@ -451,7 +451,7 @@ func (s *Service) captureState(ctx context.Context, sb, dir string) (string, err
 	return h, err
 }
 
-// finishRun records a run's outcome: a new version if its writes changed
+// finishRun records a run's outcome: an output if its writes changed
 // anything, its state, logs and events.
 func (s *Service) finishRun(si *startInfo, out *outcome) error {
 	ctx := context.Background()
@@ -472,24 +472,24 @@ func (s *Service) finishRun(si *startInfo, out *outcome) error {
 			r.Logs = h
 		}
 	}
-	var newVersion *pa.Version
+	var output *pa.Output
 	var notify string
 	err := s.st.tx(ctx, func(q querier) error {
 		if out.status == pa.RunSucceeded {
-			v, err := s.commitRun(ctx, q, r, j, out.captured, now)
+			o, err := s.commitOutput(ctx, q, r, j, out.captured, now)
 			if err != nil {
 				out.status, out.reason = pa.RunFailed, "result rejected: "+err.Error()
 			} else {
-				newVersion = v
+				output = o
 				if j.State != "" {
-					if err := putRunState(ctx, q, a.ID, r.Job, out.state, now); err != nil {
+					if err := putRunState(ctx, q, a.ID, out.state, now); err != nil {
 						return err
 					}
 				}
 			}
 		}
-		if newVersion != nil {
-			r.ResultVersion = newVersion.Version
+		if output != nil {
+			r.Output = output.Output
 		}
 		r.Status, r.Reason, r.ExitCode, r.FinishedAt = out.status, out.reason, out.exitCode, &now
 		if r.StartedAt != nil {
@@ -508,109 +508,10 @@ func (s *Service) finishRun(si *startInfo, out *outcome) error {
 	if err != nil {
 		return err
 	}
-	if newVersion != nil {
-		s.emit(pa.Event{Type: "artifact.version", Artifact: a.ID, Version: newVersion.Version, Origin: pa.OriginRun, Job: r.Job, RunID: r.ID})
+	if output != nil {
+		s.emit(pa.Event{Type: "artifact.data", Artifact: a.ID, Version: r.Version, Output: output.Output, RunID: r.ID})
 	}
-	s.emit(pa.Event{Type: "run.finished", Artifact: a.ID, Version: r.Version, Job: r.Job, RunID: r.ID, Status: r.Status, Reason: r.Reason, Notify: notify})
-	return nil
-}
-
-// commitRun applies a run's writes on top of the current version (not the
-// version the run started from, so edits published meanwhile are kept) and
-// prunes old run versions. It returns nil when nothing changed.
-func (s *Service) commitRun(ctx context.Context, q querier, r *runRow, j pa.Job, captured map[string]pa.File, now time.Time) (*pa.Version, error) {
-	if len(j.Writes) == 0 {
-		return nil, nil
-	}
-	a, err := getArtifact(ctx, q, r.Artifact)
-	if err != nil {
-		return nil, err
-	}
-	cur, err := getVersion(ctx, q, a.ID, a.CurrentVersion)
-	if err != nil {
-		return nil, err
-	}
-	tree, err := getTree(ctx, q, a.ID, a.CurrentVersion)
-	if err != nil {
-		return nil, err
-	}
-	next := make(map[string]pa.File, len(tree))
-	for p, f := range tree {
-		keep := true
-		for _, w := range j.Writes {
-			if under(p, w) {
-				keep = false
-				break
-			}
-		}
-		if keep {
-			next[p] = f
-		}
-	}
-	for p, f := range captured {
-		next[p] = f
-	}
-	if treesEqual(tree, next) {
-		return nil, nil
-	}
-	if err := checkNoFileDirClash(next); err != nil {
-		return nil, err
-	}
-	spec := cur.Spec
-	if err := ValidateSpec(&spec, next); err != nil {
-		return nil, err
-	}
-	size, err := s.checkTree(ctx, q, a.QuotaKey, next)
-	if err != nil {
-		return nil, err
-	}
-	n, err := maxVersion(ctx, q, a.ID)
-	if err != nil {
-		return nil, err
-	}
-	v := &pa.Version{Artifact: a.ID, Version: n + 1, Parent: a.CurrentVersion, Origin: pa.OriginRun, Label: "run " + r.Job,
-		RunID: r.ID, Job: r.Job, FileCount: len(next), SizeBytes: size, Spec: spec, CreatedAt: now}
-	if err := insertVersion(ctx, q, v, next); err != nil {
-		return nil, err
-	}
-	setCurrent(a, v)
-	a.UpdatedAt = now
-	if err := putArtifact(ctx, q, a); err != nil {
-		return nil, err
-	}
-	return v, s.pruneRunVersions(ctx, q, a)
-}
-
-// pruneRunVersions keeps the newest RetainRuns run-produced versions besides
-// the current one. Edit, restore and fork versions are always kept.
-func (s *Service) pruneRunVersions(ctx context.Context, q querier, a *pa.Artifact) error {
-	keep := a.RetainRuns
-	if keep <= 0 {
-		keep = s.cfg.Limits.RetainRuns
-	}
-	rows, err := q.QueryContext(ctx, `SELECT version FROM versions WHERE artifact=? AND origin=? AND version<>? ORDER BY version DESC`,
-		a.ID, pa.OriginRun, a.CurrentVersion)
-	if err != nil {
-		return err
-	}
-	var old []int
-	i := 0
-	for rows.Next() {
-		var n int
-		if err := rows.Scan(&n); err != nil {
-			rows.Close()
-			return err
-		}
-		if i++; i > keep {
-			old = append(old, n)
-		}
-	}
-	rows.Close()
-	for _, n := range old {
-		if err := deleteVersion(ctx, q, a.ID, n); err != nil {
-			return err
-		}
-	}
+	s.emit(pa.Event{Type: "run.finished", Artifact: a.ID, Version: r.Version, Output: r.Output, RunID: r.ID, Status: r.Status, Reason: r.Reason, Notify: notify})
 	return nil
 }
 

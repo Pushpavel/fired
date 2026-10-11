@@ -352,7 +352,7 @@ details[open] summary { margin-bottom: var(--s3); }
         <label class="field"><span>Labels, one key=value per line</span><textarea name="labels" rows="2" placeholder="team=growth"></textarea></label>
         <div class="cols">
           <label class="field"><span>Delete after inactive for</span><input type="text" name="delete_after" placeholder="Service default"></label>
-          <label class="field"><span>Job-run versions to keep</span><input type="number" name="retain_runs" min="0" placeholder="Service default"></label>
+          <label class="field"><span>Job outputs to keep</span><input type="number" name="retain_outputs" min="0" placeholder="Service default"></label>
         </div>
         <p class="note">Durations look like 30m, 12h or 720h. Use -1 to never delete.</p>
       </div>
@@ -453,7 +453,7 @@ function kvLines(text) {
   return out;
 }
 const kvText = o => Object.entries(o || {}).map(([k, v]) => `${k}=${v}`).join("\n");
-const ORIGIN = { edit: "Edited", run: "Job run", restore: "Restored", fork: "Forked" };
+const ORIGIN = { edit: "Edited", restore: "Restored", fork: "Forked" };
 const titleOf = a => a.title || a.id;
 
 function toast(msg, kind = "") {
@@ -506,7 +506,7 @@ function curlFor(e) {
 const S = {
   view: "home", info: null, online: true, live: false,
   list: [], spines: {},          // artifact id → versions, oldest first
-  sel: null, art: null, versions: [], ver: null, jobs: [], runs: [],
+  sel: null, art: null, versions: [], ver: null, job: null, data: null, runs: [],
   tab: "view", runSel: null, fresh: new Set(),
   vcache: new Map(),             // "id:n" → version with files
   links: new Map(),              // "id:n" → preview origin
@@ -560,7 +560,7 @@ function renderStatus() {
 function spine(versions, o = {}) {
   const el = h("div", { class: "spine" + (o.cls ? " " + o.cls : "") + (!o.cls && versions.length > 90 ? " dense" : ""), role: o.pick ? "group" : null, "aria-label": o.label || null });
   for (const v of versions) {
-    const desc = `v${v.version}, ${ORIGIN[v.origin]?.toLowerCase() || v.origin}${v.job ? " of " + v.job : ""}${v.label ? ": " + v.label : ""}, ${ago(v.created_at)}`;
+    const desc = `v${v.version}, ${ORIGIN[v.origin]?.toLowerCase() || v.origin}${v.label ? ": " + v.label : ""}, ${ago(v.created_at)}`;
     const m = h(o.pick ? "button" : "i", {
       class: `mark o o-${v.origin} h-${v.origin}${o.current === v.version ? " current" : ""}${S.fresh.has(vkey(v.artifact, v.version)) ? " fresh" : ""}`,
       title: (o.prefix ? o.prefix + ", " : "") + desc, "aria-label": o.pick ? desc : null,
@@ -594,8 +594,8 @@ function renderHome() {
   const all = Object.values(S.spines).flat().sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).slice(-90);
   const byId = Object.fromEntries(S.list.map(a => [a.id, a]));
   $("#main").replaceChildren(h("div", { class: "home" },
-    h("h1", {}, "Every publish and every job run is a version"),
-    h("p", { class: "lede" }, "Artifacts are sets of files that agents publish and people view. Jobs run on a schedule in fired sandboxes and write their results back, so the history fills in on its own."),
+    h("h1", {}, "Every publish is a version"),
+    h("p", { class: "lede" }, "Artifacts are sets of files that agents publish and people view. An artifact's job runs on a schedule in a fired sandbox and keeps its data fresh, without touching the versions."),
     all.length
       ? spine(all, { cls: "hero", label: "Latest versions across all artifacts", pick: v => openArtifact(v.artifact, v.version) })
       : null,
@@ -617,7 +617,7 @@ async function createKit(k, btn) {
     const files = Object.entries(k.files).map(([path, f]) => typeof f === "string" ? { path, content: f } : { path, ...f });
     const r = await guard(() => api("POST", "/artifacts", { quota_key: quotaKey(), labels: { example: k.slug },
       publish: { files, title: k.title, label: "first version", run_now: k.run_now } }), `Created ${k.title}`);
-    for (const j of r.publish?.jobs || []) if (j.needs_approval?.length) toast(`${j.name} needs approval: ${j.needs_approval.join("; ")}`);
+    if (r.publish?.job?.needs_approval?.length) toast(`The job needs approval: ${r.publish.job.needs_approval.join("; ")}`);
     await refreshList(); openArtifact(r.artifact.id, null, k.tab);
   } catch {} finally { btn.disabled = false; }
 }
@@ -638,14 +638,15 @@ function closeArtifact() {
 async function loadArtifact(keepPane) {
   const id = S.sel;
   try {
-    const [a, vs, js, rs] = await Promise.all([
+    const [a, vs, job, data, rs] = await Promise.all([
       api("GET", `/artifacts/${enc(id)}`, undefined, { quiet: true }),
       api("GET", `/artifacts/${enc(id)}/versions`, undefined, { quiet: true }),
-      api("GET", `/artifacts/${enc(id)}/jobs`, undefined, { quiet: true }).catch(() => ({ jobs: [] })),
+      api("GET", `/artifacts/${enc(id)}/job`, undefined, { quiet: true }).catch(() => null),
+      api("GET", `/artifacts/${enc(id)}/data`, undefined, { quiet: true }).catch(() => null),
       api("GET", `/artifacts/${enc(id)}/runs?limit=100`, undefined, { quiet: true }).catch(() => ({ runs: [] })),
     ]);
     if (S.sel !== id) return;
-    S.art = a; S.versions = (vs.versions || []).sort((x, y) => x.version - y.version); S.jobs = js.jobs || []; S.runs = rs.runs || [];
+    S.art = a; S.versions = (vs.versions || []).sort((x, y) => x.version - y.version); S.job = job; S.data = data; S.runs = rs.runs || [];
     S.spines[id] = S.versions;
     if (S.ver != null && !S.versions.find(v => v.version === S.ver)) S.ver = null;
   } catch (e) {
@@ -676,9 +677,9 @@ function renderArtifact(keepPane) {
     S.versions.length ? spine(S.versions, { label: "Versions", current: a.current_version, selected: n, pick: x => pickVersion(x.version) }) : null,
     pickedLine(v));
   S.fresh.clear();
-  const counts = { files: v?.file_count, versions: S.versions.length, jobs: S.jobs.length, runs: S.runs.length };
+  const counts = { files: v?.file_count, versions: S.versions.length, runs: S.runs.length };
   const tabs = h("div", { class: "tabs", role: "tablist" },
-    [["view", "View"], ["files", "Files"], ["versions", "Versions"], ["jobs", "Jobs"], ["runs", "Runs"], ["settings", "Settings"]].map(([k, label]) =>
+    [["view", "View"], ["files", "Files"], ["versions", "Versions"], ["job", "Job"], ["runs", "Runs"], ["settings", "Settings"]].map(([k, label]) =>
       h("button", { class: "tab", role: "tab", "aria-selected": String(S.tab === k), onclick: () => { S.tab = k; renderArtifact(); } },
         label, counts[k] != null ? h("span", { class: "count" }, " " + counts[k]) : null,
         k === "files" ? h("span", { class: "count", id: "staged-count", style: "color:var(--edit)" }, S.stage.size ? `, ${S.stage.size} staged` : "") : null)));
@@ -690,16 +691,15 @@ function pickedLine(v) {
   const a = S.art;
   if (!v) return h("div", { class: "picked" }, h("p", {}, "No versions yet. Add files and publish the first one."));
   const cur = v.version === a.current_version;
-  const run = v.run_id ? S.runs.find(r => r.id === v.run_id) : null;
   return h("div", { class: `picked o o-${v.origin}` },
     h("h2", {}, `Version ${v.version}`),
     h("p", {}, [
-      (ORIGIN[v.origin] || v.origin) + (v.job ? ` by ${v.job}` : ""),
+      ORIGIN[v.origin] || v.origin,
       v.label ? `, “${v.label}”` : "",
       `, ${v.file_count} ${v.file_count === 1 ? "file" : "files"}, ${fmtBytes(v.size_bytes)}, ${ago(v.created_at)}`,
       cur ? ". This is the current version." : ".",
     ].join("")),
-    run ? h("button", { class: "btn small quiet", onclick: () => { S.runSel = run.id; S.tab = "runs"; renderArtifact(); } }, "Open its run") : null,
+    cur && a.output ? h("button", { class: "btn small quiet", onclick: () => { S.tab = "job"; renderArtifact(); } }, `With the job's output ${a.output}`) : null,
     !cur ? h("button", { class: "btn small", onclick: () => restore(v.version) }, `Restore v${v.version}`) : null,
     !cur ? h("button", { class: "btn small quiet", onclick: () => pickVersion(null) }, "Show the current version") : null);
 }
@@ -714,7 +714,7 @@ function renderTab() {
   const old = $("#pane"); if (!old) return;
   const p = h("div", { class: "pane", id: "pane" });
   old.replaceWith(p);
-  ({ view: tabView, files: tabFiles, versions: tabVersions, jobs: tabJobs, runs: tabRuns, settings: tabSettings })[S.tab](p);
+  ({ view: tabView, files: tabFiles, versions: tabVersions, job: tabJob, runs: tabRuns, settings: tabSettings })[S.tab](p);
 }
 
 // ---------- View tab
@@ -776,7 +776,7 @@ const isTextPath = p => TEXT_EXT.test(p) || !/\.[^/]+$/.test(p);
 // triggered only, so publishing it as-is never schedules a failing run.
 const REFRESH_SH = `#!/bin/sh
 # Runs in the artifact's folder. Changes under data/ become a new version.
-# Run it from the Jobs tab; add "schedule" (cron) in artifact.json to repeat it.
+# Run it from the Job tab; add "schedule" (cron) in artifact.json to repeat it.
 set -e
 mkdir -p data
 date -u +%Y-%m-%dT%H:%M:%SZ > data/updated.txt
@@ -786,7 +786,7 @@ echo "wrote data/updated.txt"
 function stageSampleJob(cur) {
   const paths = (cur?.files || []).map(f => f.path);
   const spec = { ...(cur?.spec || {}) };
-  spec.jobs = { ...(spec.jobs || {}), refresh: { run: "sh refresh.sh", writes: ["data"] } };
+  spec.job = { run: "sh refresh.sh", writes: ["data"] };
   if (!paths.includes("refresh.sh")) stagePut("refresh.sh", REFRESH_SH);
   stagePut("artifact.json", JSON.stringify(spec, null, 2) + "\n");
 }
@@ -904,7 +904,7 @@ async function fillEditor(box, f, editable) {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); publish(); }
   });
   box.append(ta);
-  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. view is { type, entry }: a page (an HTML file that renders itself) or one file the frontend renders: markdown, csv, json, code, svg or image. Viewers reach the entry's folder; without a view, there's nothing to view. Jobs take run, writes, state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
+  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. view is { type, entry }: a page (an HTML file that renders itself) or one file the frontend renders: markdown, csv, json, code, svg or image. Viewers reach the entry's folder; without a view, there's nothing to view. job (one per artifact) takes run, writes (the paths it owns), state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
 }
 
 function stagePut(path, content) { S.stage.set(path, { content, size: new Blob([content]).size, text: true }); }
@@ -996,21 +996,18 @@ function fillStagebar(bar) {
   bar.replaceChildren();
   bar.hidden = !atCurrent() || (!S.stage.size && !S.mirror.length);
   if (bar.hidden) return;
-  const jobs = stagedJobNames();
   bar.append(...[h("strong", {}, `${S.stage.size} ${S.stage.size === 1 ? "change" : "changes"} on top of v${S.art.current_version}`),
     h("input", { type: "text", id: "pub-label", placeholder: "Label, optional", "aria-label": "Version label" }),
-    jobs.length ? h("span", { class: "row", style: "gap:12px" }, h("span", { class: "note" }, "Run after publishing:"),
-      jobs.map(j => h("label", { class: "check" }, h("input", { type: "checkbox", name: "run_now", value: j }), h("code", {}, j)))) : null,
+    stagedHasJob() ? h("label", { class: "check" }, h("input", { type: "checkbox", name: "run_now" }), "Run the job after publishing") : null,
     h("span", { class: "spacer" }),
     h("button", { class: "btn quiet", onclick: () => { S.stage.clear(); S.mirror = []; renderArtifact(); } }, "Discard"),
     h("button", { class: "btn primary", id: "btn-publish", onclick: publish }, `Publish v${S.art.current_version + 1}`)].filter(Boolean));
 }
-function stagedJobNames() {
+function stagedHasJob() {
   const op = S.stage.get("artifact.json");
-  if (op && op.content != null) { try { return Object.keys(JSON.parse(op.content).jobs || {}); } catch { return []; } }
-  if (op && op.delete) return [];
+  if (op && op.content != null) { try { return !!JSON.parse(op.content).job; } catch { return false; } }
   const v = S.vcache.get(vkey(S.art.id, S.art.current_version));
-  return Object.keys(v?.spec?.jobs || {});
+  return !!v?.spec?.job;
 }
 
 async function publish() {
@@ -1043,13 +1040,14 @@ async function publish() {
     const req = { base_version: a.current_version, files };
     if (S.mirror.length) req.replace_dirs = S.mirror;
     const label = $("#pub-label")?.value.trim(); if (label) req.label = label;
-    const runNow = [...document.querySelectorAll("input[name=run_now]:checked")].map(x => x.value);
-    if (runNow.length) req.run_now = runNow;
+    const runNow = !!document.querySelector("input[name=run_now]:checked");
+    if (runNow) req.run_now = true;
     const r = await api("POST", `/artifacts/${enc(a.id)}/versions`, req);
     toast(r.unchanged ? `Nothing changed: v${r.version.version} already has these files` : `Published v${r.version.version}`, "ok");
-    for (const j of r.jobs || []) if (j.needs_approval?.length) toast(`${j.name} needs approval: ${j.needs_approval.join("; ")}`);
+    if (r.job?.needs_approval?.length) toast(`The job needs approval: ${r.job.needs_approval.join("; ")}`);
+    if (r.shadowed?.length) toast(`The job's data still shows at ${r.shadowed.join(", ")}: the job owns those paths (reset its data in the Job tab to show what you published).`);
     S.stage.clear(); S.mirror = []; S.ver = null;
-    if (runNow.length) { S.tab = "runs"; S.runSel = null; }
+    if (runNow) { S.tab = "runs"; S.runSel = null; }
     await loadArtifact();
   } catch (e) {
     if (btn) btn.disabled = false;
@@ -1071,7 +1069,7 @@ function tabVersions(p) {
     tb.append(h("tr", { class: `link o o-${v.origin}`, "aria-selected": String(v.version === n), onclick: () => pickVersion(v.version) },
       h("td", {}, h("span", { class: "vnum" }, "v" + v.version), cur ? h("span", { class: "note" }, " current") : null),
       h("td", {}, h("span", { class: "tag" }, ORIGIN[v.origin] || v.origin)),
-      h("td", {}, v.job ? h("code", {}, v.job) : null, v.label ? (v.job ? " " : "") + v.label : null),
+      h("td", {}, v.label || null),
       h("td", { class: "num" }, v.file_count), h("td", { class: "num" }, fmtBytes(v.size_bytes)),
       h("td", { title: when(v.created_at) }, ago(v.created_at)),
       h("td", { style: "text-align:right;white-space:nowrap" },
@@ -1079,7 +1077,7 @@ function tabVersions(p) {
         !cur ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); restore(v.version); } }, "Restore") : null,
         h("a", { class: "btn small quiet", href: `/v1/artifacts/${enc(a.id)}/versions/${v.version}/export`, download: true, onclick: e => e.stopPropagation(), style: "text-decoration:none" }, "Zip"))));
   }
-  p.append(h("p", { class: "note" }, `Job-run versions beyond the newest ${a.retain_runs || S.info?.retain_runs || 24} are removed by garbage collection. Edits, restores and forks are kept.`),
+  p.append(h("p", { class: "note" }, "Versions are what was published (edits, restores, forks). The job's runs don't make versions: their outputs are in the Job tab."),
     h("table", {}, h("thead", {}, h("tr", {}, ["Version", "Origin", "Label", "Files", "Size", "Created", ""].map(x => h("th", {}, x)))), tb));
   if (S.compare) p.append(h("div", { id: "compare" }));
   if (S.compare) showCompare();
@@ -1107,61 +1105,79 @@ async function restore(n) {
   } catch {}
 }
 
-// ---------- Jobs tab
+// ---------- Job tab: the artifact's one job and its data
 const JOBSTATE = { scheduled: ["o-run", "Scheduled"], manual: ["", "Runs when triggered"], expired: ["o-restore", "Schedule window closed"], blocked: ["o-fault", "Blocked until approved"] };
-async function tabJobs(p) {
-  const a = S.art;
+async function tabJob(p) {
+  const a = S.art, j = S.job;
   const cur = a.current_version ? await loadVersion(a.id, a.current_version).catch(() => null) : null;
-  const specs = cur?.spec?.jobs || {};
-  if (!S.jobs.length) {
-    p.append(h("div", { class: "empty" }, h("h3", {}, "No jobs"),
-      h("p", { class: "note" }, "Jobs are commands in artifact.json. They run in a fired sandbox with the artifact's files, on a schedule or when triggered, and their writes become new versions."),
+  const s = cur?.spec?.job || {};
+  if (!j) {
+    p.append(h("div", { class: "empty" }, h("h3", {}, "No job"),
+      h("p", { class: "note" }, "An artifact can have one job, in artifact.json. It runs in a fired sandbox with the artifact's files, on a schedule or when triggered, and owns the paths in its writes: each run that changes them records an output that everyone sees there."),
       h("p", {}, h("button", { class: "btn", onclick: () => {
         S.tab = "files"; stageSampleJob(cur); S.fileSel = "artifact.json"; renderArtifact(); } }, "Add a job"))));
     return;
   }
-  for (const j of S.jobs) {
-    const s = specs[j.name] || {};
-    const [cls, label] = JOBSTATE[j.state] || ["", j.state];
-    const busy = S.runs.find(r => r.job === j.name && r.status === "running");
-    const dl = h("dl", {},
-      j.schedule ? [h("dt", {}, "Schedule"), h("dd", {}, h("code", {}, j.schedule), s.timezone ? ` in ${s.timezone}` : " in UTC")] : null,
-      j.next_run ? [h("dt", {}, "Next run"), h("dd", { title: when(j.next_run) }, until(j.next_run))] : null,
-      j.active_until ? [h("dt", {}, "Schedule on until"), h("dd", { title: when(j.active_until) }, when(j.active_until))] : null,
-      [h("dt", {}, "Longest run"), h("dd", {}, fmtDur(j.max_run) || "")],
-      s.writes?.length ? [h("dt", {}, "Writes"), h("dd", {}, s.writes.map((w, i) => [i ? ", " : "", h("code", {}, w)]))] : [h("dt", {}, "Writes"), h("dd", {}, "nothing, so runs never create versions")],
-      s.state ? [h("dt", {}, "Keeps state in"), h("dd", {}, h("code", {}, s.state))] : null,
-      [h("dt", {}, "When busy"), h("dd", {}, s.on_busy === "queue" ? `queue every trigger (up to ${s.queue?.max || 100}, ${fmtDur(s.queue?.max_age) || "24h"} old)` : "keep only the newest trigger")],
-      j.pending ? [h("dt", {}, "Waiting"), h("dd", {}, `${j.pending} ${j.pending === 1 ? "run" : "runs"}`)] : null,
-      s.template ? [h("dt", {}, "Template"), h("dd", {}, s.template)] : null);
-    p.append(h("section", { class: "job" },
-      h("div", { style: "display:flex;flex-direction:column;gap:10px;min-width:0" },
-        h("h3", {}, h("code", {}, j.name), h("span", { class: `tag o ${cls}${busy ? " busy" : ""}` }, busy ? "Running now" : label)),
-        h("pre", { class: "out" }, s.run || ""),
-        dl,
-        j.needs_approval?.length ? h("ul", { class: "needs" }, j.needs_approval.map(x => h("li", {}, x))) : null),
-      h("div", { class: "actions" },
-        h("button", { class: "btn" + (j.state === "blocked" ? "" : " primary"), disabled: j.state === "blocked", onclick: () => trigger(j.name) }, "Run now"),
-        h("button", { class: "btn", disabled: j.state === "blocked", onclick: () => runDialog(j.name) }, "Run with payload"),
-        h("button", { class: "btn" + (j.state === "blocked" ? " primary" : j.needs_approval?.length ? "" : " quiet"), onclick: () => grantDialog(j) }, "Approve"),
-        h("button", { class: "btn quiet", onclick: () => setGrant(j.name, { active_until: "0001-01-01T00:00:00Z" }, "Grant revoked") }, "Revoke"),
-        h("button", { class: "btn quiet", onclick: () => { S.tab = "runs"; S.runFilter = j.name; renderArtifact(); } }, "Show runs"))));
+  const [cls, label] = JOBSTATE[j.state] || ["", j.state];
+  const busy = S.runs.find(r => r.status === "running");
+  const dl = h("dl", {},
+    j.schedule ? [h("dt", {}, "Schedule"), h("dd", {}, h("code", {}, j.schedule), s.timezone ? ` in ${s.timezone}` : " in UTC")] : null,
+    j.next_run ? [h("dt", {}, "Next run"), h("dd", { title: when(j.next_run) }, until(j.next_run))] : null,
+    j.active_until ? [h("dt", {}, "Schedule on until"), h("dd", { title: when(j.active_until) }, when(j.active_until))] : null,
+    [h("dt", {}, "Longest run"), h("dd", {}, fmtDur(j.max_run) || "")],
+    s.writes?.length ? [h("dt", {}, "Owns"), h("dd", {}, s.writes.flatMap((w, i) => [i ? ", " : "", h("code", {}, w)]))] : [h("dt", {}, "Owns"), h("dd", {}, "nothing, so runs record no data")],
+    s.state ? [h("dt", {}, "Keeps state in"), h("dd", {}, h("code", {}, s.state))] : null,
+    [h("dt", {}, "When busy"), h("dd", {}, s.on_busy === "queue" ? `queue every trigger (up to ${s.queue?.max || 100}, ${fmtDur(s.queue?.max_age) || "24h"} old)` : "keep only the newest trigger")],
+    j.pending ? [h("dt", {}, "Waiting"), h("dd", {}, `${j.pending} ${j.pending === 1 ? "run" : "runs"}`)] : null,
+    s.template ? [h("dt", {}, "Template"), h("dd", {}, s.template)] : null);
+  p.append(h("section", { class: "job" },
+    h("div", { style: "display:flex;flex-direction:column;gap:10px;min-width:0" },
+      h("h3", {}, "The job", h("span", { class: `tag o ${cls}${busy ? " busy" : ""}` }, busy ? "Running now" : label)),
+      h("pre", { class: "out" }, s.run || ""),
+      dl,
+      j.needs_approval?.length ? h("ul", { class: "needs" }, j.needs_approval.map(x => h("li", {}, x))) : null),
+    h("div", { class: "actions" },
+      h("button", { class: "btn" + (j.state === "blocked" ? "" : " primary"), disabled: j.state === "blocked", onclick: () => trigger() }, "Run now"),
+      h("button", { class: "btn", disabled: j.state === "blocked", onclick: () => runDialog() }, "Run with payload"),
+      h("button", { class: "btn" + (j.state === "blocked" ? " primary" : j.needs_approval?.length ? "" : " quiet"), onclick: () => grantDialog(j) }, "Approve"),
+      h("button", { class: "btn quiet", onclick: () => setGrant({ active_until: "0001-01-01T00:00:00Z" }, "Grant revoked") }, "Revoke"))));
+  // Its data: the current output (what everyone sees under its writes) and
+  // the ones kept.
+  const d = S.data || { current: 0, outputs: [] };
+  const sec = h("section", { class: "section" }, h("h3", {}, "Data"));
+  if (!d.outputs.length) {
+    sec.append(h("p", { class: "note" }, d.current ? "" : "No output yet: the version's own files under the job's paths are shown (its seed)."));
+  } else {
+    const curOut = d.outputs.find(o => o.output === d.current);
+    if (curOut) sec.append(h("p", {}, `Output ${curOut.output} is what everyone sees, from run `, h("code", {}, curOut.run_id), ` on v${curOut.version}, ${ago(curOut.created_at)}: `,
+      ...curOut.files.map((f, i) => [i ? ", " : "", h("a", { href: `/v1/artifacts/${enc(a.id)}/files/${encPath(f.path)}`, target: "_blank", rel: "noopener" }, f.path)])));
+    const tb = h("tbody");
+    for (const o of d.outputs) tb.append(h("tr", {}, h("td", {}, `#${o.output}`, o.output === d.current ? h("span", { class: "note" }, " current") : null),
+      h("td", {}, h("code", {}, o.run_id)), h("td", {}, `v${o.version}`), h("td", { class: "num" }, o.file_count), h("td", { class: "num" }, fmtBytes(o.size_bytes)),
+      h("td", { title: when(o.created_at) }, ago(o.created_at))));
+    sec.append(h("table", {}, h("thead", {}, h("tr", {}, ["Output", "Run", "On", "Files", "Size", "Recorded"].map(x => h("th", {}, x)))), tb),
+      h("p", { class: "note" }, `The newest ${a.retain_outputs || S.info?.retain_outputs || 24} outputs are kept.`),
+      h("p", {}, h("button", { class: "btn danger", onclick: async () => {
+        if (!confirm("Reset the job's data? Its outputs are removed, the version's own files under its paths show again, and the next run starts from them.")) return;
+        try { await guard(() => api("DELETE", `/artifacts/${enc(a.id)}/data`), "Data reset"); await loadArtifact(); } catch {}
+      } }, "Reset data")));
   }
+  p.append(sec);
 }
-async function trigger(job, payload, times = 1) {
+async function trigger(payload, times = 1) {
   const a = S.art;
   let last;
   for (let i = 0; i < times; i++) {
-    try { last = await api("POST", `/artifacts/${enc(a.id)}/jobs/${enc(job)}/runs`, payload !== undefined ? { payload } : undefined); }
-    catch (e) { toast(e.code === "queue_full" ? `The queue for ${job} is full. ${e.message}` : e.message, "err"); break; }
+    try { last = await api("POST", `/artifacts/${enc(a.id)}/job/runs`, payload !== undefined ? { payload } : undefined); }
+    catch (e) { toast(e.code === "queue_full" ? `The job's queue is full. ${e.message}` : e.message, "err"); break; }
   }
-  if (last) { toast(times > 1 ? `Triggered ${job} ${times} times` : `Triggered ${job}`, "ok"); S.runSel = last.id; S.tab = "runs"; }
+  if (last) { toast(times > 1 ? `Triggered the job ${times} times` : "Triggered the job", "ok"); S.runSel = last.id; S.tab = "runs"; }
   await loadArtifact();
 }
 const dlgRun = $("#dlg-run");
-function runDialog(job) {
-  dlgRun.querySelector("form").reset(); dlgRun.returnValue = ""; dlgRun.dataset.job = job;
-  $("#dlg-run-title").textContent = `Run ${job}`;
+function runDialog() {
+  dlgRun.querySelector("form").reset(); dlgRun.returnValue = "";
+  $("#dlg-run-title").textContent = "Run the job";
   dlgRun.showModal();
 }
 dlgRun.addEventListener("close", () => {
@@ -1169,12 +1185,12 @@ dlgRun.addEventListener("close", () => {
   const f = dlgRun.querySelector("form").elements;
   let payload;
   if (f.payload.value.trim()) { try { payload = JSON.parse(f.payload.value); } catch (e) { toast("The payload isn't valid JSON: " + e.message, "err"); return; } }
-  trigger(dlgRun.dataset.job, payload, Math.max(1, Math.min(50, +f.times.value || 1)));
+  trigger(payload, Math.max(1, Math.min(50, +f.times.value || 1)));
 });
 const dlgGrant = $("#dlg-grant");
 function grantDialog(j) {
-  const f = dlgGrant.querySelector("form"); f.reset(); dlgGrant.returnValue = ""; dlgGrant.dataset.job = j.name;
-  $("#dlg-grant-title").textContent = `Approve ${j.name}`;
+  const f = dlgGrant.querySelector("form"); f.reset(); dlgGrant.returnValue = "";
+  $("#dlg-grant-title").textContent = "Approve the job";
   $("#grant-needs").replaceChildren(...(j.needs_approval || []).map(x => h("li", {}, x)));
   const d = new Date(Date.now() + 30 * 86400e3); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   f.elements.active_until.value = d.toISOString().slice(0, 16);
@@ -1186,10 +1202,10 @@ dlgGrant.addEventListener("close", () => {
   const f = dlgGrant.querySelector("form").elements;
   const g = { active_until: f.active_until.value ? new Date(f.active_until.value).toISOString() : "0001-01-01T00:00:00Z" };
   if (f.max_run.value.trim()) g.max_run = f.max_run.value.trim();
-  setGrant(dlgGrant.dataset.job, g, "Approved");
+  setGrant(g, "Approved");
 });
-async function setGrant(job, g, msg) {
-  try { await guard(() => api("PUT", `/artifacts/${enc(S.art.id)}/jobs/${enc(job)}/grant`, g), msg); await loadArtifact(); } catch {}
+async function setGrant(g, msg) {
+  try { await guard(() => api("PUT", `/artifacts/${enc(S.art.id)}/job/grant`, g), msg); await loadArtifact(); } catch {}
 }
 
 // ---------- Runs tab
@@ -1198,27 +1214,22 @@ const RUNLABEL = { pending: "Waiting", running: "Running", succeeded: "Succeeded
 let logTimer = null;
 function tabRuns(p) {
   clearTimeout(logTimer);
-  const jobs = [...new Set(S.runs.map(r => r.job))];
-  const runs = S.runs.filter(r => !S.runFilter || r.job === S.runFilter);
-  if (!S.runs.length) { p.append(h("div", { class: "empty" }, h("h3", {}, "No runs yet"), h("p", { class: "note" }, S.jobs.length ? "Start one from the Jobs tab, or wait for a schedule." : "Add a job to artifact.json to run something."))); return; }
+  const runs = S.runs;
+  if (!runs.length) { p.append(h("div", { class: "empty" }, h("h3", {}, "No runs yet"), h("p", { class: "note" }, S.job ? "Start one from the Job tab, or wait for the schedule." : "Add a job to artifact.json to run something."))); return; }
   if (!S.runSel && runs[0]) S.runSel = runs[0].id;
   const tb = h("tbody");
   for (const r of runs) {
     tb.append(h("tr", { class: "link", "aria-selected": String(r.id === S.runSel), onclick: () => { S.runSel = r.id; renderTab(); } },
       h("td", {}, h("span", { class: `tag o ${RUNSTATE[r.status] || ""}${r.status === "running" ? " busy" : ""}` }, RUNLABEL[r.status] || r.status)),
-      h("td", {}, h("code", {}, r.job)), h("td", {}, r.trigger),
+      h("td", {}, r.trigger),
       h("td", { title: when(r.started_at || r.created_at) }, ago(r.started_at || r.created_at)),
       h("td", { class: "num" }, fmtMs(r.duration_ms)),
-      h("td", {}, r.result_version ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); S.tab = "view"; pickVersion(r.result_version); } }, `v${r.result_version}`)
+      h("td", {}, r.output ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); S.tab = "job"; renderArtifact(); } }, `output ${r.output}`)
         : ["succeeded"].includes(r.status) ? h("span", { class: "note" }, "no changes") : null),
       h("td", { class: "note" }, r.reason || "")));
   }
-  p.append(h("div", { class: "row" },
-    jobs.length > 1 ? h("div", { class: "seg", role: "group", "aria-label": "Filter by job" },
-      h("button", { type: "button", "aria-pressed": String(!S.runFilter), onclick: () => { S.runFilter = null; renderTab(); } }, "All jobs"),
-      jobs.map(j => h("button", { type: "button", "aria-pressed": String(S.runFilter === j), onclick: () => { S.runFilter = j; renderTab(); } }, j))) : null,
-    h("span", { class: "spacer" }), h("span", { class: "note" }, "Finished runs and their logs are kept for 30 days.")),
-    h("table", {}, h("thead", {}, h("tr", {}, ["Status", "Job", "Trigger", "Started", "Took", "Wrote", "Reason"].map(x => h("th", {}, x)))), tb),
+  p.append(h("div", { class: "row" }, h("span", { class: "spacer" }), h("span", { class: "note" }, "Finished runs and their logs are kept for 30 days.")),
+    h("table", {}, h("thead", {}, h("tr", {}, ["Status", "Trigger", "Started", "Took", "Wrote", "Reason"].map(x => h("th", {}, x)))), tb),
     h("div", { id: "run-detail", style: "display:flex;flex-direction:column;gap:12px" }));
   showRun();
 }
@@ -1231,9 +1242,9 @@ async function showRun() {
       api("GET", `/artifacts/${enc(a.id)}/runs/${enc(id)}/logs`, undefined, { quiet: true }).catch(() => null)]);
   } catch (e) { box.replaceChildren(h("p", { class: "err-text" }, e.message)); return; }
   if (S.runSel !== id || S.tab !== "runs") return;
-  const facts = [`Run ${r.id}`, r.version ? `from v${r.version}` : null, r.exit_code != null ? `exit code ${r.exit_code}` : null].filter(Boolean).join(", ");
+  const facts = [`Run ${r.id}`, r.version ? `on v${r.version}` : null, r.exit_code != null ? `exit code ${r.exit_code}` : null].filter(Boolean).join(", ");
   box.replaceChildren(...[
-    h("div", { class: "row" }, h("h3", {}, `${r.job}, ${RUNLABEL[r.status]?.toLowerCase() || r.status}`), h("span", { class: "note" }, facts)),
+    h("div", { class: "row" }, h("h3", {}, RUNLABEL[r.status] || r.status), h("span", { class: "note" }, facts)),
     r.reason ? h("p", { class: "err-text", style: "margin:0" }, r.reason) : null,
     h("pre", { class: "out", "aria-label": "Output" },
       logs && (logs.stdout || logs.stderr) ? [logs.stdout ? logs.stdout : null, logs.stderr ? h("span", { style: "color:#FF9C8A" }, logs.stderr) : null, logs.truncated ? h("span", { class: "dim" }, "\n(earlier output dropped)") : null]
@@ -1249,11 +1260,11 @@ async function tabSettings(p) {
   const labels = h("textarea", { rows: 2 }); labels.value = kvText(a.labels);
   const qk = h("input", { type: "text", value: a.quota_key });
   const da = h("input", { type: "text", value: a.delete_after && a.delete_after !== "0s" ? fmtDur(a.delete_after) === "never" ? "-1" : fmtDur(a.delete_after) : "", placeholder: "Service default" });
-  const rr = h("input", { type: "number", min: 0, value: a.retain_runs || "", placeholder: `Service default, ${S.info?.retain_runs ?? 24}` });
+  const rr = h("input", { type: "number", min: 0, value: a.retain_outputs || "", placeholder: `Service default, ${S.info?.retain_outputs ?? 24}` });
   p.append(h("section", { class: "section" }, h("h3", {}, "Details"),
     h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Title")), title), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Description")), desc)),
     h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Labels"), ", one key=value per line"), labels), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Quota key")), qk)),
-    h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Delete after inactive for"), ", -1 for never"), da), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Job-run versions to keep")), rr)),
+    h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Delete after inactive for"), ", -1 for never"), da), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Job outputs to keep")), rr)),
     h("div", { class: "row" }, h("button", { class: "btn primary", onclick: async () => {
       try {
         // Title and description are in artifact.json, so changing them
@@ -1266,7 +1277,7 @@ async function tabSettings(p) {
         for (const k of Object.keys(a.labels || {})) if (!(k in lb)) lb[k] = null;
         const req = { labels: lb, quota_key: qk.value.trim() };
         req.delete_after = da.value.trim() || "0s";
-        req.retain_runs = +rr.value || 0;
+        req.retain_outputs = +rr.value || 0;
         await guard(() => api("PATCH", `/artifacts/${enc(a.id)}`, req), "Saved");
         await loadArtifact(); refreshList();
       } catch (e) { if (!e.shown) toast(e.message, "err"); }
@@ -1330,7 +1341,7 @@ dlgNew.addEventListener("close", async () => {
     if (f.id.value.trim()) req.id = f.id.value.trim();
     const labels = kvLines(f.labels.value); if (Object.keys(labels).length) req.labels = labels;
     if (f.delete_after.value.trim()) req.delete_after = f.delete_after.value.trim();
-    if (+f.retain_runs.value) req.retain_runs = +f.retain_runs.value;
+    if (+f.retain_outputs.value) req.retain_outputs = +f.retain_outputs.value;
     req.publish = { title, label: "first version", files: [{ path: "index.html", content: starterPage(title) }],
       spec: { view: { type: "page", entry: "index.html" } } };
     const r = await guard(() => api("POST", "/artifacts", req), `Created ${title}`);
@@ -1341,7 +1352,7 @@ const dlgFork = $("#dlg-fork");
 function forkDialog(n) {
   const f = dlgFork.querySelector("form"); f.reset(); dlgFork.returnValue = ""; dlgFork.dataset.version = n;
   $("#dlg-fork-title").textContent = `Fork v${n}`;
-  $("#fork-note").textContent = "The fork starts with this version's files. Blobs are shared, not copied. Jobs come along but their schedules stay off until the new owner publishes, and run state isn't copied.";
+  $("#fork-note").textContent = "The fork starts with what this version shows, the job's current data included. Blobs are shared, not copied. The job comes along but its schedule stays off until the new owner publishes, and its run state and older outputs aren't copied.";
   f.elements.quota_key.value = S.art.quota_key; f.elements.title.value = titleOf(S.art) + " (fork)";
   dlgFork.showModal();
 }
@@ -1378,10 +1389,11 @@ function drawerUpdate(kind) {
 }
 function describe(e) {
   switch (e.type) {
-    case "artifact.version": return `v${e.version}, ${ORIGIN[e.origin]?.toLowerCase() || e.origin}${e.job ? " by " + e.job : ""}`;
-    case "run.started": return `${e.job} started`;
-    case "run.finished": return `${e.job} ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.reason ? ": " + e.reason : ""}${e.notify ? `, notify ${e.notify}` : ""}`;
-    case "run.dropped": return `${e.job || "a run"} dropped: ${e.reason}`;
+    case "artifact.version": return `v${e.version}, ${ORIGIN[e.origin]?.toLowerCase() || e.origin}`;
+    case "artifact.data": return e.output ? `job data: output ${e.output}` : "job data reset";
+    case "run.started": return "run started";
+    case "run.finished": return `run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.output ? `, output ${e.output}` : ""}${e.reason ? ": " + e.reason : ""}${e.notify ? `, notify ${e.notify}` : ""}`;
+    case "run.dropped": return `run dropped: ${e.reason}`;
     default: return "";
   }
 }
@@ -1402,13 +1414,13 @@ function connectEvents() {
   es = new EventSource("/v1/events");
   es.onopen = () => { S.live = true; renderStatus(); };
   es.onerror = () => { S.live = false; renderStatus(); };
-  for (const t of ["artifact.created", "artifact.deleted", "artifact.version", "run.started", "run.finished", "run.dropped"]) {
+  for (const t of ["artifact.created", "artifact.deleted", "artifact.version", "artifact.data", "run.started", "run.finished", "run.dropped"]) {
     es.addEventListener(t, m => {
       let e; try { e = JSON.parse(m.data); } catch { return; }
       e.clock = clock(); events.push(e); if (events.length > 500) events.shift();
       drawerUpdate("events");
       if (t === "artifact.version") S.fresh.add(vkey(e.artifact, e.version));
-      if (t === "run.finished" && e.artifact === S.sel) toast(`${e.job} ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.reason ? ": " + e.reason : ""}`, e.status === "succeeded" ? "ok" : "err");
+      if (t === "run.finished" && e.artifact === S.sel) toast(`The job's run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.output ? `, output ${e.output}` : ""}${e.reason ? ": " + e.reason : ""}`, e.status === "succeeded" ? "ok" : "err");
       clearTimeout(evTimer);
       evTimer = setTimeout(() => onChange(e), 250);
     });
@@ -1427,7 +1439,8 @@ async function onChange(e) {
   }
   const keep = (S.tab === "view" && $("#frame")) || S.tab === "settings" ? $("#pane") : null;
   await loadArtifact(keep);
-  if (keep && S.tab === "view" && S.art && S.art.current_version !== before) reloadFrame();
+  // New data shows without a new version: reload the view for it too.
+  if (keep && S.tab === "view" && S.art && (S.art.current_version !== before || e.type === "artifact.data")) reloadFrame();
 }
 
 // ---------- login
@@ -1536,11 +1549,11 @@ A note kept as an artifact. Each edit is a version, so you can compare and resto
 </svg>
 `,
     } },
-  { slug: "clock", title: "A page a job keeps fresh", tab: "runs", run_now: ["tick"],
+  { slug: "clock", title: "A page a job keeps fresh", tab: "runs", run_now: true,
     about: "A scheduled job (every 5 minutes) writes data/now.json, and keeps a run counter in its state directory. Each run that changes the data adds a job-run version; the page shows it.",
     files: {
       "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
-        jobs: { tick: { run: "sh tick.sh", writes: ["data"], state: ".state", schedule: "*/5 * * * *", timeout: "2m" } } }, null, 2) + "\n",
+        job: { run: "sh tick.sh", writes: ["data"], state: ".state", schedule: "*/5 * * * *", timeout: "2m" } }, null, 2) + "\n",
       "tick.sh": { content: `#!/bin/sh
 set -e
 mkdir -p data .state
@@ -1578,11 +1591,11 @@ fetch("data/now.json").then(r => r.json()).then(d => {
 </html>
 `,
     } },
-  { slug: "table", title: "A table a job rebuilds", tab: "runs", run_now: ["build"],
+  { slug: "table", title: "A table a job rebuilds", tab: "runs", run_now: true,
     about: "An hourly job regenerates data/sales.csv with awk; the page fetches it and draws the table, so each run's data shows without changing the page. The build folder is mirrored on every run.",
     files: {
       "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
-        jobs: { build: { run: "sh build.sh", writes: ["data"], schedule: "@hourly" } } }, null, 2) + "\n",
+        job: { run: "sh build.sh", writes: ["data"], schedule: "@hourly" } }, null, 2) + "\n",
       "index.html": `<!doctype html>
 <html lang="en">
 <head>
@@ -1629,7 +1642,7 @@ echo "wrote $(wc -l < data/sales.csv) lines to data/sales.csv"
     about: "A job with no schedule and on_busy set to queue. Run it with a payload several times at once: every trigger waits its turn and appends to inbox.md.",
     files: {
       "artifact.json": JSON.stringify({
-        jobs: { handle: { run: "sh handle.sh", writes: ["inbox.md"], on_busy: "queue", queue: { max: 20, max_age: "1h" } } } }, null, 2) + "\n",
+        job: { run: "sh handle.sh", writes: ["inbox.md"], on_busy: "queue", queue: { max: 20, max_age: "1h" } } }, null, 2) + "\n",
       "handle.sh": `#!/bin/sh
 set -e
 # Under the fake driver, guest paths live under the sandbox's root folder.
@@ -1718,14 +1731,14 @@ export default function Tally({ marks }) {
     about: "Asks for a 2h timeout and a 30-day schedule, more than the defaults allow. It's blocked until you approve it, which is what your backend does with a grant.",
     files: {
       "artifact.json": JSON.stringify({
-        jobs: { nightly: { run: "echo long job; sleep 3; echo done", schedule: "@daily", timeout: "2h", active_for: "720h" } } }, null, 2) + "\n",
+        job: { run: "echo long job; sleep 3; echo done", schedule: "@daily", timeout: "2h", active_for: "720h" } }, null, 2) + "\n",
       "README.md": "# Nightly\n\nThis job wants to run for up to 2 hours, every day for 30 days. Open the Jobs tab and approve it.\n",
     } },
-  { slug: "failing", title: "A job that fails", tab: "runs", run_now: ["check"],
+  { slug: "failing", title: "A job that fails", tab: "runs", run_now: true,
     about: "Prints to stdout and stderr, then exits with status 3. A failed run creates no version and keeps no state; its logs say why.",
     files: {
       "artifact.json": JSON.stringify({
-        jobs: { check: { run: "sh check.sh", writes: ["report.txt"] } } }, null, 2) + "\n",
+        job: { run: "sh check.sh", writes: ["report.txt"] } }, null, 2) + "\n",
       "check.sh": `#!/bin/sh
 echo "checking the report inputs"
 echo "report.txt would be written here" > report.txt

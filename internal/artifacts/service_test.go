@@ -249,10 +249,11 @@ func TestPublishSemantics(t *testing.T) {
 			{BaseVersion: cur, Spec: &pa.Spec{View: &pa.View{Type: pa.ViewPage, Entry: "b.txt"}}},
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"view":{"type":"html","entry":"index.html"}}`)}},
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"jobs":{"a":{"run":"x","schedul":"* * * * *"}}}`)}},
-			{BaseVersion: cur, Spec: &pa.Spec{Jobs: map[string]pa.Job{"a": {Run: "x", Schedule: "61 * * * *"}}}},
-			{BaseVersion: cur, Spec: &pa.Spec{Jobs: map[string]pa.Job{"a": {Run: "x", Writes: []string{pa.SpecFile}}}}},
-			{BaseVersion: cur, Spec: &pa.Spec{Jobs: map[string]pa.Job{"a": {Run: "x", Writes: []string{"out"}, State: "out/state"}}}},
-			{BaseVersion: cur, Spec: &pa.Spec{Jobs: map[string]pa.Job{"Bad Name": {Run: "x"}}}},
+			{BaseVersion: cur, Spec: &pa.Spec{Job: &pa.Job{Run: "x", Schedule: "61 * * * *"}}},
+			{BaseVersion: cur, Spec: &pa.Spec{Job: &pa.Job{Run: "x", Writes: []string{pa.SpecFile}}}},
+			{BaseVersion: cur, Spec: &pa.Spec{Job: &pa.Job{Run: "x", Writes: []string{"out"}, State: "out/state"}}},
+			{BaseVersion: cur, Spec: &pa.Spec{Job: &pa.Job{Run: " "}}},
+			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"jobs":{"a":{"run":"x"}}}`)}},
 		}
 		for i, req := range bad {
 			if _, err := c.Publish(ctx, id, req); err == nil {
@@ -331,8 +332,8 @@ func TestPublishSemantics(t *testing.T) {
 			t.Fatalf("list: %+v", l)
 		}
 		ra := 3
-		a := must(c.Update(ctx, id, pa.UpdateArtifactRequest{RetainRuns: &ra, Meta: json.RawMessage(`{"title":"New","n":12345678901234567890}`)}))(t)
-		if a.RetainRuns != 3 || string(a.Meta) != `{"n":12345678901234567890,"title":"New"}` {
+		a := must(c.Update(ctx, id, pa.UpdateArtifactRequest{RetainOutputs: &ra, Meta: json.RawMessage(`{"title":"New","n":12345678901234567890}`)}))(t)
+		if a.RetainOutputs != 3 || string(a.Meta) != `{"n":12345678901234567890,"title":"New"}` {
 			t.Fatalf("update: %+v %s", a, a.Meta)
 		}
 		// Labels and meta merge: null removes a key, the rest are kept.
@@ -340,7 +341,7 @@ func TestPublishSemantics(t *testing.T) {
 		a = must(c.Update(ctx, id, pa.UpdateArtifactRequest{
 			Labels: map[string]*string{"session": nil, "stage": str("draft")},
 			Meta:   json.RawMessage(`{"n":null,"description":"d"}`)}))(t)
-		if len(a.Labels) != 1 || a.Labels["stage"] != "draft" || string(a.Meta) != `{"description":"d","title":"New"}` || a.RetainRuns != 3 {
+		if len(a.Labels) != 1 || a.Labels["stage"] != "draft" || string(a.Meta) != `{"description":"d","title":"New"}` || a.RetainOutputs != 3 {
 			t.Fatalf("merge: %+v %s", a, a.Meta)
 		}
 		a = must(c.Update(ctx, id, pa.UpdateArtifactRequest{Labels: map[string]*string{"stage": nil}, Meta: json.RawMessage(`null`)}))(t)
@@ -379,91 +380,86 @@ func TestStorageQuota(t *testing.T) {
 	}
 }
 
-func TestJobsWindowsAndTriggers(t *testing.T) {
+func TestJobWindowsAndTriggers(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
 	c := h.c
-	spec := &pa.Spec{Jobs: map[string]pa.Job{
-		"refresh": {Run: "python refresh.py", Writes: []string{"out"}, State: ".state", Schedule: "*/10 * * * *"},
-		"long":    {Run: "sleep 1", Timeout: pa.Duration(2 * time.Hour)},
-		"hook":    {Run: "handle", OnBusy: pa.OnBusyQueue, Queue: &pa.QueueSpec{Max: 2}},
-		"monthly": {Run: "report", Schedule: "@monthly", ActiveFor: pa.Duration(720 * time.Hour)},
-	}}
-	res := must(c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
-		Files: []pa.FileOp{pa.Text("README.md", "hi")}, Spec: spec}}))(t)
-	id := res.Artifact.ID
-	jobs := map[string]pa.JobStatus{}
-	for _, j := range res.Publish.Jobs {
-		jobs[j.Name] = j
+	mk := func(job pa.Job) (string, *pa.JobStatus) {
+		t.Helper()
+		res := must(c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
+			Files: []pa.FileOp{pa.Text("README.md", "hi")}, Spec: &pa.Spec{Job: &job}}}))(t)
+		return res.Artifact.ID, res.Publish.Job
 	}
-	if j := jobs["refresh"]; j.State != pa.JobScheduled || j.ActiveUntil == nil || !j.ActiveUntil.Equal(h.now.Add(12*time.Hour)) ||
+	refresh, j := mk(pa.Job{Run: "python refresh.py", Writes: []string{"out"}, State: ".state", Schedule: "*/10 * * * *"})
+	if j.State != pa.JobScheduled || j.ActiveUntil == nil || !j.ActiveUntil.Equal(h.now.Add(12*time.Hour)) ||
 		j.NextRun == nil || !j.NextRun.Equal(h.now.Add(10*time.Minute)) {
 		t.Fatalf("refresh: %+v", j)
 	}
-	if j := jobs["long"]; j.State != pa.JobBlocked || len(j.NeedsApproval) != 1 {
+	long, j := mk(pa.Job{Run: "sleep 1", Timeout: pa.Duration(2 * time.Hour)})
+	if j.State != pa.JobBlocked || len(j.NeedsApproval) != 1 {
 		t.Fatalf("long: %+v", j)
 	}
-	if j := jobs["hook"]; j.State != pa.JobManual {
+	hook, j := mk(pa.Job{Run: "handle", OnBusy: pa.OnBusyQueue, Queue: &pa.QueueSpec{Max: 2}})
+	if j.State != pa.JobManual {
 		t.Fatalf("hook: %+v", j)
 	}
-	if j := jobs["monthly"]; j.State != pa.JobScheduled || len(j.NeedsApproval) != 1 || !j.ActiveUntil.Equal(h.now.Add(12*time.Hour)) {
+	monthly, j := mk(pa.Job{Run: "report", Schedule: "@monthly", ActiveFor: pa.Duration(720 * time.Hour)})
+	if j.State != pa.JobScheduled || len(j.NeedsApproval) != 1 || !j.ActiveUntil.Equal(h.now.Add(12*time.Hour)) {
 		t.Fatalf("monthly runs in the default window until approved: %+v", j)
 	}
+	none := must(c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", "a")}}}))(t)
+	if none.Publish.Job != nil {
+		t.Fatalf("no job, but a status: %+v", none.Publish.Job)
+	}
+	_, err := c.Job(ctx, none.Artifact.ID)
+	wantCode(t, err, 404, "no_job")
 
 	// A blocked job can't be triggered until a grant covers its timeout.
-	_, err := c.Trigger(ctx, id, "long", nil)
+	_, err = c.Trigger(ctx, long, nil)
 	wantCode(t, err, 409, "needs_approval")
-	g := must(c.Grant(ctx, id, "long", pa.Grant{MaxRun: pa.Duration(3 * time.Hour)}))(t)
+	g := must(c.Grant(ctx, long, pa.Grant{MaxRun: pa.Duration(3 * time.Hour)}))(t)
 	if g.State != pa.JobManual || len(g.NeedsApproval) != 0 {
 		t.Fatalf("after grant: %+v", g)
 	}
-	must(c.Trigger(ctx, id, "long", nil))(t)
+	must(c.Trigger(ctx, long, nil))(t)
 
 	// latest: a new trigger replaces the pending one.
-	r1 := must(c.Trigger(ctx, id, "refresh", json.RawMessage(`{"n":1}`)))(t)
-	r2 := must(c.Trigger(ctx, id, "refresh", json.RawMessage(`{"n":2}`)))(t)
-	if old := must(c.Run(ctx, id, r1.ID))(t); old.Status != pa.RunSuperseded {
+	r1 := must(c.Trigger(ctx, refresh, json.RawMessage(`{"n":1}`)))(t)
+	r2 := must(c.Trigger(ctx, refresh, json.RawMessage(`{"n":2}`)))(t)
+	if old := must(c.Run(ctx, refresh, r1.ID))(t); old.Status != pa.RunSuperseded {
 		t.Fatalf("first trigger: %+v", old)
 	}
-	if p := must(c.Runs(ctx, id, "refresh", pa.RunPending))(t); len(p) != 1 || p[0].ID != r2.ID {
+	if p := must(c.Runs(ctx, refresh, pa.RunPending))(t); len(p) != 1 || p[0].ID != r2.ID {
 		t.Fatalf("pending refresh runs: %+v", p)
 	}
 
 	// queue: triggers accumulate up to max, then 429.
-	must(c.Trigger(ctx, id, "hook", json.RawMessage(`{"e":1}`)))(t)
-	must(c.Trigger(ctx, id, "hook", json.RawMessage(`{"e":2}`)))(t)
-	_, err = c.Trigger(ctx, id, "hook", json.RawMessage(`{"e":3}`))
+	must(c.Trigger(ctx, hook, json.RawMessage(`{"e":1}`)))(t)
+	must(c.Trigger(ctx, hook, json.RawMessage(`{"e":2}`)))(t)
+	_, err = c.Trigger(ctx, hook, json.RawMessage(`{"e":3}`))
 	wantCode(t, err, 429, "queue_full")
 
 	// The schedule window expires; publishing re-arms it.
 	h.now = h.now.Add(13 * time.Hour)
-	js := must(c.Jobs(ctx, id))(t)
-	for _, j := range js {
-		if j.Name == "refresh" && j.State != pa.JobExpired {
-			t.Fatalf("refresh after 13h: %+v", j)
-		}
+	if j := must(c.Job(ctx, refresh))(t); j.State != pa.JobExpired {
+		t.Fatalf("refresh after 13h: %+v", j)
 	}
-	cur := must(c.Get(ctx, id))(t).CurrentVersion
-	pr := must(c.Publish(ctx, id, pa.PublishRequest{BaseVersion: cur, Files: []pa.FileOp{pa.Text("README.md", "hi again")}}))(t)
-	for _, j := range pr.Jobs {
-		if j.Name == "refresh" && j.State != pa.JobScheduled {
-			t.Fatalf("refresh after republish: %+v", j)
-		}
+	pr := must(c.Publish(ctx, refresh, pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{pa.Text("README.md", "hi again")}}))(t)
+	if pr.Job == nil || pr.Job.State != pa.JobScheduled {
+		t.Fatalf("refresh after republish: %+v", pr.Job)
 	}
 
 	// A grant extends the window beyond the default.
 	until := h.now.Add(30 * 24 * time.Hour)
-	g = must(c.Grant(ctx, id, "monthly", pa.Grant{ActiveUntil: until}))(t)
+	g = must(c.Grant(ctx, monthly, pa.Grant{ActiveUntil: until}))(t)
 	if g.State != pa.JobScheduled || len(g.NeedsApproval) != 0 || !g.ActiveUntil.Equal(until) {
 		t.Fatalf("monthly after grant: %+v", g)
 	}
 
-	// A fork copies jobs but not their activation.
-	f := must(c.Fork(ctx, id, pa.ForkRequest{QuotaKey: "u2"}))(t)
-	for _, j := range must(c.Jobs(ctx, f.ID))(t) {
-		if j.Name == "refresh" && j.State != pa.JobExpired {
-			t.Fatalf("forked refresh should be inactive: %+v", j)
-		}
+	// A fork copies the job but not its activation.
+	f := must(c.Fork(ctx, refresh, pa.ForkRequest{QuotaKey: "u2"}))(t)
+	if j := must(c.Job(ctx, f.ID))(t); j.State != pa.JobExpired {
+		t.Fatalf("forked job should be inactive: %+v", j)
 	}
 }
 
@@ -472,18 +468,13 @@ func TestScheduleFiring(t *testing.T) {
 	ctx := context.Background()
 	must(h.c.PutTier(ctx, pa.Tier{Name: pa.DefaultTier, Limits: pa.Quota{MinInterval: pa.Duration(15 * time.Minute)}}))(t)
 	res := must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
-		Spec: &pa.Spec{Jobs: map[string]pa.Job{"poll": {Run: "true", Schedule: "*/5 * * * *"}, "daily": {Run: "true", Schedule: "0 3 * * *"}}}}}))(t)
+		Spec: &pa.Spec{Job: &pa.Job{Run: "true", Schedule: "*/5 * * * *"}}}}))(t)
 	id := res.Artifact.ID
-	next := func(job string) *time.Time {
-		for _, j := range must(h.c.Jobs(ctx, id))(t) {
-			if j.Name == job {
-				return j.NextRun
-			}
-		}
-		return nil
-	}
+	daily := must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
+		Spec: &pa.Spec{Job: &pa.Job{Run: "true", Schedule: "0 3 * * *"}}}}))(t)
+	next := func(id string) *time.Time { return must(h.c.Job(ctx, id))(t).NextRun }
 	// 03:00 tomorrow is after the 12h window: no next run to show.
-	if n := next("daily"); n != nil {
+	if n := next(daily.Artifact.ID); n != nil {
 		t.Fatalf("next run past the window: %v", n)
 	}
 	fire := func() {
@@ -491,7 +482,7 @@ func TestScheduleFiring(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	runs := func() []pa.Run { return must(h.c.Runs(ctx, id, "poll", ""))(t) }
+	runs := func() []pa.Run { return must(h.c.Runs(ctx, id, ""))(t) }
 
 	fire()
 	if len(runs()) != 0 {
@@ -504,7 +495,7 @@ func TestScheduleFiring(t *testing.T) {
 	}
 	// The quota's 15m minimum interval skips the next two slots, and
 	// next_run says so.
-	if n := next("poll"); n == nil || !n.Equal(h.now.Add(15*time.Minute)) {
+	if n := next(id); n == nil || !n.Equal(h.now.Add(15*time.Minute)) {
 		t.Fatalf("next run after firing: %v, want %v", n, h.now.Add(15*time.Minute))
 	}
 	h.now = h.now.Add(5 * time.Minute)
@@ -526,7 +517,7 @@ func TestScheduleFiring(t *testing.T) {
 	h.svc.tiers = map[string]tierEntry{}
 	h.now = h.now.Add(15*time.Minute + 3*time.Second) // the 10:35 slot, 3s late
 	fire()
-	if n := next("poll"); n == nil || !n.Equal(h.now.Truncate(time.Minute).Add(5*time.Minute)) {
+	if n := next(id); n == nil || !n.Equal(h.now.Truncate(time.Minute).Add(5*time.Minute)) {
 		t.Fatalf("next run after a late firing: %v (now %v)", n, h.now)
 	}
 	h.now = h.now.Add(5 * time.Minute)
@@ -543,7 +534,7 @@ func TestScheduleFiring(t *testing.T) {
 		t.Fatalf("catch-up fired %d times", n-before)
 	}
 	// The slot 2s after a catch-up firing is too close to it.
-	if n := next("poll"); n == nil || n.Sub(h.now) < 5*time.Minute-h.svc.fireSlack() {
+	if n := next(id); n == nil || n.Sub(h.now) < 5*time.Minute-h.svc.fireSlack() {
 		t.Fatalf("next run %v right after a catch-up at %v", n, h.now)
 	}
 }
@@ -602,7 +593,7 @@ func TestCreateNeedsFirstVersion(t *testing.T) {
 	_, err = c.Create(ctx, pa.CreateArtifactRequest{ID: "empty", QuotaKey: "u", Publish: &pa.PublishRequest{BaseVersion: 3, Files: []pa.FileOp{pa.Text("a", "x")}}})
 	wantCode(t, err, 400, "invalid_request")
 	// A publish that fails validation inside the transaction leaves nothing.
-	_, err = c.Create(ctx, pa.CreateArtifactRequest{ID: "empty", QuotaKey: "u", Publish: &pa.PublishRequest{RunNow: []string{"nope"}, Files: []pa.FileOp{pa.Text("a", "x")}}})
+	_, err = c.Create(ctx, pa.CreateArtifactRequest{ID: "empty", QuotaKey: "u", Publish: &pa.PublishRequest{RunNow: true, Files: []pa.FileOp{pa.Text("a", "x")}}})
 	wantCode(t, err, 400, "invalid_request")
 	if list := must(c.List(ctx, "", nil))(t); len(list) != 0 {
 		t.Fatalf("failed creates left artifacts: %+v", list)

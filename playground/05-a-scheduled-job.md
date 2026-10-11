@@ -57,6 +57,39 @@ runners, fired-artifacts on Postgres. Deleted afterwards.
   Intervals count from when the firing happened, so the next slot waits.
 - Docs: changes outside `writes` aren't "read-only", they're discarded.
 
+## Decided: one job, and runs record outputs, not versions (2026-10-11)
+
+Every changing run made a version. With an every-minute job that meant an
+agent editing the page got `409 conflict` on every publish (a run had
+moved the current version), the history was mostly runs (`u05-clock` hit
+v16 in minutes), and restoring an edit rewound the data too.
+
+- **One job per artifact:** `artifact.json` has `"job": {…}`, not a
+  `"jobs"` map. The API lost the names: `GET /artifacts/{id}/job`,
+  `PUT …/job/grant`, `POST …/job/runs`; runs have no `job`; `run_now` is
+  `true`, and its runs say `trigger: publish`.
+- **The job owns its `writes`.** A run that changes them records an
+  **output** (`outputs`/`output_files`; `retain_outputs`, 24, replaces
+  `retain_runs`). Versions are only edits, restores and forks.
+- **What everyone sees** (viewers, files API, export, the job's next run,
+  forks) is the version's files with the current output over the job's
+  paths. Before the first output, or after `DELETE /artifacts/{id}/data`,
+  the version's own files there show (the seed).
+- **Publishing into the job's paths** while it has an output stores the
+  files but the output still shows; the response lists them in
+  `shadowed`. (Rather than a 400: an agent that pulls the artifact into a
+  sandbox and mirrors it back carries the job's data with it.)
+- `GET /artifacts/{id}/data`: the outputs, newest first, with files.
+  `artifact.data` events replace `artifact.version` for runs.
+- Console: one Job tab with the job's Data (outputs, reset), runs show
+  `output N`, versions no longer have runs.
+
+Tried live (real VMs): an every-minute job ran 3 times (version stayed 1,
+output 3); an "agent" that read v1 before those runs published on v1 →
+v2, with `data/now.txt` shadowed and the job's file still showing; reset
+brought the agent's seed back. The clock and table examples render their
+job's data from output 1 with one version each.
+
 ## Questions
 
 - A job's edits outside `writes` vanish without a word. An agent writing

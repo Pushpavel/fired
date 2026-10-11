@@ -20,15 +20,16 @@ type Duration = api.Duration
 const SpecFile = "artifact.json"
 
 // Spec is the content of artifact.json: what the artifact is called, how
-// it is viewed and which jobs run against it. It is versioned with the
-// files, so it travels with exports, restores and forks.
+// it is viewed and the job that keeps its data fresh. It is versioned with
+// the files, so it travels with exports, restores and forks.
 type Spec struct {
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
 	// View is what viewers see: one entry file and its type. Without a
 	// view, there is nothing to view.
-	View *View          `json:"view,omitempty"`
-	Jobs map[string]Job `json:"jobs,omitempty"`
+	View *View `json:"view,omitempty"`
+	// Job is the artifact's one job, if it has one.
+	Job *Job `json:"job,omitempty"`
 }
 
 // View is an artifact's view. Its Type says who renders it:
@@ -56,12 +57,14 @@ const (
 )
 
 // Job is a command run against the artifact's files on a schedule or on
-// demand. A successful run's changes under Writes become a new version.
+// demand. It owns the paths in Writes: a successful run that changes them
+// records an output (not a version), and the latest output is what
+// everyone sees there.
 type Job struct {
 	// Run is executed with /bin/sh -c in the artifact's directory.
 	Run string `json:"run"`
-	// Writes lists the paths (files or directories) the job may change.
-	// Everything else in the tree is read-only to the job.
+	// Writes lists the paths (files or directories) the job owns. Its
+	// changes anywhere else are discarded.
 	Writes []string `json:"writes,omitempty"`
 	// State is a directory carried from one run to the next. It is not part
 	// of the artifact's files and is not copied when the artifact is forked.
@@ -120,8 +123,12 @@ type Artifact struct {
 	// DeleteAfter deletes the artifact after this long without reads,
 	// publishes or runs. 0 = service default, negative = never.
 	DeleteAfter Duration `json:"delete_after"`
-	// RetainRuns is how many run-produced versions to keep. 0 = service default.
-	RetainRuns   int         `json:"retain_runs"`
+	// RetainOutputs is how many of the job's outputs to keep, the current
+	// one included. 0 = service default.
+	RetainOutputs int `json:"retain_outputs"`
+	// Output is the job's current output (0: none yet, the version's files
+	// under the job's writes are shown).
+	Output       int         `json:"output,omitempty"`
 	ForkedFrom   *VersionRef `json:"forked_from,omitempty"`
 	CreatedAt    time.Time   `json:"created_at"`
 	UpdatedAt    time.Time   `json:"updated_at"`
@@ -140,9 +147,9 @@ type File struct {
 	Mode uint32 `json:"mode"`
 }
 
+// Versions are what the author made; runs record outputs instead.
 const (
 	OriginEdit    = "edit"
-	OriginRun     = "run"
 	OriginRestore = "restore"
 	OriginFork    = "fork"
 )
@@ -154,8 +161,6 @@ type Version struct {
 	Origin    string            `json:"origin"`
 	Label     string            `json:"label,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
-	RunID     string            `json:"run_id,omitempty"`
-	Job       string            `json:"job,omitempty"`
 	FileCount int               `json:"file_count"`
 	SizeBytes int64             `json:"size_bytes"`
 	// Spec is the effective artifact.json (defaults applied when absent).
@@ -210,8 +215,8 @@ type PublishRequest struct {
 	Description *string           `json:"description,omitempty"`
 	Label       string            `json:"label,omitempty"`
 	Labels      map[string]string `json:"labels,omitempty"`
-	// RunNow triggers these jobs as soon as the version is published.
-	RunNow []string `json:"run_now,omitempty"`
+	// RunNow triggers the job as soon as the version is published.
+	RunNow bool `json:"run_now,omitempty"`
 	// Notify is an opaque target (e.g. an agent session). The first run of
 	// this version emits its run.finished event with this value set.
 	Notify string `json:"notify,omitempty"`
@@ -236,18 +241,22 @@ type PublishResult struct {
 	// Unchanged is true when the publish (or restore) would have produced
 	// the files of the current version: no version was made, and Version is
 	// the current one.
-	Unchanged bool        `json:"unchanged,omitempty"`
-	Jobs      []JobStatus `json:"jobs,omitempty"`
+	Unchanged bool `json:"unchanged,omitempty"`
+	// Shadowed lists files this publish put under the job's writes while
+	// the job has an output: they're stored, but the output is what shows
+	// there (until the data is reset).
+	Shadowed []string   `json:"shadowed,omitempty"`
+	Job      *JobStatus `json:"job,omitempty"`
 }
 
 type CreateArtifactRequest struct {
 	// ID is optional; when set it must match [a-z0-9-]{3,48} and be unique.
-	ID          string            `json:"id,omitempty"`
-	QuotaKey    string            `json:"quota_key"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Meta        json.RawMessage   `json:"meta,omitempty"`
-	DeleteAfter Duration          `json:"delete_after,omitempty"`
-	RetainRuns  int               `json:"retain_runs,omitempty"`
+	ID            string            `json:"id,omitempty"`
+	QuotaKey      string            `json:"quota_key"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Meta          json.RawMessage   `json:"meta,omitempty"`
+	DeleteAfter   Duration          `json:"delete_after,omitempty"`
+	RetainOutputs int               `json:"retain_outputs,omitempty"`
 	// Publish is the first version, required: an artifact never exists
 	// without files. Its BaseVersion is 0 (or left out).
 	Publish *PublishRequest `json:"publish"`
@@ -262,11 +271,11 @@ type CreateArtifactResult struct {
 // left alone. Labels and Meta are merged (JSON merge patch, RFC 7386): keys
 // given are set, keys set to null are removed, the rest are kept.
 type UpdateArtifactRequest struct {
-	QuotaKey    *string            `json:"quota_key,omitempty"`
-	Labels      map[string]*string `json:"labels,omitempty"`
-	Meta        json.RawMessage    `json:"meta,omitempty"`
-	DeleteAfter *Duration          `json:"delete_after,omitempty"`
-	RetainRuns  *int               `json:"retain_runs,omitempty"`
+	QuotaKey      *string            `json:"quota_key,omitempty"`
+	Labels        map[string]*string `json:"labels,omitempty"`
+	Meta          json.RawMessage    `json:"meta,omitempty"`
+	DeleteAfter   *Duration          `json:"delete_after,omitempty"`
+	RetainOutputs *int               `json:"retain_outputs,omitempty"`
 }
 
 type RestoreRequest struct {
@@ -305,7 +314,6 @@ type Grant struct {
 }
 
 type JobStatus struct {
-	Name string `json:"name"`
 	// State: "scheduled" (schedule active), "manual" (no schedule, can be
 	// triggered), "expired" (schedule window passed), "blocked" (needs
 	// approval before it can run at all).
@@ -317,10 +325,6 @@ type JobStatus struct {
 	Pending     int        `json:"pending"`
 	// NeedsApproval lists what exceeds the defaults and has no grant yet.
 	NeedsApproval []string `json:"needs_approval,omitempty"`
-}
-
-type JobList struct {
-	Jobs []JobStatus `json:"jobs"`
 }
 
 const (
@@ -348,29 +352,48 @@ const (
 const (
 	TriggerSchedule = "schedule"
 	TriggerManual   = "manual"
+	TriggerPublish  = "publish" // run_now
 )
 
 type Run struct {
 	ID       string `json:"id"`
 	Artifact string `json:"artifact"`
-	Job      string `json:"job"`
 	Status   string `json:"status"`
 	Trigger  string `json:"trigger"`
-	// Version is the source version the run used (set when it starts).
+	// Version is the version the run used (set when it starts).
 	Version int `json:"version,omitempty"`
-	// ResultVersion is the version the run produced, if its writes changed
-	// anything.
-	ResultVersion int        `json:"result_version,omitempty"`
-	ExitCode      *int       `json:"exit_code,omitempty"`
-	Reason        string     `json:"reason,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
-	FinishedAt    *time.Time `json:"finished_at,omitempty"`
-	DurationMS    int64      `json:"duration_ms,omitempty"`
+	// Output is the output the run recorded, if its writes changed anything.
+	Output     int        `json:"output,omitempty"`
+	ExitCode   *int       `json:"exit_code,omitempty"`
+	Reason     string     `json:"reason,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	DurationMS int64      `json:"duration_ms,omitempty"`
 }
 
 type RunList struct {
 	Runs []Run `json:"runs"`
+}
+
+// Output is what one run wrote: the job's files under its writes. The
+// latest one is what everyone sees there; older ones are kept for a while
+// (retain_outputs) to look back at.
+type Output struct {
+	Output    int       `json:"output"`
+	RunID     string    `json:"run_id"`
+	Version   int       `json:"version"` // the version the run used
+	FileCount int       `json:"file_count"`
+	SizeBytes int64     `json:"size_bytes"`
+	Files     []File    `json:"files,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Data is an artifact's job data: the current output (0: none, the
+// version's files are shown) and the outputs kept.
+type Data struct {
+	Current int      `json:"current"`
+	Outputs []Output `json:"outputs"`
 }
 
 type RunLogs struct {
@@ -416,7 +439,7 @@ type QuotaStatus struct {
 	Quota     Quota `json:"quota"`
 	Effective Quota `json:"effective"`
 	// StorageUsed is what counts against storage_bytes: the distinct blobs
-	// and chunks the key's versions reference. StorageLogical is what they'd
+	// and chunks the key's versions and outputs reference. StorageLogical is what they'd
 	// take with no sharing (every file of every version in full); the
 	// difference is what deduplication saves.
 	StorageUsed    int64 `json:"storage_used"`
@@ -431,7 +454,6 @@ type CredentialsRequest struct {
 	QuotaKey string            `json:"quota_key"`
 	Labels   map[string]string `json:"labels,omitempty"`
 	Version  int               `json:"version"`
-	Job      string            `json:"job"`
 	RunID    string            `json:"run_id"`
 }
 
@@ -443,13 +465,14 @@ type CredentialsResponse struct {
 // ---- events
 
 type Event struct {
-	// Type: artifact.created, artifact.version, artifact.deleted,
-	// run.started, run.finished, run.dropped.
+	// Type: artifact.created, artifact.version, artifact.data (a run
+	// recorded an output), artifact.deleted, run.started, run.finished,
+	// run.dropped.
 	Type     string `json:"type"`
 	Artifact string `json:"artifact"`
 	Version  int    `json:"version,omitempty"`
 	Origin   string `json:"origin,omitempty"`
-	Job      string `json:"job,omitempty"`
+	Output   int    `json:"output,omitempty"`
 	RunID    string `json:"run_id,omitempty"`
 	Status   string `json:"status,omitempty"`
 	Reason   string `json:"reason,omitempty"`

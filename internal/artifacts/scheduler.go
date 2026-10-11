@@ -65,19 +65,20 @@ func (s *Service) tick(ctx context.Context) {
 	}
 }
 
-func dueJobs(ctx context.Context, q querier, now time.Time) ([][2]string, error) {
-	rows, err := q.QueryContext(ctx, `SELECT artifact, job FROM jobs WHERE sched_key<>'' AND next_at>0 AND next_at<=?`, ms(now))
+// dueJobs returns the artifacts whose job's schedule is due.
+func dueJobs(ctx context.Context, q querier, now time.Time) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT artifact FROM jobs WHERE sched_key<>'' AND next_at>0 AND next_at<=?`, ms(now))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out [][2]string
+	var out []string
 	for rows.Next() {
-		var a, j string
-		if err := rows.Scan(&a, &j); err != nil {
+		var a string
+		if err := rows.Scan(&a); err != nil {
 			return nil, err
 		}
-		out = append(out, [2]string{a, j})
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }
@@ -125,11 +126,10 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, d := range due {
-		id, job := d[0], d[1]
+	for _, id := range due {
 		var events []pa.Event
 		err := s.st.tx(ctx, func(q querier) error {
-			r, err := getJob(ctx, q, id, job)
+			r, err := getJob(ctx, q, id)
 			if err != nil {
 				return err
 			}
@@ -137,9 +137,12 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			raw, ok := spec.Jobs[job]
+			var raw pa.Job
+			if spec.Job != nil {
+				raw = *spec.Job
+			}
 			j := s.cfg.jobDefaults(raw)
-			if !ok || j.Schedule == "" {
+			if spec.Job == nil || j.Schedule == "" {
 				r.SchedKey, r.NextAt = "", time.Time{}
 				return putJob(ctx, q, r)
 			}
@@ -157,11 +160,11 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 				return err
 			}
 			r.NextAt = nextFire(c, r.LastFireAt, now, interval, s.fireSlack())
-			if st := s.jobStatus(job, raw, r, 0, now); st.State != pa.JobScheduled {
+			if st := s.jobStatus(raw, r, 0, now); st.State != pa.JobScheduled {
 				return putJob(ctx, q, r)
 			}
 			if !r.LastFireAt.IsZero() && now.Before(r.LastFireAt.Add(interval-s.fireSlack())) {
-				s.log.Debug("schedule skipped: min interval", "artifact", id, "job", job, "interval", interval)
+				s.log.Debug("schedule skipped: min interval", "artifact", id, "interval", interval)
 				return putJob(ctx, q, r)
 			}
 			r.LastFireAt = now
@@ -169,21 +172,20 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 			if err := putJob(ctx, q, r); err != nil {
 				return err
 			}
-			run, dropped, err := s.enqueue(ctx, q, id, job, raw, pa.TriggerSchedule, nil, now)
+			_, dropped, err := s.enqueue(ctx, q, id, raw, pa.TriggerSchedule, nil, now)
 			for _, x := range dropped {
-				events = append(events, pa.Event{Type: "run.dropped", Artifact: id, Job: job, RunID: x.ID, Status: x.Status, Reason: x.Reason})
+				events = append(events, pa.Event{Type: "run.dropped", Artifact: id, RunID: x.ID, Status: x.Status, Reason: x.Reason})
 			}
 			if err == errQueueFull {
-				x := &runRow{Run: pa.Run{ID: newID("run-"), Artifact: id, Job: job, Status: pa.RunDropped, Trigger: pa.TriggerSchedule,
+				x := &runRow{Run: pa.Run{ID: newID("run-"), Artifact: id, Status: pa.RunDropped, Trigger: pa.TriggerSchedule,
 					Reason: "queue_full", CreatedAt: now, FinishedAt: &now}}
-				events = append(events, pa.Event{Type: "run.dropped", Artifact: id, Job: job, RunID: x.ID, Status: x.Status, Reason: x.Reason})
+				events = append(events, pa.Event{Type: "run.dropped", Artifact: id, RunID: x.ID, Status: x.Status, Reason: x.Reason})
 				return putRun(ctx, q, x)
 			}
-			_ = run
 			return err
 		})
 		if err != nil {
-			s.log.Error("fire schedule", "artifact", id, "job", job, "err", err)
+			s.log.Error("fire schedule", "artifact", id, "err", err)
 			continue
 		}
 		for _, e := range events {
@@ -227,19 +229,19 @@ func (s *Service) dispatch(ctx context.Context) error {
 			}
 			now := s.now()
 			drop := func(reason string) error {
-				events = append(events, pa.Event{Type: "run.dropped", Artifact: p.Artifact, Job: p.Job, RunID: p.ID, Status: pa.RunDropped, Reason: reason})
+				events = append(events, pa.Event{Type: "run.dropped", Artifact: p.Artifact, RunID: p.ID, Status: pa.RunDropped, Reason: reason})
 				return s.finishPending(ctx, q, cur, pa.RunDropped, reason, now)
 			}
-			raw, ok := spec.Jobs[p.Job]
-			if !ok {
+			if spec.Job == nil {
 				return drop("job_removed")
 			}
+			raw := *spec.Job
 			j := s.cfg.jobDefaults(raw)
-			r, err := getJob(ctx, q, p.Artifact, p.Job)
+			r, err := getJob(ctx, q, p.Artifact)
 			if err != nil {
 				return err
 			}
-			st := s.jobStatus(p.Job, raw, r, 0, now)
+			st := s.jobStatus(raw, r, 0, now)
 			if st.State == pa.JobBlocked {
 				return drop("needs_approval")
 			}
@@ -253,11 +255,13 @@ func (s *Service) dispatch(ctx context.Context) error {
 			if err := putRun(ctx, q, cur); err != nil {
 				return err
 			}
-			tree, err := getTree(ctx, q, a.ID, a.CurrentVersion)
+			// The job works on what everyone sees: its own latest output
+			// included, so it can build on it (append, update).
+			tree, err := s.liveTree(ctx, q, a, a.CurrentVersion, spec)
 			if err != nil {
 				return err
 			}
-			stateHash, err := getRunState(ctx, q, a.ID, p.Job)
+			stateHash, err := getRunState(ctx, q, a.ID)
 			if err != nil {
 				return err
 			}
@@ -278,7 +282,7 @@ func (s *Service) dispatch(ctx context.Context) error {
 		s.running[p.Artifact] = p.ID
 		s.mu.Unlock()
 		s.runsWG.Add(1)
-		s.emit(pa.Event{Type: "run.started", Artifact: p.Artifact, Version: start.run.Version, Job: p.Job, RunID: p.ID, Status: pa.RunRunning})
+		s.emit(pa.Event{Type: "run.started", Artifact: p.Artifact, Version: start.run.Version, RunID: p.ID, Status: pa.RunRunning})
 		go s.execute(start)
 	}
 	return nil

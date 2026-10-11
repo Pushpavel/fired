@@ -2,10 +2,10 @@
 
 `fired-artifacts` is a separate service that stores **artifacts**: versioned
 sets of files that agents publish, that people view and share, and that can
-carry **jobs** which run on a schedule in fired sandboxes and write their
-results back as new versions. A page, a deck, a dashboard that refreshes
-every morning and an automation with no output at all are the same thing
-here: files, plus `artifact.json` saying how to view them and what to run.
+carry a **job** which runs on a schedule in a fired sandbox and keeps the
+artifact's data fresh. A page, a deck, a dashboard that refreshes every
+morning and an automation with no output at all are the same thing here:
+files, plus `artifact.json` saying how to view them and what to run.
 
 Like fired, it knows nothing about users. Your backend groups artifacts under
 an opaque **quota key** (typically a user), decides who may see or change
@@ -26,12 +26,12 @@ agent ─ MCP tools ─▶ your backend ─────────────�
 | content-addressed blob store, versions, `artifact.json` validation | users, sharing, who may fork or edit |
 | serving each artifact's view (its entry and folder), raw files, zip export | the domain viewers use, who may see what, rendering single-file views (copy, download, …) |
 | scheduler, `on_busy` queues, per-quota-key and global limits | approving grants (longer schedules, longer runs), quotas per plan |
-| runner sandboxes, run versions, state, logs, events | credentials for each run, MCP tools, notifications to sessions |
+| runner sandboxes, job outputs, state, logs, events | credentials for each run, MCP tools, notifications to sessions |
 | retention, `delete_after`, garbage collection | turning sandbox folders, MCP resources and tool outputs into files to publish |
 
 It is a separate binary because its data has a different life from
 sandboxes: artifacts are kept and shared, so run it next to your backend on
-durable storage. Its records (artifacts, versions, jobs, runs) are in
+durable storage. Its records (artifacts, versions, outputs, runs) are in
 Postgres, normally fired's database in a schema of its own (`artifacts`),
 and file contents in a blob store on disk. Runs happen on whichever fired
 host it points at.
@@ -40,15 +40,18 @@ host it points at.
 
 - **Artifact**: an ID, a quota key, opaque `labels` and `meta` (anything
   your backend wants to keep with it; not exported, forked or shown to
-  jobs), and a current version. Its `title` and `description` are the
+  the job), and a current version. Its `title` and `description` are the
   current version's, from `artifact.json`. It is created together with its
   first version, so it always has files.
-- **Version**: an immutable file tree. Versions are numbered 1, 2, 3… and
-  never change. Each has an `origin`:
+- **Version**: an immutable file tree, what the author made. Versions are
+  numbered 1, 2, 3… and never change. Each has an `origin`:
   - `edit`: a publish
-  - `run`: a job run's output
   - `restore`: a copy of an older version
   - `fork`: the first version of a fork
+- **Job and data**: an artifact has at most one job. It owns the paths in
+  its `writes`, and each run that changes them records an **output**
+  (numbered 1, 2, 3…), not a version. What everyone sees is the current
+  version's files with the latest output in place of the job's paths.
 - **File tree**: paths (relative, slash-separated) to blobs. Each blob is
   stored once, named by the SHA-256 of its content and zstd-compressed, so
   unchanged files cost nothing across versions, forks and artifacts. Large
@@ -67,20 +70,13 @@ host it points at.
   "title": "Weekly sales",
   "description": "Refreshed every weekday morning",
   "view": {"type": "page", "entry": "dist/index.html"},
-  "jobs": {
-    "refresh": {
-      "run": "python refresh.py",
-      "writes": ["data"],
-      "state": ".state",
-      "schedule": "0 9 * * 1-5",
-      "timezone": "Asia/Kolkata",
-      "timeout": "10m"
-    },
-    "on-push": {
-      "run": "python handle.py",
-      "on_busy": "queue",
-      "queue": {"max": 100, "max_age": "24h"}
-    }
+  "job": {
+    "run": "python refresh.py",
+    "writes": ["dist/data"],
+    "state": ".state",
+    "schedule": "0 9 * * 1-5",
+    "timezone": "Asia/Kolkata",
+    "timeout": "10m"
   }
 }
 ```
@@ -92,7 +88,7 @@ instead of being ignored.
 bytes). They're versioned like everything else here: renaming makes a
 version, and a restore or fork brings the old name along. A zip of a
 version is therefore complete: published again elsewhere, it comes back
-with its name, view and jobs.
+with its name, view and job (and the job's data as it stood).
 
 **The view** is what viewers see: `{"type", "entry"}`, one entry file and
 its type. The type says who renders it:
@@ -127,12 +123,12 @@ nothing to view, even with an `index.html`. The entry must be a file of
 its type in the version; files coming and going never change the view,
 and an entry that goes away fails the publish.
 
-**Jobs**:
+**The job** (one per artifact):
 
 | Field | Meaning |
 |---|---|
 | `run` | Command, run with `/bin/sh -c` in the artifact's directory. Required. |
-| `writes` | Files or directories the job may change. A successful run's changes under these paths become a new version; changes anywhere else are discarded (the job can make them in its sandbox, they just don't land). A job can't write `artifact.json`. |
+| `writes` | Files or directories the job owns. A successful run that changes them records an output, which is what everyone sees there; changes anywhere else are discarded (the job can make them in its sandbox, they just don't land). A job can't write `artifact.json`. |
 | `state` | A directory carried from one run to the next (cursors, caches). It is not part of the files, not served, and not copied by a fork. It must not overlap `writes` or contain published files. |
 | `schedule` | 5-field cron (`minute hour day month weekday`) or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`. Empty means the job only runs when triggered. |
 | `timezone` | IANA zone for the schedule (default UTC). |
@@ -202,7 +198,7 @@ one file changed copies one file.
   ],
   "spec": {"view": {"type": "page", "entry": "app/index.html"}},
   "label": "add weekly chart",
-  "run_now": ["refresh"],
+  "run_now": true,
   "notify": "session-8f2c"
 }
 ```
@@ -215,9 +211,9 @@ one file changed copies one file.
   answer is `200` with `"unchanged": true` and the current version, and no
   `artifact.version` event is sent. Its `label` and `labels` are dropped;
   `run_now` and `notify` still apply, to the current version. Job runs work
-  the same way: a run whose writes change nothing makes no version.
+  the same way: a run whose writes change nothing records no output.
 - **A version always has at least one file**, and `artifact.json` counts (a
-  jobs-only artifact is fine). A create or `replace` without files fails
+  job-only artifact is fine). A create or `replace` without files fails
   with `400`, and so does deleting `artifact.json`. Files that leave it out
   (`replace`, a folder mirrored at the root) keep the current one.
 - **Files are a patch:** listed files are added or replaced, the rest are
@@ -235,7 +231,7 @@ one file changed copies one file.
 - **`title` and `description` change just those fields** of `artifact.json`
   and keep the rest; they win over `spec` and over an `artifact.json` in the
   files. An agent publishing an unzipped export sets `title` to name its
-  copy and keeps the zip's view and jobs. A publish with only `title` is a
+  copy and keeps the zip's view and job. A publish with only `title` is a
   rename.
 - **All or nothing:** any invalid path, missing blob, invalid spec or limit
   breach means no version is created.
@@ -246,9 +242,14 @@ one file changed copies one file.
   chunks its versions reference. `GET /quotas/{key}` shows that
   (`storage_used`) next to `storage_logical`, every file of every version
   in full: the difference is what sharing saves.
-- **`run_now`** triggers those jobs right after the publish, so an agent
-  learns quickly whether a job works. A blocked job isn't triggered; its
-  status in the response says why.
+- **`run_now: true`** triggers the job right after the publish (its runs
+  say `trigger: publish`), so an agent learns quickly whether it works. A
+  blocked job isn't triggered; its status in the response (`job`) says why.
+- **Files under the job's `writes`** are its seed: shown until its first
+  output (or after a data reset). Once it has one, a publish that puts
+  files there still stores them, but the output is what shows; the
+  response lists them in `shadowed`. A folder pulled into a sandbox and
+  mirrored back (with the job's data in it) just works.
 - **`notify`** is an opaque target, e.g. an agent session. The first run of
   this version emits its `run.finished` event with `notify` set, so your
   backend can tell that session whether it succeeded.
@@ -324,19 +325,20 @@ Runs).
   and a restore to the files the current version already has is
   `"unchanged": true`, like a publish.
 - **Fork:** `POST /v1/artifacts/{id}/fork {"quota_key": "u2", "version": 4}`
-  creates a new artifact whose v1 has v4's files (blobs are shared, nothing
-  is copied); `"title"` renames the fork in its `artifact.json`. Its jobs come along in `artifact.json`, but schedules are off
-  until the new owner publishes or a grant turns them on. Run state is not
-  copied.
-- **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of the
-  version's files, `artifact.json` (title, description, view, jobs)
-  included. Published again, it's the same artifact; `meta`, labels and
+  creates a new artifact whose v1 has what v4 shows, the job's current data
+  included as its seed (blobs are shared, nothing is copied); `"title"`
+  renames the fork in its `artifact.json`. The job comes along, but its
+  schedule is off until the new owner publishes or a grant turns it on.
+  Run state and older outputs are not copied.
+- **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of what
+  the version shows (the job's current data over its paths), `artifact.json`
+  (title, description, view, job) included. Published again, it's the same artifact; `meta`, labels and
   the quota key aren't in it, since they belong to whoever owns it.
 - **Compare:** there's no compare endpoint; `GET …/versions/{n}` lists
   every file with its hash, so two versions diff by path and hash. The
   console does this.
 
-## Jobs
+## The job
 
 ### When a job may run
 
@@ -359,7 +361,7 @@ Every job has a status:
   When the owner approves, your backend sets the grant:
 
   ```
-  PUT /v1/artifacts/{id}/jobs/{job}/grant  {"active_until": "2026-11-10T00:00:00Z", "max_run": "2h"}
+  PUT /v1/artifacts/{id}/job/grant  {"active_until": "2026-11-10T00:00:00Z", "max_run": "2h"}
   ```
 
   A zero grant revokes it.
@@ -367,7 +369,7 @@ Every job has a status:
 ### Triggers and `on_busy`
 
 A trigger is a schedule firing, `run_now` on publish, or
-`POST /v1/artifacts/{id}/jobs/{job}/runs {"payload": {...}}`. Each creates a
+`POST /v1/artifacts/{id}/job/runs {"payload": {...}}`. Each creates a
 **pending** run. Whether it starts right away depends on the limits below;
 until then, `on_busy` decides what happens:
 
@@ -424,17 +426,18 @@ artifact's quota key. It is only a cache: if it's gone, broken, on a host
 that's down, or made for another template, quota key or pool, a new one is
 created. A run:
 
-1. **Gets credentials:** POSTs `{artifact, quota_key, labels, version, job,
+1. **Gets credentials:** POSTs `{artifact, quota_key, labels, version,
    run_id}` to `broker.url`, and gets `{secret_env, secret_files}` back. A
    refusal fails the run with the broker's error code.
 2. **Sets up the sandbox:**
-   - empties `runner.workdir` (`/artifact`) and unpacks the current version's
-     files into it;
+   - empties `runner.workdir` (`/artifact`) and unpacks what the current
+     version shows into it, the job's latest output included (so a run can
+     build on the last one: append, update);
    - unpacks the job's saved state into `state`;
    - writes the trigger to `/tmp/fired-artifacts/trigger.json` as
-     `{type, run_id, job, at, payload}`.
+     `{type, run_id, at, payload}`.
 3. **Starts the job** as a background process. Environment:
-   - `ARTIFACT_ID`, `ARTIFACT_VERSION`, `ARTIFACT_JOB`, `ARTIFACT_RUN_ID`,
+   - `ARTIFACT_ID`, `ARTIFACT_VERSION`, `ARTIFACT_RUN_ID`,
      `TRIGGER`, `TRIGGER_FILE`;
    - the credentials as fired `secret_env` / `secret_files`, so they are
      never stored and are redacted from output.
@@ -444,10 +447,16 @@ created. A run:
    contains a credential value (or its base64 or URL encoding), the result
    is rejected and the run fails: artifacts get shared, so a run must never
    publish the credentials it ran with.
-6. **Commits a new version (`origin: run`),** applying the written paths on
-   top of the *current* version, so an edit published during the run is
-   kept. If nothing changed, no version is created and `result_version`
-   stays 0. State is saved only for successful runs.
+6. **Records an output:** what it wrote under `writes` becomes the next
+   output (the run's `output`), unless it's what's already shown there.
+   Versions don't move, so edits published during the run, or by an agent
+   working on the page meanwhile, never conflict with it. State is saved
+   only for successful runs.
+
+**The job's data:** `GET /v1/artifacts/{id}/data` lists the outputs kept
+(newest first, with files; `current` is the one shown), and
+`DELETE /v1/artifacts/{id}/data` drops them, so the version's own files
+under the job's paths show again and the next run starts from them.
 
 Run statuses:
 - `pending`, `running`;
@@ -466,9 +475,10 @@ redacted).
 | Event | When |
 |---|---|
 | `artifact.created`, `artifact.deleted` | |
-| `artifact.version` | Every new version, with `origin`; for runs, also `job` and `run_id`. Not sent for an unchanged publish or restore. |
+| `artifact.version` | Every new version, with `origin`. Not sent for an unchanged publish or restore. |
+| `artifact.data` | The job recorded an output (`output`, `run_id`), or its data was reset (no `output`). |
 | `run.started` | A run left `pending`. |
-| `run.finished` | With `status`, `reason`, and `notify` if the publish asked for it. |
+| `run.finished` | With `status`, `reason`, `output` if it recorded one, and `notify` if the publish asked for it. |
 | `run.dropped` | With `reason`: `queue_full`, `expired`, `job_removed`, `needs_approval`. |
 
 Monitors in your backend subscribe to an artifact's events and forward
@@ -476,9 +486,9 @@ what matters to sessions.
 
 ## Retention and garbage collection
 
-- **Run-produced versions:** each artifact keeps its newest `retain_runs`
-  (artifact setting, else `limits.retain_runs`, 24) besides the current
-  version. Edit, restore and fork versions are always kept.
+- **Job outputs:** each artifact keeps its newest `retain_outputs`
+  (artifact setting, else `limits.retain_outputs`, 24), the current one
+  included. Versions are always kept.
 - **Inactive artifacts:** with `delete_after` set (on the artifact, else
   `limits.delete_after`; 0 means never, negative means never for that
   artifact), an artifact with no reads, publishes or runs for that long is
@@ -495,7 +505,7 @@ All endpoints are under `/v1`. They need `X-Fired-Token: <token>` or
 `{"error": {"code", "message"}}`. A Go client is in `pkg/artifacts`.
 
 `PATCH /artifacts/{id}` changes settings (`quota_key`, `labels`, `meta`,
-`delete_after`, `retain_runs`) and never makes a version. The title and
+`delete_after`, `retain_outputs`) and never makes a version. The title and
 description aren't settings: publish `{"base_version", "title"}` to rename. Omitted fields are
 left alone; `labels` and `meta` are merged as a JSON merge patch (RFC 7386):
 `{"labels": {"stage": "review", "draft": null}}` sets `stage`, removes
@@ -508,8 +518,9 @@ left alone; `labels` and `meta` are merged as a JSON merge patch (RFC 7386):
 | Versions | `POST /artifacts/{id}/versions` (publish), `GET /artifacts/{id}/versions`, `GET /artifacts/{id}/versions/{n\|current}` (with files), `GET …/versions/{n}/export` |
 | History | `POST /artifacts/{id}/restore`, `POST /artifacts/{id}/fork` |
 | Files | `GET /artifacts/{id}/files/{path}?version=` |
-| Jobs | `GET /artifacts/{id}/jobs`, `PUT /artifacts/{id}/jobs/{job}/grant`, `POST /artifacts/{id}/jobs/{job}/runs` |
-| Runs | `GET /artifacts/{id}/runs?job=&status=&limit=`, `GET /artifacts/{id}/runs/{run}`, `GET …/runs/{run}/logs` |
+| Job | `GET /artifacts/{id}/job`, `PUT /artifacts/{id}/job/grant`, `POST /artifacts/{id}/job/runs` |
+| Data | `GET/DELETE /artifacts/{id}/data` |
+| Runs | `GET /artifacts/{id}/runs?status=&limit=`, `GET /artifacts/{id}/runs/{run}`, `GET …/runs/{run}/logs` |
 | Quotas | `GET/PUT /quotas/{key}` |
 | Ops | `GET /events` (SSE), `GET /healthz` |
 
@@ -524,10 +535,10 @@ make dev-artifacts  # fired-artifacts on :8444, token "dev", detached; same Post
 `make dev-artifacts` turns on the console (`ui: true` or
 `FIRED_ARTIFACTS_UI=1`) at http://127.0.0.1:8444/ui/. Sign in with the token.
 It lists artifacts with their version history, edits and uploads files and
-publishes them, shows each artifact's view, previews files, compares and restores versions, forks, runs jobs
+publishes them, shows each artifact's view, previews files, compares and restores versions, forks, runs the job, shows its data
 (with payloads), approves grants, shows runs with their logs, edits quotas, and
 follows `/v1/events` live. The home page has examples that cover each
-feature: a page, a markdown view, scheduled jobs with state, a queue, approval and a failing job.
+feature: a page, a markdown view, a scheduled job with state, a queue, approval and a failing job.
 
 The console shows a `page` view on the artifact's own origin (for the
 console only; in production your backend serves it with header routing,
@@ -562,10 +573,8 @@ These were discussed but are not settled enough to build:
   policy and trigger payloads are already in place for them.
 - **A `batch` on_busy mode** that hands one run every payload collected
   since the last run.
-- **Per-job egress allowlists and resources.** All runner sandboxes use
+- **Per-artifact egress allowlists and resources for the job.** All runner sandboxes use
   `runner.*` today.
-- **Concurrent jobs within one artifact:** runs are one at a time per
-  artifact.
 - **Cancelling** pending or running runs.
 - **Storage:** blobs are loose files on local disk. Packing small blobs and
   an object-storage backend are the next steps for scale and durability.
