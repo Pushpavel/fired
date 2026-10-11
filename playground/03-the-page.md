@@ -1,4 +1,4 @@
-# 03. The page
+# 03. The view
 
 What an artifact's view is. Decided before trying the use case, while
 finishing 02 (2026-10-11).
@@ -41,6 +41,35 @@ an SVG, a CSV, two JSX files): in headless Chromium the View tab showed
 the page and followed its link to the about page; the Files tab previews
 rendered the Markdown (with its image), the table and the React component
 (with its relative import).
+
+**Revised: a page, or one file the platform renders** (2026-10-11, after
+03 was tried). Pages alone push every artifact's UX onto the agent. But in
+a chat, an agent also makes and keeps updating single files (a Markdown
+report, a CSV, code) that the frontend should render the same way every
+time, with its own copy and download; and slides need a UX the platform
+owns (pages, speaker notes, export), not one each artifact invents. As
+with Claude: which content becomes an artifact at all is the agent's
+judgment (its prompt), not a service rule.
+
+- `artifact.json` has `"view": {"type", "entry"}` again, with an explicit
+  type that now means who renders it: `page` (`.html`, renders itself)
+  or a single file the frontend renders: `markdown`, `csv`, `json`, `code`
+  (any text file), `svg`, `image`. Each type takes only its kind of file.
+  Structured types (`slides` first) come later, each with its own use case.
+- Viewers reach the entry's folder for every type (a page's other pages,
+  a Markdown file's images). `/` is the entry as it is, with
+  `X-Artifact-View: <type>` and `X-Artifact-View-Name: <file name>`, so a
+  frontend knows what to render and "copy source" is that response.
+  `?download` on any view path, and on the files API, is an attachment.
+  The API is ours; copy/download buttons are the frontend's.
+- Console: the View tab frames a `page`, and renders other types with its
+  renderer, plus Copy source and Download. The note example is a
+  `markdown` view now (no page of its own).
+- Dev artifacts' `"page"` became `"view": {"type": "page"}`; `hello-copy`'s
+  old `"type": "html"` became `page`.
+- Tried in Chromium: the note's markdown view rendered with its SVG, Copy
+  source put the Markdown on the clipboard, Download saved `README.md`;
+  page views unchanged.
 
 ## Tried
 

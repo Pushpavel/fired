@@ -39,7 +39,7 @@ with `replace_dirs`, limits).
 |---|---|---|---|
 | 01 | A static page | create + first publish, the default spec (index.html, no artifact.json), serving, preview origin | done: [01-static-page.md](01-static-page.md) |
 | 02 | Editing over time | publish as a patch, labels, `base_version` conflicts (409), compare, restore, zip export | done: [02-editing.md](02-editing.md) |
-| 03 | The page | artifact.json `page` (an HTML page plus its folder, decided in 02), strict spec validation, a page that goes away, pages for the md / csv / react examples | done: [03-the-page.md](03-the-page.md) |
+| 03 | The view | artifact.json `view`: a `page` (HTML plus its folder) or one file the frontend renders (markdown, csv, json, code, svg, image); validation; a view whose entry goes away; pages for the examples | done: [03-the-page.md](03-the-page.md) |
 | 04 | Uploading a build | blobs, `/blobs/missing` dedup, folder upload with `replace_dirs`, size and file limits | not started |
 | 05 | A scheduled job | cron + timezone, `writes`, run versions, a run that changes nothing, the 12h activity window, expiry | not started |
 | 06 | Job state | the `state` dir across runs, state on a failed run, state not copied on fork | not started |

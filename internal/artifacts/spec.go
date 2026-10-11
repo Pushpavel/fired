@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -61,6 +62,19 @@ func EncodeSpec(s pa.Spec) []byte {
 	return append(b, '\n')
 }
 
+// viewExts lists the extensions each view type takes; nil takes any file.
+var viewExts = map[string][]string{
+	pa.ViewPage:     {".html", ".htm"},
+	pa.ViewMarkdown: {".md", ".markdown"},
+	pa.ViewCSV:      {".csv"},
+	pa.ViewJSON:     {".json"},
+	pa.ViewCode:     nil,
+	pa.ViewSVG:      {".svg"},
+	pa.ViewImage:    {".png", ".jpg", ".jpeg", ".gif", ".webp"},
+}
+
+var viewTypes = []string{pa.ViewPage, pa.ViewMarkdown, pa.ViewCSV, pa.ViewJSON, pa.ViewCode, pa.ViewSVG, pa.ViewImage}
+
 // ValidateSpec checks a spec against the tree it will be published with.
 func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 	var errs []string
@@ -71,16 +85,20 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 	if len(s.Description) > 2000 {
 		add("description is longer than 2000 bytes")
 	}
-	if s.Page != "" {
-		if p, err := cleanPath(s.Page); err != nil {
-			add("page: %v", err)
+	if v := s.View; v != nil {
+		exts, known := viewExts[v.Type]
+		if !known {
+			add("view.type: %q isn't one of %s", v.Type, strings.Join(viewTypes, ", "))
+		}
+		if e, err := cleanPath(v.Entry); err != nil {
+			add("view.entry: %v", err)
 		} else {
-			if ext := strings.ToLower(path.Ext(p)); ext != ".html" && ext != ".htm" {
-				add("page: %q must be an .html file", s.Page)
-			} else if _, ok := tree[p]; !ok {
-				add("page: %q is not a file in this version (publish it, or set \"page\" to the file to open)", s.Page)
+			if ext := strings.ToLower(path.Ext(e)); known && exts != nil && !slices.Contains(exts, ext) {
+				add("view.entry: a %s view needs a %s file, not %q", v.Type, strings.Join(exts, " or "), v.Entry)
+			} else if _, ok := tree[e]; !ok {
+				add("view.entry: %q is not a file in this version (publish it, or point the view at another file)", v.Entry)
 			}
-			s.Page = p
+			v.Entry = e
 		}
 	}
 	names := make([]string, 0, len(s.Jobs))

@@ -723,28 +723,41 @@ async function tabView(p) {
   if (!n) { p.append(emptyFirst()); return; }
   let v;
   try { v = await loadVersion(a.id, n); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
-  // The view is the page, served from its folder on the artifact's own
-  // origin, exactly as viewers get it.
-  const page = v.spec?.page;
-  if (!page) {
-    p.append(h("div", { class: "empty" }, h("h3", {}, "No page in this version"),
-      h("p", { class: "note" }, "The view is an HTML page: set \"page\" in artifact.json, for example { \"page\": \"index.html\" }. Files can still be previewed in the Files tab."),
+  const vw = v.spec?.view;
+  if (!vw) {
+    p.append(h("div", { class: "empty" }, h("h3", {}, "No view in this version"),
+      h("p", { class: "note" }, "Set \"view\" in artifact.json: a page, { \"type\": \"page\", \"entry\": \"index.html\" }, or one file, { \"type\": \"markdown\", \"entry\": \"README.md\" }. Files can still be previewed in the Files tab."),
       h("p", {}, h("button", { class: "btn", onclick: () => { S.tab = "files"; renderArtifact(); } }, "Open files"))));
     return;
   }
+  const bar = h("div", { class: "viewbar" }, h("span", { class: "note" }, `${vw.type} view of `, h("code", {}, vw.entry)), h("span", { class: "spacer" }),
+    h("span", { class: "note" }, atCurrent() ? "Follows the current version" : `Pinned to v${n}`));
+  if (vw.type !== "page") {
+    // A single file: rendered by the frontend (here, the console's
+    // renderer), with the frontend's own copy and download.
+    const raw = `/v1/artifacts/${enc(a.id)}/files/${encPath(vw.entry)}?version=${n}`;
+    bar.append(
+      h("button", { class: "btn small", onclick: async () => {
+        try { await navigator.clipboard.writeText(await (await api("GET", raw.slice(3), undefined, { quiet: true, raw: true })).text()); toast("Copied the source", "ok"); }
+        catch (e) { toast(e.message, "err"); } } }, "Copy source"),
+      h("a", { class: "btn small", href: raw + "&download", style: "text-decoration:none;color:inherit" }, "Download"));
+    p.append(bar, previewFrame(vw.entry, RENDER[vw.type] || "text", false));
+    return;
+  }
+  // A page renders itself: shown on the artifact's own origin, exactly as
+  // viewers get it.
   let origin;
   try { origin = await previewOrigin(a.id, atCurrent() ? 0 : n); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
   const src = origin;
-  const frame = h("iframe", { class: "frame", id: "frame", title: `The page, ${page}`, src: src + "?t=" + Date.now(),
+  const frame = h("iframe", { class: "frame", id: "frame", title: `The page, ${vw.entry}`, src: src + "?t=" + Date.now(),
     sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads", referrerpolicy: "no-referrer" });
-  p.append(h("div", { class: "viewbar" },
-    h("span", { class: "note" }, "Page ", h("code", {}, page)),
-    h("span", { class: "spacer" }),
-    h("span", { class: "note" }, atCurrent() ? "Follows the current version" : `Pinned to v${n}`),
+  bar.append(
     h("button", { class: "btn small", onclick: () => { frame.src = src + "?t=" + Date.now(); } }, "Reload"),
-    h("a", { class: "btn small", href: src, target: "_blank", rel: "noopener", style: "text-decoration:none;color:inherit" }, "Open in a new tab")),
-    frame);
+    h("a", { class: "btn small", href: src, target: "_blank", rel: "noopener", style: "text-decoration:none;color:inherit" }, "Open in a new tab"));
+  p.append(bar, frame);
 }
+// The console's renderer for each single-file view type.
+const RENDER = { markdown: "md", csv: "csv", json: "json", code: "text", svg: "svg", image: "image" };
 function emptyFirst() {
   return h("div", { class: "empty" }, h("h3", {}, "This artifact has no versions yet"),
     h("p", { class: "note" }, "Add files, then publish to create version 1."),
@@ -752,6 +765,7 @@ function emptyFirst() {
 }
 // reload the live view after a new version, without rebuilding the tab
 function reloadFrame() {
+  if (S.tab === "view" && atCurrent() && $("iframe.preview")) { renderTab(); return; }
   const f = $("#frame"); if (f && atCurrent()) f.src = f.src.replace(/\?t=\d+$/, "") + "?t=" + Date.now();
 }
 
@@ -838,7 +852,7 @@ addEventListener("message", async e => {
   const ctx = { id: frame.dataset.artifact, n: +frame.dataset.version };
   const reply = m => e.source.postMessage({ id: e.data.id, ...m }, "*", m.body ? [m.body] : []);
   try {
-    const p = e.data.get, op = ctx.id === S.art?.id && atCurrent() ? S.stage.get(p) : null;
+    const p = e.data.get, op = frame.dataset.staged && ctx.id === S.art?.id && atCurrent() ? S.stage.get(p) : null;
     if (op?.delete) throw new Error("not found");
     let body;
     if (op?.text) body = new TextEncoder().encode(op.content).buffer;
@@ -847,9 +861,10 @@ addEventListener("message", async e => {
     reply({ ok: true, body });
   } catch (err) { reply({ ok: false, error: err.message }); }
 });
-function previewFrame(path, type) {
+// staged: show unpublished edits (the Files tab), not just the version.
+function previewFrame(path, type, staged) {
   return h("iframe", { class: "frame preview", title: `Preview of ${path}`, sandbox: "allow-scripts",
-    "data-artifact": S.art.id, "data-version": shownVersion(), src: `/ui/view.html#type=${enc(type)}&entry=${enc(path)}` });
+    "data-artifact": S.art.id, "data-version": shownVersion(), "data-staged": staged ? "1" : null, src: `/ui/view.html#type=${enc(type)}&entry=${enc(path)}` });
 }
 
 async function fillEditor(box, f, editable) {
@@ -868,7 +883,7 @@ async function fillEditor(box, f, editable) {
     editable && f.state !== "deleted" ? h("button", { class: "btn small danger", onclick: () => { stageDelete(path); renderArtifact(); } }, "Remove") : null);
   box.append(head);
   if (f.state === "deleted") { box.append(h("p", { class: "note" }, "Publish to remove this file, or undo.")); return; }
-  if (previewing) { box.append(previewFrame(path, ptype)); return; }
+  if (previewing) { box.append(previewFrame(path, ptype, true)); return; }
   const op = f.staged;
   if (op && op.blob && !op.text) { box.append(h("p", { class: "note" }, `Uploaded file, ${fmtBytes(op.size)}. It goes up as a blob when you publish.`)); return; }
   let content = op ? op.content : null;
@@ -889,7 +904,7 @@ async function fillEditor(box, f, editable) {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); publish(); }
   });
   box.append(ta);
-  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. page is the HTML file viewers open (its folder is what they can reach); without it, there's nothing to view. Jobs take run, writes, state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
+  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. view is { type, entry }: a page (an HTML file that renders itself) or one file the frontend renders: markdown, csv, json, code, svg or image. Viewers reach the entry's folder; without a view, there's nothing to view. Jobs take run, writes, state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
 }
 
 function stagePut(path, content) { S.stage.set(path, { content, size: new Blob([content]).size, text: true }); }
@@ -1266,7 +1281,7 @@ dlgNew.addEventListener("close", async () => {
     if (f.delete_after.value.trim()) req.delete_after = f.delete_after.value.trim();
     if (+f.retain_runs.value) req.retain_runs = +f.retain_runs.value;
     req.publish = { title, label: "first version", files: [{ path: "index.html", content: starterPage(title) }],
-      spec: { page: "index.html" } };
+      spec: { view: { type: "page", entry: "index.html" } } };
     const r = await guard(() => api("POST", "/artifacts", req), `Created ${title}`);
     await refreshList(); openArtifact(r.artifact.id, null, "view");
   } catch (e) { if (!e.shown) toast(e.message, "err"); }
@@ -1415,7 +1430,7 @@ KITS.push(
   { slug: "page", title: "A web page", tab: "view",
     about: "index.html with a stylesheet and a script; artifact.json makes it the page. Viewers get it at / and its folder's files next to it, so relative paths work.",
     files: {
-      "artifact.json": JSON.stringify({ page: "index.html" }, null, 2) + "\n",
+      "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" } }, null, 2) + "\n",
       "index.html": `<!doctype html>
 <html lang="en">
 <head>
@@ -1444,31 +1459,9 @@ document.getElementById("b").onclick = () => { document.getElementById("n").text
 `,
     } },
   { slug: "notes", title: "A note with a diagram", tab: "view",
-    about: "A Markdown document that embeds an SVG. The page, notes/index.html, renders README.md itself with marked; its folder, notes/, is what viewers can reach.",
+    about: "A markdown view of notes/README.md: the frontend renders it (with copy and download), and the SVG it embeds comes from the same folder.",
     files: {
-      "artifact.json": JSON.stringify({ page: "notes/index.html" }, null, 2) + "\n",
-      "notes/index.html": `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Release checklist</title>
-<style>
-  body { font: 16px/1.6 system-ui, sans-serif; max-width: 72ch; margin: 40px auto; padding: 0 20px; color: #1f2328; }
-  img { max-width: 100%; }
-  table { border-collapse: collapse; } th, td { border: 1px solid #d8dee4; padding: 4px 10px; }
-</style>
-</head>
-<body>
-<article id="doc">Loading…</article>
-<script type="module">
-import { marked } from "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
-const md = await (await fetch("README.md", { cache: "no-cache" })).text();
-document.getElementById("doc").innerHTML = marked.parse(md);
-<\/script>
-</body>
-</html>
-`,
+      "artifact.json": JSON.stringify({ view: { type: "markdown", entry: "notes/README.md" } }, null, 2) + "\n",
       "notes/README.md": `# Release checklist
 
 A note kept as an artifact. Each edit is a version, so you can compare and restore.
@@ -1495,7 +1488,7 @@ A note kept as an artifact. Each edit is a version, so you can compare and resto
   { slug: "clock", title: "A page a job keeps fresh", tab: "runs", run_now: ["tick"],
     about: "A scheduled job (every 5 minutes) writes data/now.json, and keeps a run counter in its state directory. Each run that changes the data adds a job-run version; the page shows it.",
     files: {
-      "artifact.json": JSON.stringify({ page: "index.html",
+      "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
         jobs: { tick: { run: "sh tick.sh", writes: ["data"], state: ".state", schedule: "*/5 * * * *", timeout: "2m" } } }, null, 2) + "\n",
       "tick.sh": { content: `#!/bin/sh
 set -e
@@ -1537,7 +1530,7 @@ fetch("data/now.json").then(r => r.json()).then(d => {
   { slug: "table", title: "A table a job rebuilds", tab: "runs", run_now: ["build"],
     about: "An hourly job regenerates data/sales.csv with awk; the page fetches it and draws the table, so each run's data shows without changing the page. The build folder is mirrored on every run.",
     files: {
-      "artifact.json": JSON.stringify({ page: "index.html",
+      "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
         jobs: { build: { run: "sh build.sh", writes: ["data"], schedule: "@hourly" } } }, null, 2) + "\n",
       "index.html": `<!doctype html>
 <html lang="en">
@@ -1600,7 +1593,7 @@ sleep 2
   { slug: "react", title: "A React app without a build", tab: "view",
     about: "React with htm instead of JSX, so app/App.js and app/Tally.js are plain ES modules: the browser follows their relative imports and an import map supplies react. No build step; JSX would need one (esbuild in a sandbox).",
     files: {
-      "artifact.json": JSON.stringify({ page: "index.html" }, null, 2) + "\n",
+      "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" } }, null, 2) + "\n",
       "index.html": `<!doctype html>
 <html lang="en">
 <head>

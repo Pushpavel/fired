@@ -24,7 +24,7 @@ agent ─ MCP tools ─▶ your backend ─────────────�
 | fired-artifacts | your backend |
 |---|---|
 | content-addressed blob store, versions, `artifact.json` validation | users, sharing, who may fork or edit |
-| serving each artifact's page and its folder, raw files, zip export | the domain viewers use, who may see what |
+| serving each artifact's view (its entry and folder), raw files, zip export | the domain viewers use, who may see what, rendering single-file views (copy, download, …) |
 | scheduler, `on_busy` queues, per-quota-key and global limits | approving grants (longer schedules, longer runs), quotas per plan |
 | runner sandboxes, run versions, state, logs, events | credentials for each run, MCP tools, notifications to sessions |
 | retention, `delete_after`, garbage collection | turning sandbox folders, MCP resources and tool outputs into files to publish |
@@ -61,7 +61,7 @@ durable storage. Runs happen on whichever fired host it points at.
 {
   "title": "Weekly sales",
   "description": "Refreshed every weekday morning",
-  "page": "dist/index.html",
+  "view": {"type": "page", "entry": "dist/index.html"},
   "jobs": {
     "refresh": {
       "run": "python refresh.py",
@@ -87,25 +87,40 @@ instead of being ignored.
 bytes). They're versioned like everything else here: renaming makes a
 version, and a restore or fork brings the old name along. A zip of a
 version is therefore complete: published again elsewhere, it comes back
-with its name, page and jobs.
+with its name, view and jobs.
 
-**The page** is the artifact's view: an HTML file that viewers open, as
-with Claude's artifacts (a page plus supporting files). Viewers get the
-page at `/` and the other files of the page's folder at their paths:
-other pages (`about.html`, `docs/setup.html`), scripts, styles, data a job
-writes. Nothing outside that folder is reachable by viewers, so a build in
-`dist/` can sit next to its sources; there are no index files (link to
-`docs/index.html`, not `docs/`), and `artifact.json` isn't served.
+**The view** is what viewers see: `{"type", "entry"}`, one entry file and
+its type. The type says who renders it:
 
-Whatever is shown is built by the page itself: a report renders its
-Markdown, a dashboard fetches its CSV, a React app loads React. The agent
-writes all of it and sees exactly what viewers see; the service renders
-nothing.
+| `type` | `entry` | Rendered by |
+|---|---|---|
+| `page` | `.html`, `.htm` | the page itself: the agent's HTML, scripts and styles |
+| `markdown` | `.md`, `.markdown` | your frontend |
+| `csv` | `.csv` | your frontend |
+| `json` | `.json` | your frontend |
+| `code` | any text file | your frontend (as source, language from the extension) |
+| `svg` | `.svg` | your frontend |
+| `image` | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` | your frontend |
 
-The page is only what `artifact.json` says: without `"page"`, there is
-nothing to view, even with an `index.html`. It must be an `.html` file in
-the version; files coming and going never change it, and a page that goes
-away fails the publish.
+A **page** is like Claude's artifacts: a page plus supporting files. The
+agent builds everything shown (a dashboard fetches its CSV, a React app
+loads React), and sees exactly what viewers see. Every **other type** is
+one file whose UX the platform owns: your frontend renders Markdown, a
+table or source the same way for every artifact, with its own copy,
+download and so on, and improves it in one place. (Structured types such
+as slides, where the frontend owns a richer UX, are planned.)
+
+Viewers reach the entry and the other files of its folder at their paths:
+a page's other pages (`about.html`, `docs/setup.html`), scripts, styles
+and data; a Markdown file's images. Nothing outside that folder is
+reachable, so a build in `dist/` can sit next to its sources; there are no
+index files (link to `docs/index.html`, not `docs/`), and `artifact.json`
+isn't served.
+
+The view is only what `artifact.json` says: without `"view"`, there is
+nothing to view, even with an `index.html`. The entry must be a file of
+its type in the version; files coming and going never change the view,
+and an entry that goes away fails the publish.
 
 **Jobs**:
 
@@ -157,7 +172,7 @@ one file changed copies one file.
     {"path": "run.sh", "content": "#!/bin/sh\n…", "mode": 493},
     {"path": "old.css", "delete": true}
   ],
-  "spec": {"page": "app/index.html"},
+  "spec": {"view": {"type": "page", "entry": "app/index.html"}},
   "label": "add weekly chart",
   "run_now": ["refresh"],
   "notify": "session-8f2c"
@@ -188,11 +203,11 @@ one file changed copies one file.
 - **`spec` writes `artifact.json`,** replacing it. Passing both `spec` and an
   `artifact.json` file is an error. Without either, the previous
   `artifact.json` carries over and is validated again against the new files
-  (a page that was deleted fails the publish).
+  (a view whose entry was deleted fails the publish).
 - **`title` and `description` change just those fields** of `artifact.json`
   and keep the rest; they win over `spec` and over an `artifact.json` in the
   files. An agent publishing an unzipped export sets `title` to name its
-  copy and keeps the zip's page and jobs. A publish with only `title` is a
+  copy and keeps the zip's view and jobs. A publish with only `title` is a
   rename.
 - **All or nothing:** any invalid path, missing blob, invalid spec or limit
   breach means no version is created.
@@ -251,8 +266,13 @@ Runs).
   a viewer's request unchanged (same path and query) with the API token
   and `X-Artifact: <id>`, plus optionally `X-Artifact-Version: <n>` (absent
   or `current` follows the current version). It gets the artifact's view:
-  `/` is the page, other paths are files of the page's folder, anything else
-  is a 404 (`no_page` when there's no page). Frame `/` and you're done.
+  - `/` is the entry, as it is, with `X-Artifact-View: <type>` and
+    `X-Artifact-View-Name: <file name>`. For a `page`, frame it and you're
+    done; for other types, render it (and "copy source" is this response).
+  - Other paths are files of the entry's folder; anything else is a 404
+    (`no_view` when there's no view). 404s name only the URL path.
+  - `?download` on any of them makes it an attachment with its file name.
+
   Responses are the same as the file API (ETag, `X-Artifact-Version`,
   cache headers); only GET and HEAD are allowed. Strip these headers from what the viewer's browser
   sends, and set your own security headers (such as `frame-ancestors`) at
@@ -260,7 +280,7 @@ Runs).
 
 - **Files:** `GET /v1/artifacts/{id}/files/{path}?version=N` serves any one
   file, current version by default: the owner's raw access, not the view.
-  There are no index files. Responses carry `ETag` (the blob hash) and
+  There are no index files; `?download` makes it an attachment. Responses carry `ETag` (the blob hash) and
   `X-Artifact-Version`. With `?version=` they are cacheable forever; without
   it, `no-cache`. Reads are rate limited per artifact (`limits.serve_rps`).
   Serve artifact files to viewers from a separate registrable domain, since
@@ -276,7 +296,7 @@ Runs).
   until the new owner publishes or a grant turns them on. Run state is not
   copied.
 - **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of the
-  version's files, `artifact.json` (title, description, page, jobs)
+  version's files, `artifact.json` (title, description, view, jobs)
   included. Published again, it's the same artifact; `meta`, labels and
   the quota key aren't in it, since they belong to whoever owns it.
 - **Compare:** there's no compare endpoint; `GET …/versions/{n}` lists
@@ -469,25 +489,26 @@ make dev-artifacts  # fired-artifacts on :8444, token "dev", in another
 `make dev-artifacts` turns on the console (`ui: true` or
 `FIRED_ARTIFACTS_UI=1`) at http://127.0.0.1:8444/ui/. Sign in with the token.
 It lists artifacts with their version history, edits and uploads files and
-publishes them, shows each artifact's page, previews files, compares and restores versions, forks, runs jobs
+publishes them, shows each artifact's view, previews files, compares and restores versions, forks, runs jobs
 (with payloads), approves grants, shows runs with their logs, edits quotas, and
 follows `/v1/events` live. The home page has examples that cover each
-feature: a page, scheduled jobs with state, a queue, approval and a failing job.
+feature: a page, a markdown view, scheduled jobs with state, a queue, approval and a failing job.
 
-The console shows an artifact's view on its own origin (for the console
-only; in production your backend serves it with header routing, above),
-`<id>-<version>-<sig>.<preview_domain>` (version 0 follows the current
-version), exactly as viewers get it: the page at `/`, its folder's files
-next to it, and no way to reach the console's session. Without
+The console shows a `page` view on the artifact's own origin (for the
+console only; in production your backend serves it with header routing,
+above), `<id>-<version>-<sig>.<preview_domain>` (version 0 follows the
+current version), exactly as viewers get it: the page at `/`, its folder's
+files next to it, and no way to reach the console's session. Other view
+types it renders itself, as a frontend would, with Copy source and
+Download. Without
 `preview_domain` (`FIRED_ARTIFACTS_PREVIEW_DOMAIN`) it uses nip.io for the
 IP you opened it on, as fired's console does.
 
-The Files tab previews single files for owners: `md`, `csv`, `json`, text,
-images, `svg`, and `jsx`/`tsx` (compiled with Babel, relative imports
-included, packages from esm.sh). The renderer runs in a sandboxed frame
-with no origin and gets files from the console, which reads them with the
-files API, so previews also show unpublished edits. This is console
-tooling, not part of what viewers see.
+The console's renderer (for those views, and the Files tab's previews of
+`md`, `csv`, `json`, text, images, `svg` and `jsx`/`tsx`, compiled with
+Babel) runs in a sandboxed frame with no origin and gets files from the
+console, which reads them with the files API; Files-tab previews include
+unpublished edits. It's a reference for your frontend's renderers.
 
 The production image contains the binary too:
 `docker run --entrypoint fired-artifacts fired:latest serve`. Configure it

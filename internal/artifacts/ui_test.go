@@ -78,7 +78,7 @@ func TestUI(t *testing.T) {
 	// Preview links: one origin per artifact and version, serving its view.
 	res := must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{Files: []pa.FileOp{
 		pa.Text("index.html", "<h1>one</h1>"), pa.Text("app/x.js", "1"),
-	}, Spec: &pa.Spec{Page: "index.html"}}}))(t)
+	}, Spec: &pa.Spec{View: &pa.View{Type: pa.ViewPage, Entry: "index.html"}}}}))(t)
 	id := res.Artifact.ID
 	must(h.c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{pa.Text("index.html", "<h1>two</h1>")}}))(t)
 

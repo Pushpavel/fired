@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -382,6 +384,7 @@ const memServeLimit = 8 << 20
 
 // handleFile serves one file of a version (?version=N, default current),
 // any file: this is the owner's raw access, not what viewers get.
+// ?download makes it an attachment.
 func (s *Service) handleFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.allowRead(id) {
@@ -435,6 +438,9 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 	}
 	defer rc.Close()
 	ct := contentType(p)
+	if r.URL.Query().Has("download") {
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(p)}))
+	}
 	w.Header().Set("ETag", `"`+f.Hash+`"`)
 	w.Header().Set("X-Artifact-Version", strconv.Itoa(n))
 	w.Header().Set("X-Content-Type-Options", "nosniff")

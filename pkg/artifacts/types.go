@@ -25,13 +25,35 @@ const SpecFile = "artifact.json"
 type Spec struct {
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
-	// Page is the HTML file viewers open, the artifact's view. Viewers get
-	// it at "/" and the other files of its folder at their paths (other
-	// pages, scripts, styles, data), nothing outside it. Without a page,
-	// there is nothing to view.
-	Page string         `json:"page,omitempty"`
+	// View is what viewers see: one entry file and its type. Without a
+	// view, there is nothing to view.
+	View *View          `json:"view,omitempty"`
 	Jobs map[string]Job `json:"jobs,omitempty"`
 }
+
+// View is an artifact's view. Its Type says who renders it:
+//
+//   - ViewPage: Entry is an HTML page the agent wrote; it renders itself.
+//   - every other type: Entry is one file of that kind (Markdown, a CSV, …)
+//     and your frontend renders it, with its own UX (copy, download, …).
+//
+// Viewers reach the entry and the other files of its folder (a page's
+// scripts and other pages, a Markdown file's images), nothing else.
+type View struct {
+	Type  string `json:"type"`
+	Entry string `json:"entry"`
+}
+
+// View types.
+const (
+	ViewPage     = "page"     // .html, .htm
+	ViewMarkdown = "markdown" // .md, .markdown
+	ViewCSV      = "csv"      // .csv
+	ViewJSON     = "json"     // .json
+	ViewCode     = "code"     // any text file, shown as source
+	ViewSVG      = "svg"      // .svg
+	ViewImage    = "image"    // .png, .jpg, .jpeg, .gif, .webp
+)
 
 // Job is a command run against the artifact's files on a schedule or on
 // demand. A successful run's changes under Writes become a new version.

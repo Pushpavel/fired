@@ -260,9 +260,11 @@ func (s *Service) previewTarget(hostport string) (id string, n int, ok bool) {
 }
 
 // serveView serves an artifact's view, on a preview origin or routed by
-// headers: "/" is the page from artifact.json, and other paths are files of
-// the page's folder by exact path (no index files, nothing outside it, not
-// artifact.json). Without a page there is nothing to serve.
+// headers: "/" is the view's entry, as it is (a page renders itself; for
+// other types the frontend renders it, told by X-Artifact-View), and other
+// paths are files of the entry's folder by exact path (no index files,
+// nothing outside it, not artifact.json). ?download on any of them is an
+// attachment. Without a view there is nothing to serve.
 func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n int) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeErr(w, errf(http.StatusMethodNotAllowed, "method_not_allowed", "views are read-only"))
@@ -279,15 +281,17 @@ func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n
 		writeErr(w, err)
 		return
 	}
-	page := v.Spec.Page
-	if page == "" {
-		writeErr(w, errf(http.StatusNotFound, "no_page", "%s has no page in version %d: set \"page\" in %s", id, v.Version, pa.SpecFile))
+	view := v.Spec.View
+	if view == nil {
+		writeErr(w, errf(http.StatusNotFound, "no_view", "%s has no view in version %d: set \"view\" in %s", id, v.Version, pa.SpecFile))
 		return
 	}
 	p := strings.TrimPrefix(r.URL.Path, "/")
 	switch {
 	case p == "":
-		p = page
+		p = view.Entry
+		w.Header().Set("X-Artifact-View", view.Type)
+		w.Header().Set("X-Artifact-View-Name", path.Base(view.Entry))
 	case strings.HasSuffix(p, "/"):
 		writeErr(w, errf(http.StatusNotFound, "not_found", "%s is a folder; link to a file in it", r.URL.Path))
 		return
@@ -297,7 +301,7 @@ func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n
 			writeErr(w, badRequest("%v", err))
 			return
 		}
-		p = path.Join(path.Dir(page), c)
+		p = path.Join(path.Dir(view.Entry), c)
 		if p == pa.SpecFile {
 			writeErr(w, errf(http.StatusNotFound, "not_found", "%s isn't part of the view", pa.SpecFile))
 			return
