@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -34,7 +36,7 @@ type startInfo struct {
 	artifact pa.Artifact
 	job      pa.Job
 	maxRun   time.Duration
-	tree     map[string]pa.File // the version's files and the current output
+	tree     map[string]pa.File // the version's files
 }
 
 type outcome struct {
@@ -46,17 +48,22 @@ type outcome struct {
 	// quota key is over its limits: overQuota).
 	retry     bool
 	overQuota bool
-	captured  map[string]pa.File
 }
 
 // execute runs one job in the artifact's runner sandbox and records the
 // result. The runner sandbox is only a cache: each run starts by replacing
-// the work directory with the version's files and the job's saved state.
+// the work directory with the version's files. What the job keeps or
+// produces is in the db.
 func (s *Service) execute(si *startInfo) {
 	defer s.runsWG.Done()
+	lr := &liveRun{id: si.run.ID, secrets: redact.NewSet()}
+	s.mu.Lock()
+	s.live[lr.id] = lr
+	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		delete(s.running, si.artifact.ID)
+		delete(s.live, lr.id)
 		s.mu.Unlock()
 		s.kick()
 	}()
@@ -73,8 +80,8 @@ func (s *Service) execute(si *startInfo) {
 		case <-ctx.Done():
 		}
 	}()
-	out := s.runJob(ctx, si, timeout)
-	if err := s.finishRun(si, out); err != nil {
+	out := s.runJob(ctx, si, lr, timeout)
+	if err := s.finishRun(si, lr, out); err != nil {
 		s.log.Error("finish run", "run", si.run.ID, "err", err)
 	}
 }
@@ -118,7 +125,7 @@ func failed(reason string, err error) *outcome {
 	return &outcome{status: pa.RunFailed, reason: fmt.Sprintf("%s: %v", reason, err)}
 }
 
-func (s *Service) runJob(ctx context.Context, si *startInfo, timeout time.Duration) *outcome {
+func (s *Service) runJob(ctx context.Context, si *startInfo, lr *liveRun, timeout time.Duration) *outcome {
 	r, j, a := si.run, si.job, si.artifact
 	creds, err := s.broker.credentials(ctx, pa.CredentialsRequest{Artifact: a.ID, QuotaKey: a.QuotaKey, Labels: a.Labels,
 		Version: r.Version, RunID: r.ID})
@@ -164,40 +171,34 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, timeout time.Durati
 		"ARTIFACT_ID": a.ID, "ARTIFACT_VERSION": fmt.Sprint(r.Version),
 		"ARTIFACT_RUN_ID": r.ID, "TRIGGER": r.Trigger, "TRIGGER_FILE": triggerFile,
 	}
-	started, err := s.fired.Exec(ctx, sb, api.ExecRequest{Cmd: j.Run, Cwd: w, Env: env, SecretEnv: creds.SecretEnv,
-		SecretFiles: creds.SecretFiles, Background: true})
-	if err != nil {
-		return failed("start", err)
-	}
-	secrets := redact.NewSet()
+	// The run's credentials are kept from its db writes (shown to viewers)
+	// and its logs.
+	secrets := lr.secrets
 	for k, v := range creds.SecretEnv {
 		secrets.Add(k, v)
 	}
 	for k, v := range creds.SecretFiles {
 		secrets.Add(k, v)
 	}
+	secretEnv := creds.SecretEnv
+	if s.cfg.Runner.DBURL != "" {
+		env["FIRED_DB_URL"] = s.cfg.Runner.DBURL + "/v1/artifacts/" + url.PathEscape(a.ID) + "/db"
+		secretEnv = make(map[string]string, len(creds.SecretEnv)+1)
+		for k, v := range creds.SecretEnv {
+			secretEnv[k] = v
+		}
+		secretEnv["FIRED_DB_TOKEN"] = s.runToken(r.ID)
+		secrets.Add("FIRED_DB_TOKEN", secretEnv["FIRED_DB_TOKEN"])
+	}
+	started, err := s.fired.Exec(ctx, sb, api.ExecRequest{Cmd: j.Run, Cwd: w, Env: env, SecretEnv: secretEnv,
+		SecretFiles: creds.SecretFiles, Background: true})
+	if err != nil {
+		return failed("start", err)
+	}
 	out := &outcome{}
 	s.follow(ctx, sb, started.PID, timeout, out)
 	out.logs.Stdout = string(secrets.Bytes([]byte(out.logs.Stdout)))
 	out.logs.Stderr = string(secrets.Bytes([]byte(out.logs.Stderr)))
-	if out.status != pa.RunSucceeded {
-		return out
-	}
-	captured, err := s.capture(ctx, sb, w, []string{pa.OutputDir})
-	if err != nil {
-		out.status, out.reason = pa.RunFailed, "capture "+pa.OutputDir+": "+err.Error()
-		return out
-	}
-	// Artifacts get shared; a run must not publish the credentials it ran
-	// with. Refuse the result if any written file contains one.
-	if p, name, err := s.findSecret(captured, secrets); err != nil {
-		out.status, out.reason = pa.RunFailed, "scan "+pa.OutputDir+": "+err.Error()
-		return out
-	} else if p != "" {
-		out.status, out.reason = pa.RunFailed, fmt.Sprintf("result rejected: %s contains the value of credential %s", p, name)
-		return out
-	}
-	out.captured = captured
 	return out
 }
 
@@ -313,110 +314,8 @@ func (s *Service) treeArchive(tree map[string]pa.File) io.Reader {
 	return pr
 }
 
-// capture reads the paths a job may write back from the sandbox.
-func (s *Service) capture(ctx context.Context, sb, w string, writes []string) (map[string]pa.File, error) {
-	out := map[string]pa.File{}
-	var total int64
-	for _, wp := range writes {
-		full := path.Join(w, wp)
-		fi, err := s.fired.Stat(ctx, sb, full)
-		if client.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		rc, err := s.fired.DownloadArchive(ctx, sb, full)
-		if err != nil {
-			return nil, err
-		}
-		err = func() error {
-			defer rc.Close()
-			gz, err := gzip.NewReader(rc)
-			if err != nil {
-				return err
-			}
-			tr := tar.NewReader(gz)
-			for {
-				hdr, err := tr.Next()
-				if err == io.EOF {
-					return nil
-				}
-				if err != nil {
-					return err
-				}
-				if hdr.Typeflag != tar.TypeReg {
-					continue
-				}
-				name := strings.TrimPrefix(hdr.Name, "./")
-				p := wp
-				if fi.IsDir {
-					p = wp + "/" + name
-				}
-				p, err = cleanPath(p)
-				if err != nil {
-					return err
-				}
-				h, n, err := s.putContent(context.Background(), tr, s.cfg.Limits.MaxVersionBytes, "")
-				if err != nil {
-					return err
-				}
-				total += n
-				if total > s.cfg.Limits.MaxVersionBytes {
-					return fmt.Errorf("written files exceed %d bytes", s.cfg.Limits.MaxVersionBytes)
-				}
-				mode := uint32(0o644)
-				if hdr.Mode&0o111 != 0 {
-					mode = 0o755
-				}
-				out[p] = pa.File{Path: p, Hash: h, Size: n, Mode: mode}
-			}
-		}()
-		if err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-// findSecret scans files for credential values, reading each in chunks
-// that overlap by the longest value so matches across chunks are found.
-func (s *Service) findSecret(files map[string]pa.File, secrets *redact.Set) (string, string, error) {
-	if secrets.Empty() {
-		return "", "", nil
-	}
-	overlap := secrets.MaxLen()
-	buf := make([]byte, overlap+1<<20)
-	for p, f := range files {
-		rc, err := s.openContent(context.Background(), f.Hash)
-		if err != nil {
-			return "", "", err
-		}
-		keep := 0
-		for {
-			n, err := io.ReadFull(rc, buf[keep:])
-			if name, ok := secrets.Find(buf[:keep+n]); ok {
-				rc.Close()
-				return p, name, nil
-			}
-			if err != nil {
-				break
-			}
-			total := keep + n
-			keep = overlap
-			if keep > total {
-				keep = total
-			}
-			copy(buf, buf[total-keep:total])
-		}
-		rc.Close()
-	}
-	return "", "", nil
-}
-
-// finishRun records a run's outcome: an output if it changed .output/,
-// its logs and events.
-func (s *Service) finishRun(si *startInfo, out *outcome) error {
+// finishRun records a run's outcome, its logs and events.
+func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 	ctx := context.Background()
 	r, a := si.run, si.artifact
 	if out.retry {
@@ -435,20 +334,11 @@ func (s *Service) finishRun(si *startInfo, out *outcome) error {
 			r.Logs = h
 		}
 	}
-	var output *pa.Output
+	s.mu.Lock()
+	r.DBWrites = lr.writes
+	s.mu.Unlock()
 	var notify string
 	err := s.st.tx(ctx, func(q querier) error {
-		if out.status == pa.RunSucceeded {
-			o, err := s.commitOutput(ctx, q, r, out.captured, now)
-			if err != nil {
-				out.status, out.reason = pa.RunFailed, "result rejected: "+err.Error()
-			} else {
-				output = o
-			}
-		}
-		if output != nil {
-			r.Output = output.Output
-		}
 		r.Status, r.Reason, r.ExitCode, r.FinishedAt = out.status, out.reason, out.exitCode, &now
 		if r.StartedAt != nil {
 			r.DurationMS = now.Sub(*r.StartedAt).Milliseconds()
@@ -466,10 +356,7 @@ func (s *Service) finishRun(si *startInfo, out *outcome) error {
 	if err != nil {
 		return err
 	}
-	if output != nil {
-		s.emit(pa.Event{Type: "artifact.output", Artifact: a.ID, Version: r.Version, Output: output.Output, RunID: r.ID})
-	}
-	s.emit(pa.Event{Type: "run.finished", Artifact: a.ID, Version: r.Version, Output: r.Output, RunID: r.ID, Status: r.Status, Reason: r.Reason, Notify: notify})
+	s.emit(pa.Event{Type: "run.finished", Artifact: a.ID, Version: r.Version, RunID: r.ID, Status: r.Status, Reason: r.Reason, Notify: notify})
 	return nil
 }
 
@@ -495,14 +382,28 @@ func (s *Service) ensureRunner(ctx context.Context, a pa.Artifact, template stri
 		TTL:      s.cfg.Runner.TTL,
 		QuotaKey: a.QuotaKey, Pool: pool,
 	}
-	if len(s.cfg.Runner.Egress) > 0 {
-		req.Egress = &api.EgressPolicy{Allow: s.cfg.Runner.Egress}
+	if allow := s.runnerEgress(); len(allow) > 0 {
+		req.Egress = &api.EgressPolicy{Allow: allow}
 	}
 	sb, err := s.fired.CreateSandbox(ctx, req)
 	if err != nil {
 		return "", err
 	}
 	return sb.ID, nil
+}
+
+// runnerEgress is the runner sandboxes' allowlist: the configured one and
+// this service's db.
+func (s *Service) runnerEgress() []string {
+	allow := append([]string(nil), s.cfg.Runner.Egress...)
+	if u, err := url.Parse(s.cfg.Runner.DBURL); err == nil && u.Host != "" {
+		host := u.Host
+		if u.Port() == "" {
+			host = net.JoinHostPort(u.Hostname(), map[string]string{"http": "80", "https": "443"}[u.Scheme])
+		}
+		allow = append(allow, host)
+	}
+	return allow
 }
 
 func (s *Service) removeRunner(ctx context.Context, id string) {

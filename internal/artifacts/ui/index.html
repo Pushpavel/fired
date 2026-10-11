@@ -347,12 +347,11 @@ details[open] summary { margin-bottom: var(--s3); }
       <label class="field"><span><strong>ID</strong>, optional</span><input type="text" name="id" placeholder="Generated if empty" pattern="[a-z0-9\-]{3,44}" title="3 to 44 characters: a–z, 0–9 and -"></label>
     </div>
     <p class="note">It starts as version 1 with an index.html page. Edit or replace it in the Files tab.</p>
-    <details><summary>Labels and retention</summary>
+    <details><summary>Labels and deletion</summary>
       <div class="d-body" style="padding:0">
         <label class="field"><span>Labels, one key=value per line</span><textarea name="labels" rows="2" placeholder="team=growth"></textarea></label>
         <div class="cols">
           <label class="field"><span>Delete after inactive for</span><input type="text" name="delete_after" placeholder="Service default"></label>
-          <label class="field"><span>Job outputs to keep</span><input type="number" name="retain_outputs" min="0" placeholder="Service default"></label>
         </div>
         <p class="note">Durations look like 30m, 12h or 720h. Use -1 to never delete.</p>
       </div>
@@ -465,7 +464,7 @@ function toast(msg, kind = "") {
 // ---------- API; every call made by an action is recorded in the drawer
 const apiLog = [];
 async function api(method, path, body, opts = {}) {
-  const init = { method, headers: {} };
+  const init = { method, headers: { ...(opts.headers || {}) } };
   if (body !== undefined) {
     if (body instanceof Blob || typeof body === "string") init.body = body;
     else { init.body = JSON.stringify(body); init.headers["Content-Type"] = "application/json"; }
@@ -507,7 +506,7 @@ const S = {
   view: "home", info: null, online: true, live: false,
   list: [], spines: {},          // artifact id → versions, oldest first
   sel: null, art: null, versions: [], ver: null, job: null, data: null, runs: [],
-  tab: "view", runSel: null, fresh: new Set(),
+  tab: "view", runSel: null, docSel: null, asViewer: false, fresh: new Set(),
   vcache: new Map(),             // "id:n" → version with files
   links: new Map(),              // "id:n" → preview origin
   stage: new Map(), mirror: [], fileSel: null, compare: null,
@@ -521,9 +520,11 @@ async function loadVersion(id, n) {
   if (!S.vcache.has(k)) S.vcache.set(k, await api("GET", `/artifacts/${enc(id)}/versions/${n}`, undefined, { quiet: true }));
   return S.vcache.get(k);
 }
-async function previewOrigin(id, n) {
-  const k = vkey(id, n);
-  if (!S.links.has(k)) S.links.set(k, (await api("POST", "/ui/preview-link", { artifact: id, version: n }, { quiet: true })).url);
+// viewer: the page as someone other than its owner sees it (reads the db,
+// without _private/, and can't write it).
+async function previewOrigin(id, n, viewer = false) {
+  const k = vkey(id, n) + (viewer ? "v" : "");
+  if (!S.links.has(k)) S.links.set(k, (await api("POST", "/ui/preview-link", { artifact: id, version: n, viewer }, { quiet: true })).url);
   return S.links.get(k);
 }
 
@@ -573,7 +574,7 @@ function spine(versions, o = {}) {
   return el;
 }
 const legend = () => h("ul", { class: "legend", "aria-label": "Version origins" },
-  [["edit", "Edited", "a publish"], ["run", "Job run", "a job's output"], ["restore", "Restored", "an older version brought back"], ["fork", "Forked", "copied from another artifact"]]
+  [["edit", "Edited", "a publish"], ["restore", "Restored", "an older version brought back"], ["fork", "Forked", "copied from another artifact"]]
     .map(([o, name, about]) => h("li", { class: `o o-${o}` }, h("i", { class: `h-${o}` }), h("span", {}, h("b", {}, name), ", " + about))));
 
 // ---------- sidebar
@@ -624,7 +625,7 @@ async function createKit(k, btn) {
 
 // ---------- artifact
 async function openArtifact(id, ver = null, tab) {
-  if (S.sel !== id) { S.stage.clear(); S.mirror = []; S.fileSel = null; S.runSel = null; S.compare = null; S.tab = "view"; }
+  if (S.sel !== id) { S.stage.clear(); S.mirror = []; S.fileSel = null; S.runSel = null; S.docSel = null; S.compare = null; S.tab = "view"; }
   S.view = "artifact"; S.sel = id; S.ver = ver; if (tab) S.tab = tab;
   try { localStorage.setItem("fa.sel", id); } catch {}
   renderList();
@@ -642,7 +643,7 @@ async function loadArtifact(keepPane) {
       api("GET", `/artifacts/${enc(id)}`, undefined, { quiet: true }),
       api("GET", `/artifacts/${enc(id)}/versions`, undefined, { quiet: true }),
       api("GET", `/artifacts/${enc(id)}/job`, undefined, { quiet: true }).catch(() => null),
-      api("GET", `/artifacts/${enc(id)}/outputs`, undefined, { quiet: true }).catch(() => null),
+      api("GET", `/artifacts/${enc(id)}/db?limit=1000`, undefined, { quiet: true }).catch(() => null),
       api("GET", `/artifacts/${enc(id)}/runs?limit=100`, undefined, { quiet: true }).catch(() => ({ runs: [] })),
     ]);
     if (S.sel !== id) return;
@@ -677,9 +678,9 @@ function renderArtifact(keepPane) {
     S.versions.length ? spine(S.versions, { label: "Versions", current: a.current_version, selected: n, pick: x => pickVersion(x.version) }) : null,
     pickedLine(v));
   S.fresh.clear();
-  const counts = { files: v?.file_count, versions: S.versions.length, runs: S.runs.length };
+  const counts = { files: v?.file_count, versions: S.versions.length, data: S.data ? S.data.docs.length + (S.data.next ? "+" : "") : null, runs: S.runs.length };
   const tabs = h("div", { class: "tabs", role: "tablist" },
-    [["view", "View"], ["files", "Files"], ["versions", "Versions"], ["job", "Job"], ["runs", "Runs"], ["settings", "Settings"]].map(([k, label]) =>
+    [["view", "View"], ["files", "Files"], ["versions", "Versions"], ["data", "Data"], ["job", "Job"], ["runs", "Runs"], ["settings", "Settings"]].map(([k, label]) =>
       h("button", { class: "tab", role: "tab", "aria-selected": String(S.tab === k), onclick: () => { S.tab = k; renderArtifact(); } },
         label, counts[k] != null ? h("span", { class: "count" }, " " + counts[k]) : null,
         k === "files" ? h("span", { class: "count", id: "staged-count", style: "color:var(--edit)" }, S.stage.size ? `, ${S.stage.size} staged` : "") : null)));
@@ -699,7 +700,6 @@ function pickedLine(v) {
       `, ${v.file_count} ${v.file_count === 1 ? "file" : "files"}, ${fmtBytes(v.size_bytes)}, ${ago(v.created_at)}`,
       cur ? ". This is the current version." : ".",
     ].join("")),
-    cur && a.output ? h("button", { class: "btn small quiet", onclick: () => { S.tab = "job"; renderArtifact(); } }, `With output ${a.output}`) : null,
     !cur ? h("button", { class: "btn small", onclick: () => restore(v.version) }, `Restore v${v.version}`) : null,
     !cur ? h("button", { class: "btn small quiet", onclick: () => pickVersion(null) }, "Show the current version") : null);
 }
@@ -714,7 +714,7 @@ function renderTab() {
   const old = $("#pane"); if (!old) return;
   const p = h("div", { class: "pane", id: "pane" });
   old.replaceWith(p);
-  ({ view: tabView, files: tabFiles, versions: tabVersions, job: tabJob, runs: tabRuns, settings: tabSettings })[S.tab](p);
+  ({ view: tabView, files: tabFiles, versions: tabVersions, data: tabData, job: tabJob, runs: tabRuns, settings: tabSettings })[S.tab](p);
 }
 
 // ---------- View tab
@@ -747,11 +747,14 @@ async function tabView(p) {
   // A page renders itself: shown on the artifact's own origin, exactly as
   // viewers get it.
   let origin;
-  try { origin = await previewOrigin(a.id, atCurrent() ? 0 : n); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
+  try { origin = await previewOrigin(a.id, atCurrent() ? 0 : n, !!S.asViewer); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
   const src = origin;
   const frame = h("iframe", { class: "frame", id: "frame", title: `The page, ${vw.entry}`, src: src + "?t=" + Date.now(),
     sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads", referrerpolicy: "no-referrer" });
   bar.append(
+    h("div", { class: "seg", role: "group", "aria-label": "See it as" },
+      h("button", { type: "button", "aria-pressed": String(!S.asViewer), title: "Writes the db and reads _private/", onclick: () => { S.asViewer = false; renderTab(); } }, "Owner"),
+      h("button", { type: "button", "aria-pressed": String(!!S.asViewer), title: "Reads the db, without _private/", onclick: () => { S.asViewer = true; renderTab(); } }, "Viewer")),
     h("button", { class: "btn small", onclick: () => { frame.src = src + "?t=" + Date.now(); } }, "Reload"),
     h("a", { class: "btn small", href: src, target: "_blank", rel: "noopener", style: "text-decoration:none;color:inherit" }, "Open in a new tab"));
   p.append(bar, frame);
@@ -774,21 +777,77 @@ const TEXT_EXT = /\.(html?|css|m?js|jsx|tsx?|json|md|markdown|txt|csv|tsv|svg|xm
 const isTextPath = p => TEXT_EXT.test(p) || !/\.[^/]+$/.test(p);
 // The sample job "Add a job" puts in artifact.json, with a working script:
 // triggered only, so publishing it as-is never schedules a failing run.
-const REFRESH_SH = `#!/bin/sh
-# Runs in the artifact's folder. What it leaves in .output/ is the output.
+// db.py: the db from a job, standard library only (the base template is
+// Python). Examples and the sample job ship it next to their script.
+const DB_PY = `# The artifact's db, for its job: JSON documents at paths like
+# "collection/doc". Pages read them with /.fired/db.js; _private/ is only
+# the owner's and the job's.
+import json, os, urllib.error, urllib.parse, urllib.request
+
+URL, TOKEN = os.environ["FIRED_DB_URL"], os.environ["FIRED_DB_TOKEN"]
+
+
+def call(method, path="", data=None):
+    req = urllib.request.Request(f"{URL}/{path}", method=method,
+                                 data=None if data is None else json.dumps(data).encode(),
+                                 headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return None if r.status == 204 else json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 404 and method == "GET":
+            return None
+        raise RuntimeError(f"{method} {path}: {e.code} {e.read().decode()}") from None
+
+
+def get(path):
+    """The document's data, or None."""
+    d = call("GET", path)
+    return d and d["data"]
+
+
+def query(collection, *where, order="", limit=0):
+    """A collection's documents: where like "done==false", order like "-at"."""
+    q = [("where", w) for w in where] + ([("order", order)] if order else []) + ([("limit", limit)] if limit else [])
+    return call("GET", collection + ("?" + urllib.parse.urlencode(q) if q else ""))["docs"]
+
+
+def set(path, data):
+    return call("PUT", path, data)
+
+
+def update(path, patch):
+    """Merges patch into the document (None removes a key), creating it."""
+    return call("PATCH", path, patch)
+
+
+def delete(path):
+    call("DELETE", path)
+
+
+def batch(writes):
+    """[{"op": "set"|"update"|"delete", "path": ..., "data": ...}], all or none."""
+    return call("POST", "", {"writes": writes})["docs"]
+`;
+// The sample job "Add a job" puts in artifact.json, with a working script:
+// triggered only, so publishing it as-is never schedules a failing run.
+const REFRESH_PY = `# Runs in the artifact's folder. It can't change the artifact's files;
+# what it produces goes in the db (the Data tab), which the page reads.
 # Run it from the Job tab; add "schedule" (cron) in artifact.json to repeat it.
-set -e
-mkdir -p data
-mkdir -p .output
-date -u +%Y-%m-%dT%H:%M:%SZ > .output/updated.txt
-echo "wrote .output/updated.txt"
+import datetime
+import db
+
+now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+db.update("status/refresh", {"at": now})
+print("wrote status/refresh at", now)
 `;
 // Stages the current artifact.json with a sample job added (and its script).
 function stageSampleJob(cur) {
   const paths = (cur?.files || []).map(f => f.path);
   const spec = { ...(cur?.spec || {}) };
-  spec.job = { run: "sh refresh.sh" };
-  if (!paths.includes("refresh.sh")) stagePut("refresh.sh", REFRESH_SH);
+  spec.job = { run: "python3 refresh.py" };
+  if (!paths.includes("refresh.py")) stagePut("refresh.py", REFRESH_PY);
+  if (!paths.includes("db.py")) stagePut("db.py", DB_PY);
   stagePut("artifact.json", JSON.stringify(spec, null, 2) + "\n");
 }
 
@@ -905,7 +964,7 @@ async function fillEditor(box, f, editable) {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); publish(); }
   });
   box.append(ta);
-  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. view is { type, entry }: a page (an HTML file that renders itself) or one file the frontend renders: markdown, csv, json, code, svg or image. Viewers reach the entry's folder; without a view, there's nothing to view. job (one per artifact) takes run, schedule, timezone, timeout, active_for, on_busy, queue and template; it works in .output/, served at /.output/. Unknown fields fail the publish."));
+  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. view is { type, entry }: a page (an HTML file that renders itself) or one file the frontend renders: markdown, csv, json, code, svg or image. Viewers reach the entry's folder; without a view, there's nothing to view. job (one per artifact) takes run, schedule, timezone, timeout, active_for, on_busy, queue and template; it writes the db ($FIRED_DB_URL, $FIRED_DB_TOKEN), which pages read with /.fired/db.js. Unknown fields fail the publish."));
 }
 
 function stagePut(path, content) { S.stage.set(path, { content, size: new Blob([content]).size, text: true }); }
@@ -1046,7 +1105,6 @@ async function publish() {
     const r = await api("POST", `/artifacts/${enc(a.id)}/versions`, req);
     toast(r.unchanged ? `Nothing changed: v${r.version.version} already has these files` : `Published v${r.version.version}`, "ok");
     if (r.job?.needs_approval?.length) toast(`The job needs approval: ${r.job.needs_approval.join("; ")}`);
-    if (r.skipped?.length) toast(`Skipped ${r.skipped.length} ${r.skipped.length === 1 ? "file" : "files"} under .output/: that's the job's folder, never part of a version.`);
     S.stage.clear(); S.mirror = []; S.ver = null;
     if (runNow) { S.tab = "runs"; S.runSel = null; }
     await loadArtifact();
@@ -1078,7 +1136,7 @@ function tabVersions(p) {
         !cur ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); restore(v.version); } }, "Restore") : null,
         h("a", { class: "btn small quiet", href: `/v1/artifacts/${enc(a.id)}/versions/${v.version}/export`, download: true, onclick: e => e.stopPropagation(), style: "text-decoration:none" }, "Zip"))));
   }
-  p.append(h("p", { class: "note" }, "Versions are what was published (edits, restores, forks). The job's runs don't make versions: their outputs are in the Job tab."),
+  p.append(h("p", { class: "note" }, "Versions are what was published (edits, restores, forks). The job's runs don't make versions: they write the db, in the Data tab."),
     h("table", {}, h("thead", {}, h("tr", {}, ["Version", "Origin", "Label", "Files", "Size", "Created", ""].map(x => h("th", {}, x)))), tb));
   if (S.compare) p.append(h("div", { id: "compare" }));
   if (S.compare) showCompare();
@@ -1106,7 +1164,70 @@ async function restore(n) {
   } catch {}
 }
 
-// ---------- Job tab: the artifact's one job and its data
+// ---------- Data tab: the artifact's db
+// Documents are JSON objects at paths; the job writes them, the page reads
+// them with /.fired/db.js. The console writes as the API token (like the
+// owner).
+async function tabData(p) {
+  const a = S.art, d = S.data;
+  if (!d) { p.append(h("p", { class: "err-text" }, "Couldn't load the db.")); return; }
+  const docs = d.docs;
+  if (S.docSel && !docs.find(x => x.path === S.docSel) && S.docSel !== "") S.docSel = null;
+  if (S.docSel == null && docs[0]) S.docSel = docs[0].path;
+  const list = h("ul", {});
+  let lastParent = null;
+  for (const doc of docs) {
+    const i = doc.path.lastIndexOf("/"), parent = doc.path.slice(0, i);
+    if (parent !== lastParent) {
+      lastParent = parent;
+      list.append(h("li", { class: "note", style: "padding:8px 12px 2px" }, h("code", {}, parent + "/"), parent.split("/")[0] === "_private" ? " owner and job only" : ""));
+    }
+    list.append(h("li", {}, h("button", { class: "file", "aria-current": String(doc.path === S.docSel), title: doc.path, onclick: () => { S.docSel = doc.path; renderTab(); } },
+      h("span", { class: "nm" }, doc.path.slice(i + 1)), h("span", { class: "sz" }, `rev ${doc.rev}`))));
+  }
+  const tools = h("div", { class: "tree-tools" },
+    h("button", { class: "btn small", onclick: () => { S.docSel = ""; renderTab(); } }, "New document"),
+    docs.length ? h("button", { class: "btn small danger", onclick: async () => {
+      if (!confirm(`Delete all ${docs.length}${d.next ? "+" : ""} documents of ${titleOf(a)}?`)) return;
+      try { await guard(() => api("DELETE", `/artifacts/${enc(a.id)}/db`), "Cleared the db"); S.docSel = null; await loadArtifact(); } catch {}
+    } }, "Clear") : null);
+  const editor = h("div", { class: "editor" });
+  p.append(h("p", { class: "note" }, "The job writes here with ", h("code", {}, "$FIRED_DB_URL"), " and ", h("code", {}, "$FIRED_DB_TOKEN"),
+      "; the page reads it with ", h("code", {}, 'import { db } from "/.fired/db.js"'), ". Viewers read everything but ", h("code", {}, "_private/"), "; only the owner and the job write.",
+      d.next ? ` Showing the first ${docs.length}.` : ""),
+    h("div", { class: "files" }, h("div", { class: "tree" }, tools, docs.length ? list : h("p", { class: "note", style: "padding:12px" }, "No documents yet. Run the job, or add one.")), editor));
+  const sel = S.docSel === "" ? null : docs.find(x => x.path === S.docSel);
+  if (S.docSel === "") {
+    const path = h("input", { type: "text", placeholder: "collection/document, e.g. settings/main", "aria-label": "Path" });
+    const ta = h("textarea", { spellcheck: "false", "aria-label": "Data" }); ta.value = "{\n  \n}\n";
+    editor.append(h("div", { class: "editor-head" }, h("strong", {}, "New document"), path), ta,
+      h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => saveDoc(path.value.trim(), ta.value, -1) }, "Create")));
+    path.focus();
+    return;
+  }
+  if (!sel) { editor.append(h("p", { class: "note" }, "Pick a document on the left.")); return; }
+  const ta = h("textarea", { spellcheck: "false", "aria-label": `Data of ${sel.path}` });
+  ta.value = JSON.stringify(sel.data, null, 2) + "\n";
+  ta.addEventListener("keydown", e => { if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); saveDoc(sel.path, ta.value, sel.rev); } });
+  editor.append(h("div", { class: "editor-head" }, h("code", {}, sel.path), h("span", { class: "note", title: when(sel.updated_at) }, `rev ${sel.rev}, updated ${ago(sel.updated_at)}`),
+      h("span", { class: "spacer" }),
+      h("button", { class: "btn small quiet", onclick: () => copyText(sel.path).then(() => toast("Copied the path", "ok")) }, "Copy path"),
+      h("button", { class: "btn small danger", onclick: async () => {
+        try { await guard(() => api("DELETE", `/artifacts/${enc(a.id)}/db/${encPath(sel.path)}`, undefined, { headers: { "If-Match": String(sel.rev) } }), "Deleted"); S.docSel = null; await loadArtifact(); } catch {}
+      } }, "Delete")),
+    ta, h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => saveDoc(sel.path, ta.value, sel.rev) }, "Save"),
+      h("span", { class: "note" }, "Saves only if nobody changed it since (rev ", sel.rev, ").")));
+}
+async function saveDoc(path, text, rev) {
+  let data;
+  try { data = JSON.parse(text); } catch (e) { toast("Not valid JSON: " + e.message, "err"); return; }
+  try {
+    await guard(() => api("PUT", `/artifacts/${enc(S.art.id)}/db/${encPath(path)}`, data, { headers: { "If-Match": String(rev) } }), "Saved");
+    S.docSel = path; await loadArtifact();
+  } catch {}
+}
+
+// ---------- Job tab: the artifact's one job
 const JOBSTATE = { scheduled: ["o-run", "Scheduled"], manual: ["", "Runs when triggered"], expired: ["o-restore", "Schedule window closed"], blocked: ["o-fault", "Blocked until approved"] };
 async function tabJob(p) {
   const a = S.art, j = S.job;
@@ -1114,7 +1235,7 @@ async function tabJob(p) {
   const s = cur?.spec?.job || {};
   if (!j) {
     p.append(h("div", { class: "empty" }, h("h3", {}, "No job"),
-      h("p", { class: "note" }, "An artifact can have one job, in artifact.json. It runs in a fired sandbox with the artifact's files, on a schedule or when triggered, and works in .output/: each run starts with the last output there, and what it leaves is the next output, served at /.output/. Versions stay what you published."),
+      h("p", { class: "note" }, "An artifact can have one job, in artifact.json. It runs in a fired sandbox with the artifact's files, on a schedule or when triggered. It can't change the artifact: what it keeps or produces goes in the artifact's db (the Data tab), which the page reads."),
       h("p", {}, h("button", { class: "btn", onclick: () => {
         S.tab = "files"; stageSampleJob(cur); S.fileSel = "artifact.json"; renderArtifact(); } }, "Add a job"))));
     return;
@@ -1126,7 +1247,7 @@ async function tabJob(p) {
     j.next_run ? [h("dt", {}, "Next run"), h("dd", { title: when(j.next_run) }, until(j.next_run))] : null,
     j.active_until ? [h("dt", {}, "Schedule on until"), h("dd", { title: when(j.active_until) }, when(j.active_until))] : null,
     [h("dt", {}, "Longest run"), h("dd", {}, fmtDur(j.max_run) || "")],
-    [h("dt", {}, "Works in"), h("dd", {}, h("code", {}, ".output/"), ", served at ", h("code", {}, "/.output/"))],
+    [h("dt", {}, "Writes"), h("dd", {}, "the db, at ", h("code", {}, "$FIRED_DB_URL"), " with ", h("code", {}, "$FIRED_DB_TOKEN"), S.info && !S.info.db_url ? h("span", { class: "err-text" }, " (not configured: set runner.db_url)") : null)],
     [h("dt", {}, "When busy"), h("dd", {}, s.on_busy === "queue" ? `queue every trigger (up to ${s.queue?.max || 100}, ${fmtDur(s.queue?.max_age) || "24h"} old)` : "keep only the newest trigger")],
     j.pending ? [h("dt", {}, "Waiting"), h("dd", {}, `${j.pending} ${j.pending === 1 ? "run" : "runs"}`)] : null,
     s.template ? [h("dt", {}, "Template"), h("dd", {}, s.template)] : null);
@@ -1141,27 +1262,6 @@ async function tabJob(p) {
       h("button", { class: "btn", disabled: j.state === "blocked", onclick: () => runDialog() }, "Run with payload"),
       h("button", { class: "btn" + (j.state === "blocked" ? " primary" : j.needs_approval?.length ? "" : " quiet"), onclick: () => grantDialog(j) }, "Approve"),
       h("button", { class: "btn quiet", onclick: () => setGrant({ active_until: "0001-01-01T00:00:00Z" }, "Grant revoked") }, "Revoke"))));
-  // Its output: the current one (what's in .output/) and the ones kept.
-  const d = S.data || { current: 0, outputs: [] };
-  const sec = h("section", { class: "section" }, h("h3", {}, "Output"));
-  if (!d.outputs.length) {
-    sec.append(h("p", { class: "note" }, "No output yet: .output/ is empty until a run leaves something there."));
-  } else {
-    const curOut = d.outputs.find(o => o.output === d.current);
-    if (curOut) sec.append(h("p", {}, `Output ${curOut.output} is in .output/, from run `, h("code", {}, curOut.run_id || "(fork)"), ` on v${curOut.version}, ${ago(curOut.created_at)}: `,
-      ...curOut.files.map((f, i) => [i ? ", " : "", h("a", { href: `/v1/artifacts/${enc(a.id)}/files/${encPath(f.path)}`, target: "_blank", rel: "noopener" }, f.path.slice(8))])));
-    const tb = h("tbody");
-    for (const o of d.outputs) tb.append(h("tr", {}, h("td", {}, `#${o.output}`, o.output === d.current ? h("span", { class: "note" }, " current") : null),
-      h("td", {}, h("code", {}, o.run_id || "fork")), h("td", {}, `v${o.version}`), h("td", { class: "num" }, o.file_count), h("td", { class: "num" }, fmtBytes(o.size_bytes)),
-      h("td", { title: when(o.created_at) }, ago(o.created_at))));
-    sec.append(h("table", {}, h("thead", {}, h("tr", {}, ["Output", "Run", "On", "Files", "Size", "Recorded"].map(x => h("th", {}, x)))), tb),
-      h("p", { class: "note" }, `The newest ${a.retain_outputs || S.info?.retain_outputs || 24} outputs are kept.`),
-      h("p", {}, h("button", { class: "btn danger", onclick: async () => {
-        if (!confirm("Clear the outputs? .output/ is emptied and the next run starts from nothing.")) return;
-        try { await guard(() => api("DELETE", `/artifacts/${enc(a.id)}/outputs`), "Outputs cleared"); await loadArtifact(); } catch {}
-      } }, "Clear outputs")));
-  }
-  p.append(sec);
 }
 async function trigger(payload, times = 1) {
   const a = S.art;
@@ -1223,8 +1323,8 @@ function tabRuns(p) {
       h("td", {}, r.trigger),
       h("td", { title: when(r.started_at || r.created_at) }, ago(r.started_at || r.created_at)),
       h("td", { class: "num" }, fmtMs(r.duration_ms)),
-      h("td", {}, r.output ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); S.tab = "job"; renderArtifact(); } }, `output ${r.output}`)
-        : ["succeeded"].includes(r.status) ? h("span", { class: "note" }, "no change") : null),
+      h("td", {}, r.db_writes ? h("button", { class: "btn small quiet", onclick: e => { e.stopPropagation(); S.tab = "data"; renderArtifact(); } }, `${r.db_writes} ${r.db_writes === 1 ? "document" : "documents"}`)
+        : ["succeeded"].includes(r.status) ? h("span", { class: "note" }, "nothing") : null),
       h("td", { class: "note" }, r.reason || "")));
   }
   p.append(h("div", { class: "row" }, h("span", { class: "spacer" }), h("span", { class: "note" }, "Finished runs and their logs are kept for 30 days.")),
@@ -1259,11 +1359,10 @@ async function tabSettings(p) {
   const labels = h("textarea", { rows: 2 }); labels.value = kvText(a.labels);
   const qk = h("input", { type: "text", value: a.quota_key });
   const da = h("input", { type: "text", value: a.delete_after && a.delete_after !== "0s" ? fmtDur(a.delete_after) === "never" ? "-1" : fmtDur(a.delete_after) : "", placeholder: "Service default" });
-  const rr = h("input", { type: "number", min: 0, value: a.retain_outputs || "", placeholder: `Service default, ${S.info?.retain_outputs ?? 24}` });
   p.append(h("section", { class: "section" }, h("h3", {}, "Details"),
     h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Title")), title), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Description")), desc)),
     h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Labels"), ", one key=value per line"), labels), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Quota key")), qk)),
-    h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Delete after inactive for"), ", -1 for never"), da), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Job outputs to keep")), rr)),
+    h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Delete after inactive for"), ", -1 for never"), da), h("span")),
     h("div", { class: "row" }, h("button", { class: "btn primary", onclick: async () => {
       try {
         // Title and description are in artifact.json, so changing them
@@ -1276,7 +1375,6 @@ async function tabSettings(p) {
         for (const k of Object.keys(a.labels || {})) if (!(k in lb)) lb[k] = null;
         const req = { labels: lb, quota_key: qk.value.trim() };
         req.delete_after = da.value.trim() || "0s";
-        req.retain_outputs = +rr.value || 0;
         await guard(() => api("PATCH", `/artifacts/${enc(a.id)}`, req), "Saved");
         await loadArtifact(); refreshList();
       } catch (e) { if (!e.shown) toast(e.message, "err"); }
@@ -1285,7 +1383,7 @@ async function tabSettings(p) {
   const qbox = h("section", { class: "section" }, h("h3", {}, `Limits for “${a.quota_key}”`), h("p", { class: "note" }, "Loading…"));
   p.append(qbox,
     h("section", { class: "section" }, h("h3", {}, "Delete"),
-      h("p", { class: "note" }, "Deletes every version, run and its runner sandbox. Blobs shared with other artifacts stay."),
+      h("p", { class: "note" }, "Deletes every version, run, the db and the runner sandbox. Blobs shared with other artifacts stay."),
       h("div", {}, h("button", { class: "btn danger", onclick: async () => {
         if (!confirm(`Delete ${titleOf(a)} and all ${S.versions.length} versions?`)) return;
         try { await guard(() => api("DELETE", `/artifacts/${enc(a.id)}`), "Deleted"); closeArtifact(); refreshList(); } catch {}
@@ -1340,7 +1438,6 @@ dlgNew.addEventListener("close", async () => {
     if (f.id.value.trim()) req.id = f.id.value.trim();
     const labels = kvLines(f.labels.value); if (Object.keys(labels).length) req.labels = labels;
     if (f.delete_after.value.trim()) req.delete_after = f.delete_after.value.trim();
-    if (+f.retain_outputs.value) req.retain_outputs = +f.retain_outputs.value;
     req.publish = { title, label: "first version", files: [{ path: "index.html", content: starterPage(title) }],
       spec: { view: { type: "page", entry: "index.html" } } };
     const r = await guard(() => api("POST", "/artifacts", req), `Created ${title}`);
@@ -1351,7 +1448,7 @@ const dlgFork = $("#dlg-fork");
 function forkDialog(n) {
   const f = dlgFork.querySelector("form"); f.reset(); dlgFork.returnValue = ""; dlgFork.dataset.version = n;
   $("#dlg-fork-title").textContent = `Fork v${n}`;
-  $("#fork-note").textContent = "The fork starts with this version's files and the current output. Blobs are shared, not copied. The job comes along but its schedule stays off until the new owner publishes, and older outputs aren't copied.";
+  $("#fork-note").textContent = "The fork starts with this version's files and a copy of the db, except _private/. Blobs are shared, not copied. The job comes along but its schedule stays off until the new owner publishes.";
   f.elements.quota_key.value = S.art.quota_key; f.elements.title.value = titleOf(S.art) + " (fork)";
   dlgFork.showModal();
 }
@@ -1389,9 +1486,9 @@ function drawerUpdate(kind) {
 function describe(e) {
   switch (e.type) {
     case "artifact.version": return `v${e.version}, ${ORIGIN[e.origin]?.toLowerCase() || e.origin}`;
-    case "artifact.output": return e.output ? `output ${e.output}` : "outputs cleared";
+    case "db.changed": return `db: ${e.paths.length > 3 ? `${e.paths.length} documents` : e.paths.join(", ")}`;
     case "run.started": return "run started";
-    case "run.finished": return `run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.output ? `, output ${e.output}` : ""}${e.reason ? ": " + e.reason : ""}${e.notify ? `, notify ${e.notify}` : ""}`;
+    case "run.finished": return `run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.reason ? ": " + e.reason : ""}${e.notify ? `, notify ${e.notify}` : ""}`;
     case "run.dropped": return `run dropped: ${e.reason}`;
     default: return "";
   }
@@ -1413,13 +1510,13 @@ function connectEvents() {
   es = new EventSource("/v1/events");
   es.onopen = () => { S.live = true; renderStatus(); };
   es.onerror = () => { S.live = false; renderStatus(); };
-  for (const t of ["artifact.created", "artifact.deleted", "artifact.version", "artifact.output", "run.started", "run.finished", "run.dropped"]) {
+  for (const t of ["artifact.created", "artifact.deleted", "artifact.version", "db.changed", "run.started", "run.finished", "run.dropped"]) {
     es.addEventListener(t, m => {
       let e; try { e = JSON.parse(m.data); } catch { return; }
       e.clock = clock(); events.push(e); if (events.length > 500) events.shift();
       drawerUpdate("events");
       if (t === "artifact.version") S.fresh.add(vkey(e.artifact, e.version));
-      if (t === "run.finished" && e.artifact === S.sel) toast(`The job's run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.output ? `, output ${e.output}` : ""}${e.reason ? ": " + e.reason : ""}`, e.status === "succeeded" ? "ok" : "err");
+      if (t === "run.finished" && e.artifact === S.sel) toast(`The job's run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.reason ? ": " + e.reason : ""}`, e.status === "succeeded" ? "ok" : "err");
       clearTimeout(evTimer);
       evTimer = setTimeout(() => onChange(e), 250);
     });
@@ -1436,10 +1533,10 @@ async function onChange(e) {
     if (a && a.current_version !== before && S.stage.size) toast(`v${a.current_version} arrived while you were editing. Your changes stay staged; publish after showing the current version.`);
     return;
   }
-  const keep = (S.tab === "view" && $("#frame")) || S.tab === "settings" ? $("#pane") : null;
+  // Pages watch the db themselves: a db change doesn't reload the view.
+  const keep = (S.tab === "view" && $("#frame")) || S.tab === "settings" || (S.tab === "data" && e.type === "db.changed" && document.activeElement?.tagName === "TEXTAREA") ? $("#pane") : null;
   await loadArtifact(keep);
-  // New data shows without a new version: reload the view for it too.
-  if (keep && S.tab === "view" && S.art && (S.art.current_version !== before || e.type === "artifact.output")) reloadFrame();
+  if (keep && S.tab === "view" && S.art && S.art.current_version !== before) reloadFrame();
 }
 
 // ---------- login
@@ -1549,20 +1646,26 @@ A note kept as an artifact. Each edit is a version, so you can compare and resto
 `,
     } },
   { slug: "clock", title: "A page a job keeps fresh", tab: "runs", run_now: true,
-    about: "A scheduled job (every 5 minutes) writes .output/now.json with a run counter it keeps there too. Each run starts from the last output; the page fetches it. Versions stay what you published.",
+    about: "A scheduled job (every 5 minutes) writes clock/now in the db, keeping its count in _private/state. The page watches clock/now with /.fired/db.js, so a run shows up without a reload, and versions stay what you published.",
     files: {
       "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
-        job: { run: "sh tick.sh", schedule: "*/5 * * * *", timeout: "2m" } }, null, 2) + "\n",
-      "tick.sh": { content: `#!/bin/sh
-set -e
-mkdir -p .output
-n=$(cat .output/count 2>/dev/null || echo 0)
-n=$((n + 1))
-echo "$n" > .output/count
-printf '{"runs": %s, "at": "%s", "from_version": %s, "trigger": "%s"}\\n' \\
-  "$n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ARTIFACT_VERSION" "$TRIGGER" > .output/now.json
-echo "run $n, wrote .output/now.json"
-`, mode: 493 },
+        job: { run: "python3 tick.py", schedule: "*/5 * * * *", timeout: "2m" } }, null, 2) + "\n",
+      "db.py": DB_PY,
+      "tick.py": `import datetime, os
+import db
+
+# What only the job needs stays in _private/: viewers don't see it.
+state = db.get("_private/state") or {"runs": 0}
+state["runs"] += 1
+db.set("_private/state", state)
+db.set("clock/now", {
+    "runs": state["runs"],
+    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    "from_version": int(os.environ["ARTIFACT_VERSION"]),
+    "trigger": os.environ["TRIGGER"],
+})
+print("run", state["runs"])
+`,
       "index.html": `<!doctype html>
 <html lang="en">
 <head>
@@ -1579,10 +1682,13 @@ echo "run $n, wrote .output/now.json"
   <div class="n" id="n">0</div>
   <p id="t">The job hasn't run yet.</p>
 </div>
-<script>
-fetch("/.output/now.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : { runs: 0 }).then(d => {
-  document.getElementById("n").textContent = d.runs;
-  if (d.at) document.getElementById("t").textContent = "runs so far. Last at " + new Date(d.at).toLocaleTimeString() + ", from version " + d.from_version + ".";
+<script type="module">
+import { db } from "/.fired/db.js";
+// Called now and after every run that changes it.
+db.doc("clock/now").onSnapshot(d => {
+  if (!d) return;
+  document.getElementById("n").textContent = d.data.runs;
+  document.getElementById("t").textContent = "runs so far. Last at " + new Date(d.data.at).toLocaleTimeString() + ", from version " + d.data.from_version + ".";
 });
 <\/script>
 </body>
@@ -1590,10 +1696,22 @@ fetch("/.output/now.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : { 
 `,
     } },
   { slug: "table", title: "A table a job rebuilds", tab: "runs", run_now: true,
-    about: "An hourly job regenerates .output/sales.csv with awk; the page fetches /.output/sales.csv and draws the table, so each run's data shows without a new version.",
+    about: "An hourly job writes one document per region to sales/ in a single batch; the page queries the collection sorted by revenue and redraws when it changes.",
     files: {
       "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
-        job: { run: "sh build.sh", schedule: "@hourly" } }, null, 2) + "\n",
+        job: { run: "python3 build.py", schedule: "@hourly" } }, null, 2) + "\n",
+      "db.py": DB_PY,
+      "build.py": `import random
+import db
+
+writes = []
+for region in ["North", "South", "East", "West", "Central"]:
+    orders = random.randint(50, 500)
+    writes.append({"op": "set", "path": f"sales/{region.lower()}",
+                   "data": {"region": region, "orders": orders, "revenue": round(orders * random.uniform(18, 30), 2)}})
+db.batch(writes)  # all five, or none
+print("wrote", len(writes), "regions")
+`,
       "index.html": `<!doctype html>
 <html lang="en">
 <head>
@@ -1610,47 +1728,124 @@ fetch("/.output/now.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : { 
 </head>
 <body>
 <h1>Sales by region</h1>
-<table id="t"></table>
-<p class="note" id="note">Loading /.output/sales.csv…</p>
+<table><thead><tr><th>Region</th><th class="n">Orders</th><th class="n">Revenue</th></tr></thead><tbody id="rows"></tbody></table>
+<p class="note" id="note">Loading…</p>
 <script type="module">
-const res = await fetch("/.output/sales.csv", { cache: "no-cache" });
-const csv = res.ok ? await res.text() : "region,orders,revenue\\n";
-const [head, ...rows] = csv.trim().split("\\n").map(l => l.split(","));
-const t = document.getElementById("t"), num = i => i > 0;
-t.innerHTML = "<tr>" + head.map((h, i) => \`<th class="\${num(i) ? "n" : ""}">\${h}</th>\`).join("") + "</tr>" +
-  rows.map(r => "<tr>" + r.map((c, i) => \`<td class="\${num(i) ? "n" : ""}">\${c}</td>\`).join("") + "</tr>").join("");
-document.getElementById("note").textContent = rows.length ? \`\${rows.length} regions, from .output/sales.csv\` : "No data yet: run the job from the Job tab.";
+import { db } from "/.fired/db.js";
+const money = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
+db.collection("sales").orderBy("revenue", "desc").onSnapshot(rows => {
+  const tb = document.getElementById("rows");
+  tb.replaceChildren(...rows.map(({ data: r }) => {
+    const tr = document.createElement("tr");
+    for (const [v, cls] of [[r.region, ""], [r.orders, "n"], [money.format(r.revenue), "n"]]) {
+      const td = document.createElement("td"); td.className = cls; td.textContent = v; tr.append(td);
+    }
+    return tr;
+  }));
+  document.getElementById("note").textContent = rows.length ? rows.length + " regions, from the sales collection" : "No data yet: run the job from the Job tab.";
+});
 <\/script>
 </body>
 </html>
 `,
-      "build.sh": `#!/bin/sh
-set -e
-mkdir -p .output
-awk -v seed="$(date +%s)" 'BEGIN {
-  srand(seed); print "region,orders,revenue"
-  split("North South East West Central", r, " ")
-  for (i = 1; i <= 5; i++) { o = int(50 + rand() * 450); printf "%s,%d,%.2f\\n", r[i], o, o * (18 + rand() * 12) }
-}' > .output/sales.csv
-echo "wrote $(wc -l < .output/sales.csv) lines to .output/sales.csv"
-`,
-      "README.md": "# Sales\n\n`build.sh` rebuilds `.output/sales.csv` every hour. Run it now from the Job tab to see a new output appear.\n",
     } },
   { slug: "inbox", title: "An inbox that queues triggers", tab: "job",
-    about: "A job with no schedule and on_busy set to queue. Run it with a payload several times at once: every trigger waits its turn and appends to .output/inbox.md, shown as a markdown view.",
+    about: "A job with no schedule and on_busy set to queue. Run it with a payload several times at once: every trigger waits its turn and adds a document to inbox/, which the page lists, newest first, as they arrive.",
     files: {
-      "artifact.json": JSON.stringify({ view: { type: "markdown", entry: ".output/inbox.md" },
-        job: { run: "sh handle.sh", on_busy: "queue", queue: { max: 20, max_age: "1h" } } }, null, 2) + "\n",
-      "handle.sh": `#!/bin/sh
-set -e
-# Under the fake driver, guest paths live under the sandbox's root folder.
-f="$TRIGGER_FILE"; [ -f "$f" ] || f="$PWD/..$TRIGGER_FILE"
-payload=$(tr -d '\\n' < "$f")
-mkdir -p .output
-[ -f .output/inbox.md ] || printf '# Inbox\\n\\nEach run appends its trigger here.\\n\\n' > .output/inbox.md
-echo "- \\\`$(date -u +%H:%M:%S)\\\` $payload" >> .output/inbox.md
-echo "handled $ARTIFACT_RUN_ID"
-sleep 2
+      "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" },
+        job: { run: "python3 handle.py", on_busy: "queue", queue: { max: 20, max_age: "1h" } } }, null, 2) + "\n",
+      "db.py": DB_PY,
+      "handle.py": `import datetime, json, os, time
+import db
+
+f = os.environ["TRIGGER_FILE"]
+if not os.path.exists(f):  # under the fake driver, guest paths are under the sandbox's folder
+    f = os.getcwd() + "/.." + f
+trigger = json.load(open(f))
+db.set("inbox/" + os.environ["ARTIFACT_RUN_ID"], {
+    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    "payload": trigger["payload"],
+})
+print("handled", os.environ["ARTIFACT_RUN_ID"])
+time.sleep(2)
+`,
+      "index.html": `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inbox</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; }
+  li { margin: 6px 0; } code { font-size: 13px; color: #59636e; }
+</style>
+</head>
+<body>
+<h1>Inbox</h1>
+<p>Each run of the job adds its trigger here.</p>
+<ul id="items"></ul>
+<script type="module">
+import { db } from "/.fired/db.js";
+db.collection("inbox").orderBy("at", "desc").onSnapshot(items => {
+  document.getElementById("items").replaceChildren(...items.map(({ data }) => {
+    const li = document.createElement("li"), at = document.createElement("code");
+    at.textContent = new Date(data.at).toLocaleTimeString() + " ";
+    li.append(at, JSON.stringify(data.payload));
+    return li;
+  }));
+});
+<\/script>
+</body>
+</html>
+`,
+    } },
+  { slug: "checklist", title: "A checklist only its owner ticks", tab: "view",
+    about: "No job: the page writes the db itself. Its owner adds and ticks items; anyone it's shared with sees them update live but can't change them. Switch the View tab between Owner and Viewer to see both.",
+    files: {
+      "artifact.json": JSON.stringify({ view: { type: "page", entry: "index.html" } }, null, 2) + "\n",
+      "index.html": `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packing list</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 520px; margin: 48px auto; padding: 0 20px; }
+  li { list-style: none; margin: 6px 0; } ul { padding: 0; }
+  .done span { text-decoration: line-through; color: #8a948e; }
+  .note { color: #59636e; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Packing list</h1>
+<form id="add" hidden><input id="text" placeholder="Add an item" required> <button>Add</button></form>
+<p class="note" id="who"></p>
+<ul id="items"></ul>
+<script type="module">
+import { db } from "/.fired/db.js";
+const items = db.collection("items");
+document.getElementById("who").textContent = db.canWrite ? "You own this list." : "Shared with you: it updates as its owner ticks things off.";
+document.getElementById("add").hidden = !db.canWrite;
+document.getElementById("add").onsubmit = async e => {
+  e.preventDefault();
+  const t = document.getElementById("text");
+  await items.add({ text: t.value, done: false, at: new Date().toISOString() });
+  t.value = "";
+};
+items.orderBy("at").onSnapshot(list => {
+  document.getElementById("items").replaceChildren(...list.map(item => {
+    const li = document.createElement("li"), box = document.createElement("input"), label = document.createElement("span");
+    box.type = "checkbox"; box.checked = item.data.done; box.disabled = !db.canWrite;
+    box.onchange = () => items.doc(item.id).update({ done: box.checked }, { rev: item.rev }).catch(e => alert(e.message));
+    label.textContent = " " + item.data.text;
+    li.className = item.data.done ? "done" : "";
+    li.append(box, label);
+    return li;
+  }));
+});
+<\/script>
+</body>
+</html>
 `,
     } },
   { slug: "react", title: "A React app without a build", tab: "view",
@@ -1734,13 +1929,12 @@ export default function Tally({ marks }) {
       "README.md": "# Nightly\n\nThis job wants to run for up to 2 hours, every day for 30 days. Open the Job tab and approve it.\n",
     } },
   { slug: "failing", title: "A job that fails", tab: "runs", run_now: true,
-    about: "Prints to stdout and stderr, then exits with status 3. A failed run creates no version and keeps no state; its logs say why.",
+    about: "Prints to stdout and stderr, then exits with status 3. Its logs say why; what it wrote to the db before failing stays (write in a batch to make it all or nothing).",
     files: {
       "artifact.json": JSON.stringify({
         job: { run: "sh check.sh" } }, null, 2) + "\n",
       "check.sh": `#!/bin/sh
 echo "checking the report inputs"
-mkdir -p .output && echo "this would be the output" > .output/report.txt
 echo "error: the upstream file is missing" >&2
 exit 3
 `,

@@ -116,6 +116,37 @@ Tried in Chromium with real VMs: the clock and table pages read
 `/.output/…`, the inbox's markdown view shows `.output/inbox.md` after a
 run, the failing job records no output; each has one version.
 
+**Revised again the same day: the job writes a db, not files.** Even a
+fixed `.output/` folder was files standing in for data: a job couldn't
+keep anything private, pages had to re-fetch to see a new run, and a csv
+view pointing into `.output/` was the only way to show a single-file
+result. After looking at how Claude does it (artifact `db` with
+per-path access rules; scheduled tasks are agents outside the artifact
+that write its `db`), we chose a simpler fixed model, since artifacts are
+personal apps their owner shares with others:
+
+- **A job can't change the artifact.** It writes the artifact's **db**:
+  JSON documents at paths (Firestore-like: even segments a document, odd
+  a collection), reached at `$FIRED_DB_URL` with a run-scoped
+  `$FIRED_DB_TOKEN`, through fired's egress proxy.
+- **Access is fixed, no rules:** the owner (API token, or a view routed
+  with `X-Artifact-Owner: true`) and the running job read and write
+  everything; everyone else reads, except `_private/`, which is the owner's
+  and the job's (the job's state and raw data). No connectors in pages
+  except the owner's, later; if needed, they go in jobs.
+- **Pages** `import { db } from "/.fired/db.js"`: get, where/orderBy/limit
+  queries, `onSnapshot` (server-sent events), and writes when
+  `db.canWrite`. Revisions (`If-Match`) and all-or-none batches.
+- `.output/`, outputs, `retain_outputs`, `skipped` and `artifact.output`
+  are gone; runs report `db_writes`; `db.changed` events. A fork copies
+  the db except `_private/`; an export has no db.
+
+Tried in Chromium with real VMs: the clock job (Python, keeping its count
+in `_private/state`) updates the page live without a reload; the table
+job writes five regions in one batch; three queued inbox runs each add a
+document the page lists; the new checklist example lets its owner add and
+tick items while the viewer preview is read-only and follows along.
+
 ## Questions
 
 - A job's edits outside `writes` vanish without a word. An agent writing

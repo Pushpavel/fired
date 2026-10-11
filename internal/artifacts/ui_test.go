@@ -82,9 +82,9 @@ func TestUI(t *testing.T) {
 	id := res.Artifact.ID
 	must(h.c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{pa.Text("index.html", "<h1>two</h1>")}}))(t)
 
-	link := func(v int) string {
+	link := func(v int, viewer ...bool) string {
 		t.Helper()
-		r := do("POST", "/ui/preview-link", `{"artifact":"`+id+`","version":`+strconv.Itoa(v)+`}`, map[string]string{"Cookie": cookie})
+		r := do("POST", "/ui/preview-link", `{"artifact":"`+id+`","version":`+strconv.Itoa(v)+`,"viewer":`+strconv.FormatBool(len(viewer) > 0)+`}`, map[string]string{"Cookie": cookie})
 		var out struct{ URL string }
 		if err := json.NewDecoder(r.Body).Decode(&out); err != nil || r.StatusCode != 200 {
 			t.Fatalf("preview-link: %d %v", r.StatusCode, err)
@@ -121,6 +121,30 @@ func TestUI(t *testing.T) {
 	forged := strings.Replace(v1, id+"-1-", id+"-2-", 1)
 	if r := do("GET", "/app/x.js", "", map[string]string{"Host": forged}); r.StatusCode != 401 {
 		t.Fatalf("forged preview: %d", r.StatusCode)
+	}
+
+	// The owner's preview writes the db; a viewer's preview only reads it.
+	asViewer := link(0, true)
+	if !strings.Contains(asViewer, id+"-0v-") {
+		t.Fatalf("viewer preview host %s", asViewer)
+	}
+	json := map[string]string{"Content-Type": "application/json"}
+	if r := do("PUT", "/.fired/db/notes/a", `{"t":"hi"}`, map[string]string{"Host": cur, "Content-Type": "application/json"}); r.StatusCode != 200 {
+		t.Fatalf("owner preview writes: %d %s", r.StatusCode, read(r))
+	}
+	json["Host"] = asViewer
+	if r := do("PUT", "/.fired/db/notes/a", `{"t":"no"}`, json); r.StatusCode != 403 {
+		t.Fatalf("viewer preview writes: %d", r.StatusCode)
+	}
+	if r := do("GET", "/.fired/db/notes/a", "", map[string]string{"Host": asViewer}); r.StatusCode != 200 || !strings.Contains(read(r), `"t":"hi"`) {
+		t.Fatalf("viewer preview reads: %d", r.StatusCode)
+	}
+	if r := do("GET", "/", "", map[string]string{"Host": asViewer}); read(r) != "<h1>two</h1>" {
+		t.Fatalf("viewer preview page: %d", r.StatusCode)
+	}
+	// Dropping the "v" doesn't make a viewer the owner.
+	if r := do("GET", "/app/x.js", "", map[string]string{"Host": strings.Replace(asViewer, "-0v-", "-0-", 1)}); r.StatusCode != 401 {
+		t.Fatalf("owner preview forged from a viewer's: %d", r.StatusCode)
 	}
 
 	// Without ui, none of it exists.

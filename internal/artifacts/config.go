@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -81,9 +84,11 @@ type LimitsConfig struct {
 	// ServeRPS / ServeBurst rate-limit file reads per artifact.
 	ServeRPS   float64 `yaml:"serve_rps"`
 	ServeBurst int     `yaml:"serve_burst"`
-	// RetainOutputs is how many of the job's outputs each artifact keeps,
-	// the current one included.
-	RetainOutputs int `yaml:"retain_outputs"`
+	// MaxDocBytes caps one db document, MaxDocs the documents of one
+	// artifact, MaxBatchWrites the writes of one batch.
+	MaxDocBytes    int `yaml:"max_doc_bytes"`
+	MaxDocs        int `yaml:"max_docs"`
+	MaxBatchWrites int `yaml:"max_batch_writes"`
 	// DeleteAfter deletes artifacts with no reads, publishes or runs for
 	// this long. 0 disables it.
 	DeleteAfter api.Duration `yaml:"delete_after"`
@@ -111,6 +116,12 @@ type RunnerConfig struct {
 	DiskMB   int    `yaml:"disk_mb"`
 	// Egress is the allowlist for runner sandboxes.
 	Egress []string `yaml:"egress"`
+	// DBURL is this service's base URL as runner sandboxes reach it, through
+	// fired's egress proxy: jobs get $FIRED_DB_URL under it, and its host is
+	// added to their allowlist. Empty: jobs have no db. It can't be a
+	// loopback address (sandboxes don't proxy those); fired must allow its
+	// address if it's private (egress.allow_private_cidrs).
+	DBURL string `yaml:"db_url"`
 	// TTL for runner sandboxes. They are only a cache: the service
 	// recreates one from the stored files when it's gone.
 	TTL api.TTL `yaml:"ttl"`
@@ -134,7 +145,9 @@ func DefaultConfig() Config {
 			MinInterval:        api.Duration(time.Minute),
 			ServeRPS:           50,
 			ServeBurst:         100,
-			RetainOutputs:      24,
+			MaxDocBytes:        1 << 20,
+			MaxDocs:            10000,
+			MaxBatchWrites:     500,
 			DeleteAfter:        0,
 			QueueMax:           100,
 			QueueMaxAge:        api.Duration(24 * time.Hour),
@@ -186,6 +199,7 @@ func LoadConfig(path string) (Config, error) {
 	env("FIRED_ARTIFACTS_BROKER_URL", &cfg.Broker.URL)
 	env("FIRED_ARTIFACTS_BROKER_TOKEN", &cfg.Broker.Token)
 	env("FIRED_ARTIFACTS_PREVIEW_DOMAIN", &cfg.PreviewDomain)
+	env("FIRED_ARTIFACTS_DB_URL", &cfg.Runner.DBURL)
 	if v := os.Getenv("FIRED_ARTIFACTS_UI"); v != "" {
 		cfg.UI = v == "1" || v == "true"
 	}
@@ -211,8 +225,25 @@ func (c *Config) Validate() error {
 	if c.Runner.Workdir == "" || !filepath.IsAbs(c.Runner.Workdir) || c.Runner.Workdir == "/" {
 		return fmt.Errorf("runner.workdir must be an absolute path other than /")
 	}
-	if c.Limits.RetainOutputs <= 0 {
-		c.Limits.RetainOutputs = 24
+	if c.Runner.DBURL != "" {
+		u, err := url.Parse(c.Runner.DBURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" && u.Path != "/" {
+			return fmt.Errorf("runner.db_url must be an http(s) URL without a path, like http://artifacts.internal:8444")
+		}
+		h := u.Hostname()
+		if ip := net.ParseIP(h); h == "localhost" || ip != nil && ip.IsLoopback() {
+			return fmt.Errorf("runner.db_url: sandboxes reach loopback addresses inside the VM, not this service; use a name or address fired's egress proxy can reach")
+		}
+		c.Runner.DBURL = strings.TrimRight(c.Runner.DBURL, "/")
+	}
+	if c.Limits.MaxDocBytes <= 0 {
+		c.Limits.MaxDocBytes = 1 << 20
+	}
+	if c.Limits.MaxDocs <= 0 {
+		c.Limits.MaxDocs = 10000
+	}
+	if c.Limits.MaxBatchWrites <= 0 {
+		c.Limits.MaxBatchWrites = 500
 	}
 	if c.SchedulerInterval <= 0 {
 		c.SchedulerInterval = api.Duration(5 * time.Second)

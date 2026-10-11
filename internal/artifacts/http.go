@@ -48,8 +48,8 @@ func (s *Service) Handler() http.Handler {
 	h("GET /v1/artifacts/{id}/job", s.handleJob)
 	h("PUT /v1/artifacts/{id}/job/grant", s.handleGrant)
 	h("POST /v1/artifacts/{id}/job/runs", s.handleTrigger)
-	h("GET /v1/artifacts/{id}/outputs", s.handleOutputs)
-	h("DELETE /v1/artifacts/{id}/outputs", s.handleClearOutputs)
+	h("/v1/artifacts/{id}/db", s.handleDB)
+	h("/v1/artifacts/{id}/db/{path...}", s.handleDB)
 	h("GET /v1/artifacts/{id}/runs", s.handleRuns)
 	h("GET /v1/artifacts/{id}/runs/{run}", s.handleRun)
 	h("GET /v1/artifacts/{id}/runs/{run}/logs", s.handleRunLogs)
@@ -66,16 +66,24 @@ func (s *Service) Handler() http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		if id, n, ok := s.previewTarget(r.Host); ok {
-			s.serveView(w, r, id, n)
+		if id, n, owner, ok := s.previewTarget(r.Host); ok {
+			s.serveView(w, r, id, n, owner)
 			return
 		}
 		// Header-routed requests always need the token: "/" is otherwise
 		// public (the console's redirect).
 		routed := r.Header.Get("X-Artifact") != ""
 		if (routed || !s.public(r.URL.Path)) && !s.authorized(r) {
-			writeErr(w, errf(http.StatusUnauthorized, "unauthorized", "missing or invalid API token"))
-			return
+			// A running job's token opens its artifact's db, nothing else.
+			var lr *liveRun
+			if m := dbRoute.FindStringSubmatch(r.URL.Path); m != nil && !routed {
+				lr = s.jobAccess(r.Context(), r, m[1])
+			}
+			if lr == nil {
+				writeErr(w, errf(http.StatusUnauthorized, "unauthorized", "missing or invalid API token"))
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), runKey{}, lr))
 		}
 		sw := &statusWriter{ResponseWriter: w, status: 200}
 		if routed {
@@ -454,8 +462,7 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 		writeErr(w, err)
 		return
 	}
-	// What everyone sees: the version's files and the current output.
-	f, err := s.liveFile(r.Context(), s.st.db, a, n, p)
+	f, err := getFile(r.Context(), s.st.db, id, n, p)
 	if err != nil {
 		if err == errNotFound {
 			if shown != "" {
@@ -521,40 +528,32 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 // (same path and query) with X-Artifact, optionally X-Artifact-Version
 // (a number, or "current" / absent to follow the current version), and the
 // API token. It gets the artifact's view: "/" is the page, other paths are
-// files of the page's folder.
+// files of the page's folder, and /.fired/ is the db. X-Artifact-Owner: true
+// says the viewer is the artifact's owner, who may write the db and read
+// _private/; everyone else only reads the rest.
 func (s *Service) handleRouted(w http.ResponseWriter, r *http.Request, id string) {
 	n, err := versionParam(r.Header.Get("X-Artifact-Version"))
 	if err != nil {
 		writeErr(w, badRequest("X-Artifact-Version must be a version number or \"current\""))
 		return
 	}
-	s.serveView(w, r, id, n)
+	owner, _ := strconv.ParseBool(r.Header.Get("X-Artifact-Owner"))
+	s.serveView(w, r, id, n, owner)
 }
 
-// handleExport streams what a version shows as a zip: its files
-// (artifact.json included) and the current output under .output/.
+// handleExport streams a version's files as a zip, artifact.json
+// included. The db isn't in it: it isn't versioned.
 func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 	n, err := versionParam(r.PathValue("v"))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	a, err := s.Get(r.Context(), r.PathValue("id"))
+	v, err := s.Version(r.Context(), r.PathValue("id"), n, true)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	v, err := s.Version(r.Context(), a.ID, n, false)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	live, err := s.liveTree(r.Context(), s.st.db, a, v.Version)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	v.Files = sortedFiles(live)
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-v%d.zip"`, v.Artifact, v.Version))
 	zw := zip.NewWriter(w)
@@ -582,7 +581,7 @@ func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 	_ = zw.Close()
 }
 
-// ---- the job, its runs and its outputs
+// ---- the job, its runs and the db
 
 func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
 	st, err := s.Job(r.Context(), r.PathValue("id"))
@@ -593,21 +592,13 @@ func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, st)
 }
 
-func (s *Service) handleOutputs(w http.ResponseWriter, r *http.Request) {
-	d, err := s.Outputs(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, 200, d)
-}
+// runKey carries a job's request's *liveRun.
+type runKey struct{}
 
-func (s *Service) handleClearOutputs(w http.ResponseWriter, r *http.Request) {
-	if err := s.ClearOutputs(r.Context(), r.PathValue("id")); err != nil {
-		writeErr(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+func (s *Service) handleDB(w http.ResponseWriter, r *http.Request) {
+	acc := dbAccess{full: true}
+	acc.run, _ = r.Context().Value(runKey{}).(*liveRun)
+	s.serveDB(w, r, r.PathValue("id"), r.PathValue("path"), acc)
 }
 
 func (s *Service) handleGrant(w http.ResponseWriter, r *http.Request) {

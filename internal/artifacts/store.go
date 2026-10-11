@@ -154,27 +154,20 @@ CREATE TABLE runs (
 );
 CREATE INDEX runs_status ON runs(status, created_at);
 CREATE INDEX runs_artifact ON runs(artifact, created_at);
--- The job's outputs: what each run that changed .output/ left there.
-CREATE TABLE outputs (
+-- The db: each artifact's documents. parent is the collection a document
+-- is in ("stats" for "stats/today").
+CREATE TABLE docs (
 	artifact   TEXT NOT NULL,
-	output     INT NOT NULL,
-	run_id     TEXT NOT NULL,
-	version    INT NOT NULL,
-	file_count INT NOT NULL,
-	size       BIGINT NOT NULL,
+	path       TEXT NOT NULL,
+	parent     TEXT NOT NULL,
+	data       JSONB NOT NULL,
+	size       INT NOT NULL,
+	rev        BIGINT NOT NULL,
 	created_at BIGINT NOT NULL,
-	PRIMARY KEY (artifact, output)
+	updated_at BIGINT NOT NULL,
+	PRIMARY KEY (artifact, path)
 );
-CREATE TABLE output_files (
-	artifact TEXT NOT NULL,
-	output   INT NOT NULL,
-	path     TEXT NOT NULL,
-	hash     TEXT NOT NULL,
-	size     BIGINT NOT NULL,
-	mode     INT NOT NULL,
-	PRIMARY KEY (artifact, output, path)
-);
-CREATE INDEX output_files_hash ON output_files(hash);
+CREATE INDEX docs_parent ON docs(artifact, parent);
 CREATE TABLE notify (
 	artifact TEXT NOT NULL,
 	version  INT NOT NULL,
@@ -266,7 +259,8 @@ func fromMS(v int64) time.Time {
 
 // tx runs fn in a transaction. Write transactions take one advisory lock,
 // so they run one at a time: read-check-write sequences (base_version,
-// the next version number) stay correct without row locks.
+// the next version number, document revisions) stay correct without row
+// locks.
 func (s *store) tx(ctx context.Context, fn func(q querier) error) error {
 	tx, err := s.raw.BeginTx(ctx, nil)
 	if err != nil {
@@ -286,18 +280,16 @@ func (s *store) tx(ctx context.Context, fn func(q querier) error) error {
 // ---- artifacts
 
 type artifactData struct {
-	Title         string            `json:"title,omitempty"`
-	Description   string            `json:"description,omitempty"`
-	Labels        map[string]string `json:"labels,omitempty"`
-	Meta          json.RawMessage   `json:"meta,omitempty"`
-	DeleteAfter   pa.Duration       `json:"delete_after,omitempty"`
-	RetainOutputs int               `json:"retain_outputs,omitempty"`
-	Output        int               `json:"output,omitempty"`
-	ForkedFrom    *pa.VersionRef    `json:"forked_from,omitempty"`
+	Title       string            `json:"title,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Meta        json.RawMessage   `json:"meta,omitempty"`
+	DeleteAfter pa.Duration       `json:"delete_after,omitempty"`
+	ForkedFrom  *pa.VersionRef    `json:"forked_from,omitempty"`
 }
 
 func putArtifact(ctx context.Context, q querier, a *pa.Artifact) error {
-	d, _ := json.Marshal(artifactData{Title: a.Title, Description: a.Description, Labels: a.Labels, Meta: a.Meta, DeleteAfter: a.DeleteAfter, RetainOutputs: a.RetainOutputs, Output: a.Output, ForkedFrom: a.ForkedFrom})
+	d, _ := json.Marshal(artifactData{Title: a.Title, Description: a.Description, Labels: a.Labels, Meta: a.Meta, DeleteAfter: a.DeleteAfter, ForkedFrom: a.ForkedFrom})
 	_, err := q.ExecContext(ctx, `
 INSERT INTO artifacts(id, quota_key, current_version, data, created_at, updated_at, last_active_at) VALUES(?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET quota_key=excluded.quota_key, current_version=excluded.current_version,
@@ -319,7 +311,7 @@ func scanArtifact(sc interface{ Scan(...any) error }) (*pa.Artifact, error) {
 	var d artifactData
 	_ = json.Unmarshal([]byte(data), &d)
 	a.Title, a.Description = d.Title, d.Description
-	a.Labels, a.Meta, a.DeleteAfter, a.RetainOutputs, a.Output, a.ForkedFrom = d.Labels, d.Meta, d.DeleteAfter, d.RetainOutputs, d.Output, d.ForkedFrom
+	a.Labels, a.Meta, a.DeleteAfter, a.ForkedFrom = d.Labels, d.Meta, d.DeleteAfter, d.ForkedFrom
 	a.CreatedAt, a.UpdatedAt, a.LastActiveAt = fromMS(c), fromMS(u), fromMS(l)
 	return &a, nil
 }
@@ -359,7 +351,7 @@ func touchArtifact(ctx context.Context, q querier, id string, t time.Time) error
 }
 
 func deleteArtifactRows(ctx context.Context, q querier, id string) error {
-	for _, t := range []string{"files", "versions", "jobs", "runs", "notify", "outputs", "output_files"} {
+	for _, t := range []string{"files", "versions", "jobs", "runs", "notify", "docs"} {
 		if _, err := q.ExecContext(ctx, `DELETE FROM `+t+` WHERE artifact=?`, id); err != nil {
 			return err
 		}
@@ -483,23 +475,27 @@ func deleteVersion(ctx context.Context, q querier, id string, n int) error {
 // so a large file and its next version share most of their bytes.
 const keyPieces = `
 SELECT DISTINCT COALESCE(c.chunk, f.hash) AS piece, COALESCE(c.size, f.size) AS size
-FROM (SELECT artifact, hash, size FROM files UNION ALL SELECT artifact, hash, size FROM output_files) f
+FROM files f
 JOIN artifacts a ON a.id=f.artifact LEFT JOIN chunks c ON c.file=f.hash
 WHERE a.quota_key=?`
 
 // storageUsed is the size of the distinct pieces (blobs, chunks) referenced
-// by all versions of all artifacts with this quota key.
+// by all versions of all artifacts with this quota key, and of their db
+// documents.
 func storageUsed(ctx context.Context, q querier, key string) (int64, error) {
 	var n sql.NullInt64
-	err := q.QueryRowContext(ctx, `SELECT SUM(size)::BIGINT FROM (`+keyPieces+`) p`, key).Scan(&n)
-	return n.Int64, err
+	if err := q.QueryRowContext(ctx, `SELECT SUM(size)::BIGINT FROM (`+keyPieces+`) p`, key).Scan(&n); err != nil {
+		return 0, err
+	}
+	docs, err := dbBytes(ctx, q, key)
+	return n.Int64 + docs, err
 }
 
 // storageLogical is what the key's versions would take with no sharing at
 // all: every file of every version, in full.
 func storageLogical(ctx context.Context, q querier, key string) (int64, error) {
 	var n sql.NullInt64
-	err := q.QueryRowContext(ctx, `SELECT SUM(f.size)::BIGINT FROM (SELECT artifact, size FROM files UNION ALL SELECT artifact, size FROM output_files) f
+	err := q.QueryRowContext(ctx, `SELECT SUM(f.size)::BIGINT FROM files f
 JOIN artifacts a ON a.id=f.artifact WHERE a.quota_key=?`, key).Scan(&n)
 	return n.Int64, err
 }
@@ -607,7 +603,7 @@ ON CONFLICT(artifact) DO UPDATE SET armed_until=excluded.armed_until, grant_unti
 
 type runData struct {
 	Version    int    `json:"version,omitempty"`
-	Output     int    `json:"output,omitempty"`
+	DBWrites   int    `json:"db_writes,omitempty"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
@@ -620,7 +616,7 @@ type runRow struct {
 }
 
 func putRun(ctx context.Context, q querier, r *runRow) error {
-	d, _ := json.Marshal(runData{Version: r.Version, Output: r.Output, ExitCode: r.ExitCode, Reason: r.Reason, DurationMS: r.DurationMS})
+	d, _ := json.Marshal(runData{Version: r.Version, DBWrites: r.DBWrites, ExitCode: r.ExitCode, Reason: r.Reason, DurationMS: r.DurationMS})
 	var started, finished int64
 	if r.StartedAt != nil {
 		started = ms(*r.StartedAt)
@@ -650,7 +646,7 @@ func scanRun(sc interface{ Scan(...any) error }) (*runRow, error) {
 	}
 	var d runData
 	_ = json.Unmarshal([]byte(data), &d)
-	r.Version, r.Output, r.ExitCode, r.Reason, r.DurationMS = d.Version, d.Output, d.ExitCode, d.Reason, d.DurationMS
+	r.Version, r.DBWrites, r.ExitCode, r.Reason, r.DurationMS = d.Version, d.DBWrites, d.ExitCode, d.Reason, d.DurationMS
 	r.CreatedAt = fromMS(c)
 	if st != 0 {
 		t := fromMS(st)
@@ -682,73 +678,6 @@ func queryRuns(ctx context.Context, q querier, where string, args ...any) ([]*ru
 		out = append(out, r)
 	}
 	return out, rows.Err()
-}
-
-// ---- outputs
-
-func insertOutput(ctx context.Context, q querier, id string, o *pa.Output, files map[string]pa.File) error {
-	if _, err := q.ExecContext(ctx, `INSERT INTO outputs(artifact, output, run_id, version, file_count, size, created_at) VALUES(?,?,?,?,?,?,?)`,
-		id, o.Output, o.RunID, o.Version, o.FileCount, o.SizeBytes, ms(o.CreatedAt)); err != nil {
-		return err
-	}
-	for _, f := range files {
-		if _, err := q.ExecContext(ctx, `INSERT INTO output_files(artifact, output, path, hash, size, mode) VALUES(?,?,?,?,?,?)`,
-			id, o.Output, f.Path, f.Hash, f.Size, f.Mode); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func listOutputs(ctx context.Context, q querier, id string) ([]pa.Output, error) {
-	rows, err := q.QueryContext(ctx, `SELECT output, run_id, version, file_count, size, created_at FROM outputs WHERE artifact=? ORDER BY output DESC`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []pa.Output{}
-	for rows.Next() {
-		var o pa.Output
-		var c int64
-		if err := rows.Scan(&o.Output, &o.RunID, &o.Version, &o.FileCount, &o.SizeBytes, &c); err != nil {
-			return nil, err
-		}
-		o.CreatedAt = fromMS(c)
-		out = append(out, o)
-	}
-	return out, rows.Err()
-}
-
-func getOutputFiles(ctx context.Context, q querier, id string, n int) (map[string]pa.File, error) {
-	rows, err := q.QueryContext(ctx, `SELECT path, hash, size, mode FROM output_files WHERE artifact=? AND output=?`, id, n)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]pa.File{}
-	for rows.Next() {
-		var f pa.File
-		if err := rows.Scan(&f.Path, &f.Hash, &f.Size, &f.Mode); err != nil {
-			return nil, err
-		}
-		out[f.Path] = f
-	}
-	return out, rows.Err()
-}
-
-func maxOutput(ctx context.Context, q querier, id string) (int, error) {
-	var n sql.NullInt64
-	err := q.QueryRowContext(ctx, `SELECT MAX(output) FROM outputs WHERE artifact=?`, id).Scan(&n)
-	return int(n.Int64), err
-}
-
-// deleteOutputs removes the outputs numbered below before.
-func deleteOutputs(ctx context.Context, q querier, id string, before int) error {
-	if _, err := q.ExecContext(ctx, `DELETE FROM output_files WHERE artifact=? AND output<?`, id, before); err != nil {
-		return err
-	}
-	_, err := q.ExecContext(ctx, `DELETE FROM outputs WHERE artifact=? AND output<?`, id, before)
-	return err
 }
 
 // ---- quotas
@@ -828,7 +757,6 @@ func referencedBlobs(ctx context.Context, q querier) (map[string]bool, error) {
 	out := map[string]bool{}
 	for _, query := range []string{
 		`SELECT DISTINCT hash FROM files`,
-		`SELECT DISTINCT hash FROM output_files`,
 		`SELECT DISTINCT logs FROM runs WHERE logs<>''`,
 		`SELECT DISTINCT chunk FROM chunks`,
 	} {

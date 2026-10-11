@@ -91,8 +91,8 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 		} else {
 			if ext := strings.ToLower(path.Ext(e)); known && exts != nil && !slices.Contains(exts, ext) {
 				add("view.entry: a %s view needs a %s file, not %q", v.Type, strings.Join(exts, " or "), v.Entry)
-			} else if _, ok := tree[e]; !ok && !(s.Job != nil && isOutput(e)) {
-				add("view.entry: %q is not a file in this version (publish it, point the view at another file, or have the job write it to %s/)", v.Entry, pa.OutputDir)
+			} else if _, ok := tree[e]; !ok {
+				add("view.entry: %q is not a file in this version", v.Entry)
 			}
 			v.Entry = e
 		}

@@ -14,12 +14,6 @@ type Duration = api.Duration
 
 // ---- artifact.json
 
-// OutputDir is the job's folder. Runs read and write it; whatever a run
-// leaves there is the artifact's output, what viewers see at /.output/ and
-// what the next run starts from. It's never part of a version: a publish
-// skips files under it.
-const OutputDir = ".output"
-
 // SpecFile is the path of the config file inside an artifact's file tree.
 // Every version has one: the service writes an empty one when a create
 // doesn't bring one.
@@ -63,9 +57,9 @@ const (
 )
 
 // Job is a command run against the artifact's files on a schedule or on
-// demand. It works in OutputDir: each run starts with the latest output
-// there, and a successful run that changes it records the next output (not
-// a version). Its changes anywhere else are discarded.
+// demand. It can't change the artifact: its changes to the files are
+// discarded. What it produces goes in the artifact's db, which it reaches
+// with $FIRED_DB_URL and $FIRED_DB_TOKEN.
 type Job struct {
 	// Run is executed with /bin/sh -c in the artifact's directory.
 	Run string `json:"run"`
@@ -122,12 +116,7 @@ type Artifact struct {
 	CurrentVersion int `json:"current_version"`
 	// DeleteAfter deletes the artifact after this long without reads,
 	// publishes or runs. 0 = service default, negative = never.
-	DeleteAfter Duration `json:"delete_after"`
-	// RetainOutputs is how many of the job's outputs to keep, the current
-	// one included. 0 = service default.
-	RetainOutputs int `json:"retain_outputs"`
-	// Output is the current output (0: none yet, .output/ is empty).
-	Output       int         `json:"output,omitempty"`
+	DeleteAfter  Duration    `json:"delete_after"`
 	ForkedFrom   *VersionRef `json:"forked_from,omitempty"`
 	CreatedAt    time.Time   `json:"created_at"`
 	UpdatedAt    time.Time   `json:"updated_at"`
@@ -146,7 +135,7 @@ type File struct {
 	Mode uint32 `json:"mode"`
 }
 
-// Versions are what the author made; runs record outputs instead.
+// Versions are what the author made; runs write the db instead.
 const (
 	OriginEdit    = "edit"
 	OriginRestore = "restore"
@@ -240,21 +229,17 @@ type PublishResult struct {
 	// Unchanged is true when the publish (or restore) would have produced
 	// the files of the current version: no version was made, and Version is
 	// the current one.
-	Unchanged bool `json:"unchanged,omitempty"`
-	// Skipped lists files the publish gave under .output/: the job's
-	// folder is never part of a version (an exported zip carries it).
-	Skipped []string   `json:"skipped,omitempty"`
-	Job     *JobStatus `json:"job,omitempty"`
+	Unchanged bool       `json:"unchanged,omitempty"`
+	Job       *JobStatus `json:"job,omitempty"`
 }
 
 type CreateArtifactRequest struct {
 	// ID is optional; when set it must match [a-z0-9-]{3,48} and be unique.
-	ID            string            `json:"id,omitempty"`
-	QuotaKey      string            `json:"quota_key"`
-	Labels        map[string]string `json:"labels,omitempty"`
-	Meta          json.RawMessage   `json:"meta,omitempty"`
-	DeleteAfter   Duration          `json:"delete_after,omitempty"`
-	RetainOutputs int               `json:"retain_outputs,omitempty"`
+	ID          string            `json:"id,omitempty"`
+	QuotaKey    string            `json:"quota_key"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Meta        json.RawMessage   `json:"meta,omitempty"`
+	DeleteAfter Duration          `json:"delete_after,omitempty"`
 	// Publish is the first version, required: an artifact never exists
 	// without files. Its BaseVersion is 0 (or left out).
 	Publish *PublishRequest `json:"publish"`
@@ -269,11 +254,10 @@ type CreateArtifactResult struct {
 // left alone. Labels and Meta are merged (JSON merge patch, RFC 7386): keys
 // given are set, keys set to null are removed, the rest are kept.
 type UpdateArtifactRequest struct {
-	QuotaKey      *string            `json:"quota_key,omitempty"`
-	Labels        map[string]*string `json:"labels,omitempty"`
-	Meta          json.RawMessage    `json:"meta,omitempty"`
-	DeleteAfter   *Duration          `json:"delete_after,omitempty"`
-	RetainOutputs *int               `json:"retain_outputs,omitempty"`
+	QuotaKey    *string            `json:"quota_key,omitempty"`
+	Labels      map[string]*string `json:"labels,omitempty"`
+	Meta        json.RawMessage    `json:"meta,omitempty"`
+	DeleteAfter *Duration          `json:"delete_after,omitempty"`
 }
 
 type RestoreRequest struct {
@@ -360,8 +344,8 @@ type Run struct {
 	Trigger  string `json:"trigger"`
 	// Version is the version the run used (set when it starts).
 	Version int `json:"version,omitempty"`
-	// Output is the output the run recorded, if its writes changed anything.
-	Output     int        `json:"output,omitempty"`
+	// DBWrites is how many documents the run wrote or deleted in the db.
+	DBWrites   int        `json:"db_writes,omitempty"`
 	ExitCode   *int       `json:"exit_code,omitempty"`
 	Reason     string     `json:"reason,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
@@ -372,26 +356,6 @@ type Run struct {
 
 type RunList struct {
 	Runs []Run `json:"runs"`
-}
-
-// Output is what one run left in .output/. The latest one is what
-// everyone sees there and what the next run starts from; older ones are
-// kept for a while (retain_outputs) to look back at.
-type Output struct {
-	Output    int       `json:"output"`
-	RunID     string    `json:"run_id"`
-	Version   int       `json:"version"` // the version the run used
-	FileCount int       `json:"file_count"`
-	SizeBytes int64     `json:"size_bytes"`
-	Files     []File    `json:"files,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// OutputList is an artifact's outputs: the current one (0: none) and the
-// ones kept, newest first.
-type OutputList struct {
-	Current int      `json:"current"`
-	Outputs []Output `json:"outputs"`
 }
 
 type RunLogs struct {
@@ -437,11 +401,13 @@ type QuotaStatus struct {
 	Quota     Quota `json:"quota"`
 	Effective Quota `json:"effective"`
 	// StorageUsed is what counts against storage_bytes: the distinct blobs
-	// and chunks the key's versions and outputs reference. StorageLogical is what they'd
-	// take with no sharing (every file of every version in full); the
-	// difference is what deduplication saves.
+	// and chunks the key's versions reference, plus its db documents
+	// (DBBytes). StorageLogical is what the files would take with no
+	// sharing (every file of every version in full); the difference is what
+	// deduplication saves.
 	StorageUsed    int64 `json:"storage_used"`
 	StorageLogical int64 `json:"storage_logical"`
+	DBBytes        int64 `json:"db_bytes"`
 }
 
 // ---- credentials broker (implemented by your backend)
@@ -463,17 +429,17 @@ type CredentialsResponse struct {
 // ---- events
 
 type Event struct {
-	// Type: artifact.created, artifact.version, artifact.output (a run
-	// recorded an output, or the outputs were cleared), artifact.deleted,
-	// run.started, run.finished, run.dropped.
-	Type     string `json:"type"`
-	Artifact string `json:"artifact"`
-	Version  int    `json:"version,omitempty"`
-	Origin   string `json:"origin,omitempty"`
-	Output   int    `json:"output,omitempty"`
-	RunID    string `json:"run_id,omitempty"`
-	Status   string `json:"status,omitempty"`
-	Reason   string `json:"reason,omitempty"`
+	// Type: artifact.created, artifact.version, artifact.deleted,
+	// db.changed (Paths: the documents written or deleted), run.started,
+	// run.finished, run.dropped.
+	Type     string   `json:"type"`
+	Artifact string   `json:"artifact"`
+	Version  int      `json:"version,omitempty"`
+	Origin   string   `json:"origin,omitempty"`
+	Paths    []string `json:"paths,omitempty"`
+	RunID    string   `json:"run_id,omitempty"`
+	Status   string   `json:"status,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
 	// Notify is copied from the publish that asked to hear about this
 	// version's first run.
 	Notify string    `json:"notify,omitempty"`

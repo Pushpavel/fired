@@ -3,7 +3,7 @@
 # FIRED_ARTIFACTS_LISTEN, FIRED_ARTIFACTS_DATABASE_URL, FIRED_ARTIFACTS_DATA_DIR,
 # FIRED_URL, FIRED_API_TOKEN,
 # FIRED_ARTIFACTS_BROKER_URL, FIRED_ARTIFACTS_BROKER_TOKEN, FIRED_ARTIFACTS_UI,
-# FIRED_ARTIFACTS_PREVIEW_DOMAIN.
+# FIRED_ARTIFACTS_PREVIEW_DOMAIN, FIRED_ARTIFACTS_DB_URL.
 
 listen: ":8444"
 token: ""                       # required; prefer FIRED_ARTIFACTS_TOKEN
@@ -43,7 +43,9 @@ limits:
   min_interval: 1m              # shortest schedule interval for anyone
   serve_rps: 50                 # file reads per artifact per second
   serve_burst: 100
-  retain_outputs: 24            # job outputs kept per artifact (the current one included)
+  max_doc_bytes: 1048576        # one db document
+  max_docs: 10000               # documents per artifact
+  max_batch_writes: 500
   delete_after: 0s              # delete artifacts inactive this long (0 = never)
   queue_max: 100                # defaults for on_busy: queue
   queue_max_age: 24h
@@ -55,6 +57,12 @@ runner:
   quota_backoff: 1m             # a key's runs wait this long after fired refuses one over its limits
   workdir: /artifact
   egress: []                    # allowlist for runner sandboxes, e.g. ["api.github.com"]
+  # This service as runner sandboxes reach it, through fired's egress proxy:
+  # jobs get $FIRED_DB_URL and $FIRED_DB_TOKEN for their artifact's db, and
+  # its host:port joins their allowlist. Not a loopback address; if it's
+  # private (a cluster Service), fired needs egress.allow_private_cidrs for
+  # it. Empty: jobs have no db.
+  db_url: ""
   ttl:                          # runner sandboxes are a cache; these are fired TTLs
     idle_suspend: 1m
     archive_after: 1h

@@ -34,7 +34,8 @@ type Service struct {
 	now    func() time.Time
 
 	mu      sync.Mutex
-	running map[string]string // artifact → run id
+	running map[string]string   // artifact → run id
+	live    map[string]*liveRun // run id → what a running job's requests need
 	buckets map[string]*bucket
 	touched map[string]time.Time
 	// quotaWait: until when a quota key's runs wait, after fired refused
@@ -68,7 +69,7 @@ func New(cfg Config, log *slog.Logger) (*Service, error) {
 		fired:   client.New(cfg.Fired.URL, cfg.Fired.Token),
 		broker:  newBroker(cfg.Broker),
 		now:     func() time.Time { return time.Now().UTC() },
-		running: map[string]string{}, buckets: map[string]*bucket{}, touched: map[string]time.Time{},
+		running: map[string]string{}, live: map[string]*liveRun{}, buckets: map[string]*bucket{}, touched: map[string]time.Time{},
 		quotaWait: map[string]time.Time{}, tiers: map[string]tierEntry{},
 		wake: make(chan struct{}, 1), stop: make(chan struct{}),
 	}
@@ -120,7 +121,7 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 	s.tierOf(ctx, req.QuotaKey)
 	now := s.now()
 	a := &pa.Artifact{ID: id, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta, DeleteAfter: req.DeleteAfter,
-		RetainOutputs: req.RetainOutputs, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
+		CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
 	var v *pa.Version
 	err = s.st.tx(ctx, func(q querier) error {
 		if _, err := getArtifact(ctx, q, id); err == nil {
@@ -137,7 +138,7 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 		return nil, err
 	}
 	s.emit(pa.Event{Type: "artifact.created", Artifact: id})
-	res, err := s.afterPublish(ctx, id, v, false, *req.Publish, prep.skipped)
+	res, err := s.afterPublish(ctx, id, v, false, *req.Publish)
 	if err != nil {
 		return nil, err
 	}
@@ -217,9 +218,6 @@ func (s *Service) Update(ctx context.Context, id string, req pa.UpdateArtifactRe
 		if req.DeleteAfter != nil {
 			a.DeleteAfter = *req.DeleteAfter
 		}
-		if req.RetainOutputs != nil {
-			a.RetainOutputs = *req.RetainOutputs
-		}
 		a.UpdatedAt = s.now()
 		out = a
 		return putArtifact(ctx, q, a)
@@ -280,7 +278,7 @@ func (s *Service) notFound(err error, id string) error {
 	return err
 }
 
-// Delete removes an artifact, its versions, jobs and runs, and its runner
+// Delete removes an artifact, its versions, job, runs and db, and its runner
 // sandbox. Blobs no longer referenced are removed by the next GC.
 func (s *Service) Delete(ctx context.Context, id string) error {
 	err := s.st.tx(ctx, func(q querier) error {
@@ -590,7 +588,6 @@ type publishPrep struct {
 	specHash    string
 	specSize    int64
 	replaceDirs []string
-	skipped     []string // files given under .output/
 }
 
 func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*publishPrep, error) {
@@ -598,8 +595,7 @@ func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*p
 	if err != nil {
 		return nil, err
 	}
-	ops, skipped := skipOutput(ops)
-	p := &publishPrep{ops: ops, skipped: skipped, replaceDirs: make([]string, 0, len(req.ReplaceDirs))}
+	p := &publishPrep{ops: ops, replaceDirs: make([]string, 0, len(req.ReplaceDirs))}
 	for _, op := range ops {
 		if op.path == pa.SpecFile && op.delete {
 			return nil, badRequest("%s can't be deleted: every version has one (publish a new one to change it)", pa.SpecFile)
@@ -655,7 +651,7 @@ func (s *Service) Publish(ctx context.Context, id string, req pa.PublishRequest)
 	if err != nil {
 		return nil, err
 	}
-	return s.afterPublish(ctx, id, v, unchanged, req, prep.skipped)
+	return s.afterPublish(ctx, id, v, unchanged, req)
 }
 
 // checkBase checks that a publish or restore is on top of the current
@@ -778,7 +774,7 @@ func checkRunNow(runNow bool, spec pa.Spec) error {
 
 // afterPublish announces a committed version (unless the publish changed
 // nothing), starts the job if asked (run_now) and reports its status.
-func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, unchanged bool, req pa.PublishRequest, skipped []string) (*pa.PublishResult, error) {
+func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, unchanged bool, req pa.PublishRequest) (*pa.PublishResult, error) {
 	if !unchanged {
 		s.emit(pa.Event{Type: "artifact.version", Artifact: id, Version: v.Version, Origin: v.Origin})
 	}
@@ -791,7 +787,7 @@ func (s *Service) afterPublish(ctx context.Context, id string, v *pa.Version, un
 	if err != nil {
 		return nil, err
 	}
-	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Skipped: skipped, Job: job}, nil
+	return &pa.PublishResult{Version: *v, Unchanged: unchanged, Job: job}, nil
 }
 
 // checkNoFileDirClash rejects trees where a path is both a file and a
@@ -887,9 +883,9 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 }
 
 // Fork creates a new artifact whose first version has the files of
-// id@version, starting with the source's current output. The job is copied
-// (it's in artifact.json) but inactive until the new artifact is published
-// to or granted; older outputs are not copied.
+// id@version, with a copy of the source's db except _private/ (the
+// source's owner's). The job is copied (it's in artifact.json) but inactive
+// until the new artifact is published to or granted.
 func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.Artifact, error) {
 	if req.QuotaKey == "" {
 		return nil, badRequest("quota_key is required")
@@ -929,11 +925,6 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		if err != nil {
 			return err
 		}
-		// The fork starts with the source's current output.
-		output, err := currentOutput(ctx, q, src)
-		if err != nil {
-			return err
-		}
 		spec := old.Spec
 		var title *string
 		if req.Title != "" {
@@ -951,17 +942,10 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		out = &pa.Artifact{ID: newIDv, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta,
 			ForkedFrom: &pa.VersionRef{Artifact: id, Version: n}, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
 		setCurrent(out, v)
-		if len(output) > 0 {
-			o := &pa.Output{Output: 1, Version: 1, FileCount: len(output), CreatedAt: now}
-			for _, f := range output {
-				o.SizeBytes += f.Size
-			}
-			if err := insertOutput(ctx, q, newIDv, o, output); err != nil {
-				return err
-			}
-			out.Output = 1
-		}
 		if err := putArtifact(ctx, q, out); err != nil {
+			return err
+		}
+		if err := copyDocs(ctx, q, id, newIDv, now); err != nil {
 			return err
 		}
 		if err := insertVersion(ctx, q, v, tree); err != nil {
@@ -1135,5 +1119,9 @@ func (s *Service) QuotaStatus(ctx context.Context, key string) (*pa.QuotaStatus,
 	if err != nil {
 		return nil, err
 	}
-	return &pa.QuotaStatus{Key: key, Tier: tier, Quota: raw, Effective: eff, StorageUsed: used, StorageLogical: logical}, nil
+	docs, err := dbBytes(ctx, s.st.db, key)
+	if err != nil {
+		return nil, err
+	}
+	return &pa.QuotaStatus{Key: key, Tier: tier, Quota: raw, Effective: eff, StorageUsed: used, StorageLogical: logical, DBBytes: docs}, nil
 }

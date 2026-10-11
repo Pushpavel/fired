@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -32,7 +33,9 @@ import (
 //     capability. {domain} is `preview_domain` (a wildcard DNS name), or
 //     else nip.io for the IP the console was reached on. A preview origin is
 //     cross-site from the console, so it can't use the console session.
-//   - A preview origin serves the artifact's view, as viewers get it.
+//   - A preview origin serves the artifact's view, as its owner gets it
+//     (writing its db), or, with a "v" after the version, as any other
+//     viewer does (reading it, without _private/).
 //   - The Files tab renders md, csv, json, images and react files with
 //     ui/view.html in a sandboxed frame (an opaque origin, no access to the
 //     console), which asks the console for files; the console reads them
@@ -74,9 +77,10 @@ func (s *Service) mac(parts ...string) string {
 func (s *Service) sessionValue() string { return s.mac("fired-artifacts-ui-session") }
 
 // previewSig is 12 hex chars; with "-{version}-" it leaves room for IDs of
-// up to ~44 characters in a 63-character DNS label.
-func (s *Service) previewSig(id string, n int) string {
-	return s.mac("fired-artifacts-preview", id, strconv.Itoa(n))[:12]
+// up to ~44 characters in a 63-character DNS label. ver is the version
+// label part: the number, with a "v" after it for a viewer's preview.
+func (s *Service) previewSig(id, ver string) string {
+	return s.mac("fired-artifacts-preview", id, ver)[:12]
 }
 
 func (s *Service) uiSession(r *http.Request) bool {
@@ -146,7 +150,9 @@ func (s *Service) handleUIInfo(w http.ResponseWriter, r *http.Request) {
 		"min_interval":       l.MinInterval,
 		"max_inline_bytes":   l.MaxInlineBytes,
 		"max_payload_bytes":  l.MaxPayloadBytes,
-		"retain_outputs":     l.RetainOutputs,
+		"db_url":             s.cfg.Runner.DBURL,
+		"max_doc_bytes":      l.MaxDocBytes,
+		"max_docs":           l.MaxDocs,
 	})
 }
 
@@ -158,6 +164,8 @@ func (s *Service) handlePreviewLink(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Artifact string `json:"artifact"`
 		Version  int    `json:"version"`
+		// Viewer previews it as someone other than its owner.
+		Viewer bool `json:"viewer"`
 	}
 	if err := decode(r, &req, 4096); err != nil {
 		writeErr(w, err)
@@ -171,7 +179,11 @@ func (s *Service) handlePreviewLink(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	label := fmt.Sprintf("%s-%d-%s", req.Artifact, req.Version, s.previewSig(req.Artifact, req.Version))
+	ver := strconv.Itoa(req.Version)
+	if req.Viewer {
+		ver += "v"
+	}
+	label := fmt.Sprintf("%s-%s-%s", req.Artifact, ver, s.previewSig(req.Artifact, ver))
 	if len(label) > 63 {
 		writeErr(w, errf(http.StatusConflict, "conflict", "artifact ID %q is too long for a preview hostname", req.Artifact))
 		return
@@ -221,11 +233,11 @@ func (s *Service) previewDomainFor(r *http.Request) (string, error) {
 	return strings.ReplaceAll(ip.To4().String(), ".", "-") + ".nip.io", nil
 }
 
-// previewTarget parses a preview hostname into its artifact and version
-// and checks the signature.
-func (s *Service) previewTarget(hostport string) (id string, n int, ok bool) {
+// previewTarget parses a preview hostname into its artifact, version and
+// mode and checks the signature.
+func (s *Service) previewTarget(hostport string) (id string, n int, owner, ok bool) {
 	if !s.cfg.UI {
-		return "", 0, false
+		return "", 0, false, false
 	}
 	host := strings.ToLower(hostport)
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -233,30 +245,31 @@ func (s *Service) previewTarget(hostport string) (id string, n int, ok bool) {
 	}
 	label, domain, found := strings.Cut(host, ".")
 	if !found {
-		return "", 0, false
+		return "", 0, false, false
 	}
 	if d := strings.Trim(strings.ToLower(s.cfg.PreviewDomain), "."); d != "" {
 		if domain != d {
-			return "", 0, false
+			return "", 0, false, false
 		}
 	} else if !strings.HasSuffix(domain, ".nip.io") {
-		return "", 0, false
+		return "", 0, false, false
 	}
 	i := strings.LastIndexByte(label, '-')
 	if i <= 0 {
-		return "", 0, false
+		return "", 0, false, false
 	}
 	rest, sig := label[:i], label[i+1:]
 	j := strings.LastIndexByte(rest, '-')
 	if j <= 0 {
-		return "", 0, false
+		return "", 0, false, false
 	}
-	id = rest[:j]
-	n, err := strconv.Atoi(rest[j+1:])
-	if err != nil || n < 0 || !hmac.Equal([]byte(sig), []byte(s.previewSig(id, n))) {
-		return "", 0, false
+	id, ver := rest[:j], rest[j+1:]
+	num, viewer := strings.CutSuffix(ver, "v")
+	n, err := strconv.Atoi(num)
+	if err != nil || n < 0 || strconv.Itoa(n) != num || !hmac.Equal([]byte(sig), []byte(s.previewSig(id, ver))) {
+		return "", 0, false, false
 	}
-	return id, n, true
+	return id, n, !viewer, true
 }
 
 // serveView serves an artifact's view, on a preview origin or routed by
@@ -264,8 +277,14 @@ func (s *Service) previewTarget(hostport string) (id string, n int, ok bool) {
 // other types the frontend renders it, told by X-Artifact-View), and other
 // paths are files of the entry's folder by exact path (no index files,
 // nothing outside it, not artifact.json). ?download on any of them is an
-// attachment. Without a view there is nothing to serve.
-func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n int) {
+// attachment. Without a view there is nothing to serve. /.fired/ is the
+// service's: /.fired/db.js is the db's client for pages and /.fired/db/
+// the db, which owner may write.
+func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n int, owner bool) {
+	if p, ok := strings.CutPrefix(r.URL.Path, "/.fired/"); ok {
+		s.serveViewDB(w, r, id, p, owner)
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeErr(w, errf(http.StatusMethodNotAllowed, "method_not_allowed", "views are read-only"))
 		return
@@ -301,17 +320,50 @@ func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n
 			writeErr(w, badRequest("%v", err))
 			return
 		}
-		// .output/ is at the root for every view; other paths are in the
-		// entry's folder.
-		if isOutput(c) {
-			p = c
-		} else {
-			p = path.Join(path.Dir(view.Entry), c)
-		}
+		p = path.Join(path.Dir(view.Entry), c)
 		if p == pa.SpecFile {
 			writeErr(w, errf(http.StatusNotFound, "not_found", "%s isn't part of the view", pa.SpecFile))
 			return
 		}
 	}
 	s.serveFile(w, r, id, v.Version, p, r.URL.Path, n != 0)
+}
+
+//go:embed viewjs/db.js
+var dbJS string
+
+// serveViewDB serves /.fired/{p} of a view: the db's client and the db.
+func (s *Service) serveViewDB(w http.ResponseWriter, r *http.Request, id, p string, owner bool) {
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if !s.allowRead(id) {
+		w.Header().Set("Retry-After", "1")
+		writeErr(w, errf(http.StatusTooManyRequests, "rate_limited", "too many requests for this artifact"))
+		return
+	}
+	switch {
+	case p == "db.js":
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeErr(w, errf(http.StatusMethodNotAllowed, "method_not_allowed", "%s is read-only", r.URL.Path))
+			return
+		}
+		if _, err := s.Get(r.Context(), id); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "private, no-cache")
+		_, _ = io.WriteString(w, strings.Replace(dbJS, "__CAN_WRITE__", strconv.FormatBool(owner), 1))
+	case p == "db" || strings.HasPrefix(p, "db/"):
+		// Writes must be JSON: a cross-site form can't send that without
+		// the page's own origin agreeing (CORS preflight).
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodDelete &&
+			!strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			writeErr(w, errf(http.StatusUnsupportedMediaType, "invalid_request", "send writes as application/json"))
+			return
+		}
+		go s.noteRead(id)
+		s.serveDB(w, r, id, strings.TrimPrefix(p, "db"), dbAccess{full: owner})
+	default:
+		writeErr(w, errf(http.StatusNotFound, "not_found", "no %s here", r.URL.Path))
+	}
 }

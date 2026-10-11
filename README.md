@@ -74,7 +74,7 @@ Firecracker v1.x API and is unit-tested at the protocol level, but it has
 - **Artifacts (separate service):** `fired-artifacts` stores versioned file
   trees that agents publish from sandboxes or from inline content, serves
   them, and runs each one's job in a fired sandbox on a schedule, keeping
-  its data fresh (job outputs, separate from the author's versions). It is a separate binary meant to run next to your
+  its data fresh (in its db, separate from the author's versions). It is a separate binary meant to run next to your
   backend on durable storage; see [docs/artifacts.md](docs/artifacts.md).
 - **Several hosts:** fired keeps its state in Postgres. Hosts sharing one
   database act as one service: any host answers any request (forwarding to

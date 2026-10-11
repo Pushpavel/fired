@@ -320,18 +320,6 @@ func (c *Client) Runs(ctx context.Context, id, status string) ([]Run, error) {
 	return out.Runs, c.do(ctx, "GET", ap(id)+"/runs?"+q.Encode(), nil, &out)
 }
 
-// Outputs returns the current output and the outputs kept, with files.
-func (c *Client) Outputs(ctx context.Context, id string) (*OutputList, error) {
-	var out OutputList
-	return &out, c.do(ctx, "GET", ap(id)+"/outputs", nil, &out)
-}
-
-// ClearOutputs drops the outputs: .output/ is empty again, and the next run
-// starts from nothing.
-func (c *Client) ClearOutputs(ctx context.Context, id string) error {
-	return c.do(ctx, "DELETE", ap(id)+"/outputs", nil, nil)
-}
-
 func (c *Client) Run(ctx context.Context, id, run string) (*Run, error) {
 	var out Run
 	return &out, c.do(ctx, "GET", ap(id)+"/runs/"+url.PathEscape(run), nil, &out)
@@ -340,6 +328,70 @@ func (c *Client) Run(ctx context.Context, id, run string) (*Run, error) {
 func (c *Client) RunLogs(ctx context.Context, id, run string) (*RunLogs, error) {
 	var out RunLogs
 	return &out, c.do(ctx, "GET", ap(id)+"/runs/"+url.PathEscape(run)+"/logs", nil, &out)
+}
+
+// ---- the db
+
+func dbp(id, p string) string {
+	segs := strings.Split(strings.Trim(p, "/"), "/")
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	return ap(id) + "/db/" + strings.Join(segs, "/")
+}
+
+// GetDoc returns the document at path (a *client.HTTPError 404 if none).
+func (c *Client) GetDoc(ctx context.Context, id, path string) (*Doc, error) {
+	var out Doc
+	return &out, c.do(ctx, "GET", dbp(id, path), nil, &out)
+}
+
+// Query lists a collection's documents.
+func (c *Client) Query(ctx context.Context, id, collection string, q DocQuery) (*DocList, error) {
+	v := url.Values{}
+	for _, w := range q.Where {
+		v.Add("where", w)
+	}
+	if q.Order != "" {
+		v.Set("order", q.Order)
+	}
+	if q.Limit > 0 {
+		v.Set("limit", strconv.Itoa(q.Limit))
+	}
+	if q.After != "" {
+		v.Set("after", q.After)
+	}
+	var out DocList
+	return &out, c.do(ctx, "GET", dbp(id, collection)+"?"+v.Encode(), nil, &out)
+}
+
+// SetDoc replaces the document at path with data (a JSON object).
+func (c *Client) SetDoc(ctx context.Context, id, path string, data any) (*Doc, error) {
+	var out Doc
+	return &out, c.do(ctx, "PUT", dbp(id, path), data, &out)
+}
+
+// UpdateDoc merges patch into the document (JSON merge patch), creating it
+// if it's missing.
+func (c *Client) UpdateDoc(ctx context.Context, id, path string, patch any) (*Doc, error) {
+	var out Doc
+	return &out, c.do(ctx, "PATCH", dbp(id, path), patch, &out)
+}
+
+// DeleteDoc deletes a document, or every document under a collection.
+func (c *Client) DeleteDoc(ctx context.Context, id, path string) error {
+	return c.do(ctx, "DELETE", dbp(id, path), nil, nil)
+}
+
+// Batch applies writes in order, all or none.
+func (c *Client) Batch(ctx context.Context, id string, writes []DBWrite) (*DBBatchResult, error) {
+	var out DBBatchResult
+	return &out, c.do(ctx, "POST", ap(id)+"/db", DBBatch{Writes: writes}, &out)
+}
+
+// ClearDB deletes all of the artifact's documents.
+func (c *Client) ClearDB(ctx context.Context, id string) error {
+	return c.do(ctx, "DELETE", ap(id)+"/db", nil, nil)
 }
 
 // ---- quotas

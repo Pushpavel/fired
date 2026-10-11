@@ -33,6 +33,14 @@ spec:
               app.kubernetes.io/component: host
       ports:
         - {port: 8443, protocol: TCP}
+    {{- if .Values.artifacts.enabled }}
+    # Jobs write their artifact's db (through fired's egress proxy).
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: fired-artifacts}
+      ports:
+        - {port: 8444, protocol: TCP}
+    {{- end }}
     {{- if .Values.postgres.enabled }}
     - to:
         - podSelector:

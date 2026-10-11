@@ -61,6 +61,7 @@ spec:
               valueFrom: {secretKeyRef: {name: fired, key: database-url}}
             - {name: FIRED_ARTIFACTS_UI, value: {{ ternary "1" "0" .Values.artifacts.ui | quote }}}
             - {name: FIRED_URL, value: "http://fired.{{ .Release.Namespace }}.svc:8443"}
+            - {name: FIRED_ARTIFACTS_DB_URL, value: {{ .Values.artifacts.dbURL | default (printf "http://fired-artifacts.%s.svc:8444" .Release.Namespace) | quote }}}
             - name: FIRED_API_TOKEN
               valueFrom: {secretKeyRef: {name: fired, key: token}}
             - name: FIRED_ARTIFACTS_TOKEN

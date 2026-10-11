@@ -70,6 +70,12 @@ artifacts:
   broker:
     url: ""                 # your backend's credentials endpoint
     token: ""
+  # This service as jobs reach it, through fired's egress proxy, to write
+  # their artifact's db. Empty: http://fired-artifacts.<namespace>.svc:8444.
+  # A Service address is private, so fired must allow it: add your cluster's
+  # Service CIDR to fired.config.egress.allow_private_cidrs (only runner
+  # sandboxes, whose allowlist names this host, can reach it).
+  dbURL: ""
   # fired-artifacts' artifacts.yaml (see deploy/artifacts.yaml); fired.url,
   # tokens and data_dir are set by the chart.
   config:

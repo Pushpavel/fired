@@ -3,7 +3,7 @@
 `fired-artifacts` is a separate service that stores **artifacts**: versioned
 sets of files that agents publish, that people view and share, and that can
 carry a **job** which runs on a schedule in a fired sandbox and keeps the
-artifact's data fresh. A page, a deck, a dashboard that refreshes every
+artifact's data fresh in its **db**, a small document store its page reads. A page, a deck, a dashboard that refreshes every
 morning and an automation with no output at all are the same thing here:
 files, plus `artifact.json` saying how to view them and what to run.
 
@@ -26,12 +26,12 @@ agent ─ MCP tools ─▶ your backend ─────────────�
 | content-addressed blob store, versions, `artifact.json` validation | users, sharing, who may fork or edit |
 | serving each artifact's view (its entry and folder), raw files, zip export | the domain viewers use, who may see what, rendering single-file views (copy, download, …) |
 | scheduler, `on_busy` queues, per-quota-key and global limits | approving grants (longer schedules, longer runs), quotas per plan |
-| runner sandboxes, job outputs, logs, events | credentials for each run, MCP tools, notifications to sessions |
+| runner sandboxes, each artifact's db, logs, events | credentials for each run, MCP tools, notifications to sessions, who owns an artifact |
 | retention, `delete_after`, garbage collection | turning sandbox folders, MCP resources and tool outputs into files to publish |
 
 It is a separate binary because its data has a different life from
 sandboxes: artifacts are kept and shared, so run it next to your backend on
-durable storage. Its records (artifacts, versions, outputs, runs) are in
+durable storage. Its records (artifacts, versions, db documents, runs) are in
 Postgres, normally fired's database in a schema of its own (`artifacts`),
 and file contents in a blob store on disk. Runs happen on whichever fired
 host it points at.
@@ -48,12 +48,11 @@ host it points at.
   - `edit`: a publish
   - `restore`: a copy of an older version
   - `fork`: the first version of a fork
-- **Job and output**: an artifact has at most one job, which works in the
-  folder `.output/`. A run starts with the latest output there, and if it
-  leaves something different, that's the next **output** (numbered 1, 2,
-  3…), not a version. Versions are the source; outputs are what the source
-  produces. What everyone sees is the current version's files plus the
-  current output under `.output/`.
+- **Job and db**: an artifact has at most one job. It can't change the
+  artifact (versions are what the author made); what it keeps or produces
+  goes in the artifact's **db**, JSON documents its page reads. The owner
+  writes the db too (from the page, or your backend); everyone else the
+  artifact is shared with only reads it. See The db.
 - **File tree**: paths (relative, slash-separated) to blobs. Each blob is
   stored once, named by the SHA-256 of its content and zstd-compressed, so
   unchanged files cost nothing across versions, forks and artifacts. Large
@@ -88,7 +87,7 @@ instead of being ignored.
 bytes). They're versioned like everything else here: renaming makes a
 version, and a restore or fork brings the old name along. A zip of a
 version is therefore complete: published again elsewhere, it comes back
-with its name, view and job, and the output as it stood.
+with its name, view and job (not its db, which isn't versioned).
 
 **The view** is what viewers see: `{"type", "entry"}`, one entry file and
 its type. The type says who renders it:
@@ -113,8 +112,9 @@ as slides, where the frontend owns a richer UX, are planned.)
 
 Viewers reach the entry and the other files of its folder at their paths:
 a page's other pages (`about.html`, `docs/setup.html`), scripts, styles
-and data; a Markdown file's images. Plus the job's output, at `/.output/`
-from any entry. Nothing else outside that folder is reachable, so a build
+and data; a Markdown file's images. Plus `/.fired/`, which is the
+service's: the db and its client (see The db). Nothing else outside that
+folder is reachable, so a build
 in `dist/` can sit next to its sources; there are no index files (link to
 `docs/index.html`, not `docs/`), and `artifact.json` isn't served.
 
@@ -128,16 +128,6 @@ and an entry that goes away fails the publish.
 | Field | Meaning |
 |---|---|
 | `run` | Command, run with `/bin/sh -c` in the artifact's directory. Required. |
-
-
-The job works in **`.output/`**: everything it keeps (results, counters,
-caches) goes there, each run starts with the latest output there, and
-whatever a successful run leaves is the next output. Changes anywhere else
-are discarded (the job can make them in its sandbox, they just don't
-land). `.output/` is never part of a version, and it's public: viewers get
-it at `/.output/…` from any page (a page in `dist/` fetches
-`/.output/sales.csv`), and a single-file view can point at it
-(`{"type": "csv", "entry": ".output/sales.csv"}`).
 | `schedule` | 5-field cron (`minute hour day month weekday`) or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`. Empty means the job only runs when triggered. |
 | `timezone` | IANA zone for the schedule (default UTC). |
 | `timeout` | Longest run. Default and maximum without approval: `limits.default_max_run` (30m). |
@@ -145,6 +135,11 @@ it at `/.output/…` from any page (a page in `dist/` fetches
 | `on_busy` | `latest` (default): at most one pending run, a new trigger replaces it. `queue`: every trigger waits its turn. |
 | `queue` | `{max, max_age}` for `queue` (defaults: 100, 24h). |
 | `template` | fired template for the runner sandbox (default `runner.template`). |
+
+The job runs against the version's files and can't change them: its
+changes to files are discarded when it ends. What it keeps (a cursor, a
+count) and what it produces (results the page shows) go in the db, which
+it reaches at `$FIRED_DB_URL` with `$FIRED_DB_TOKEN`.
 
 ## Publishing
 
@@ -218,8 +213,7 @@ one file changed copies one file.
   exactly the current version's files (same paths, hashes and modes), the
   answer is `200` with `"unchanged": true` and the current version, and no
   `artifact.version` event is sent. Its `label` and `labels` are dropped;
-  `run_now` and `notify` still apply, to the current version. Job runs work
-  the same way: a run that leaves `.output/` as it was records no output.
+  `run_now` and `notify` still apply, to the current version.
 - **A version always has at least one file**, and `artifact.json` counts (a
   job-only artifact is fine). A create or `replace` without files fails
   with `400`, and so does deleting `artifact.json`. Files that leave it out
@@ -247,16 +241,13 @@ one file changed copies one file.
   counted), `limits.max_version_bytes`, the request body (twice
   `limits.max_inline_bytes` plus 1 MiB; over it is `413 too_large`), and
   the quota key's `storage_bytes`, counted over the distinct blobs and
-  chunks its versions reference. `GET /quotas/{key}` shows that
-  (`storage_used`) next to `storage_logical`, every file of every version
-  in full: the difference is what sharing saves.
+  chunks its versions reference plus its db documents. `GET /quotas/{key}`
+  shows that (`storage_used`, with `db_bytes`) next to `storage_logical`,
+  every file of every version in full: the difference is what sharing
+  saves.
 - **`run_now: true`** triggers the job right after the publish (its runs
   say `trigger: publish`), so an agent learns quickly whether it works. A
   blocked job isn't triggered; its status in the response (`job`) says why.
-- **Files under `.output/` are skipped:** it's the job's folder, never part
-  of a version. The response lists them in `skipped`, so an exported zip
-  (which carries the output) or a sandbox folder with the output in it
-  publishes cleanly.
 - **`notify`** is an opaque target, e.g. an agent session. The first run of
   this version emits its `run.finished` event with `notify` set, so your
   backend can tell that session whether it succeeded.
@@ -313,9 +304,13 @@ Runs).
   - Other paths are files of the entry's folder; anything else is a 404
     (`no_view` when there's no view). 404s name only the URL path.
   - `?download` on any of them makes it an attachment with its file name.
+  - `/.fired/db.js` and `/.fired/db/…` are the db, for the page. Add
+    `X-Artifact-Owner: true` when the viewer owns the artifact: the owner
+    writes the db and reads `_private/`; everyone else only reads the rest.
 
   Responses are the same as the file API (ETag, `X-Artifact-Version`,
-  cache headers); only GET and HEAD are allowed. Strip these headers from what the viewer's browser
+  cache headers); only GET and HEAD are allowed, except the owner's db
+  writes. Strip these headers from what the viewer's browser
   sends, and set your own security headers (such as `frame-ancestors`) at
   your edge.
 
@@ -332,14 +327,14 @@ Runs).
   and a restore to the files the current version already has is
   `"unchanged": true`, like a publish.
 - **Fork:** `POST /v1/artifacts/{id}/fork {"quota_key": "u2", "version": 4}`
-  creates a new artifact whose v1 has v4's files and whose output 1 is the
-  source's current output (blobs are shared, nothing is copied); `"title"`
-  renames the fork in its `artifact.json`. The job comes along, but its
-  schedule is off until the new owner publishes or a grant turns it on.
-  Older outputs are not copied.
-- **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of what
-  the version shows (its files and the current output under `.output/`), `artifact.json`
-  (title, description, view, job) included. Published again, it's the same artifact; `meta`, labels and
+  creates a new artifact whose v1 has v4's files (blobs are shared, nothing
+  is copied) and a copy of the source's db, except `_private/`, which was
+  the source owner's; `"title"` renames the fork in its `artifact.json`.
+  The job comes along, but its schedule is off until the new owner
+  publishes or a grant turns it on.
+- **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of the
+  version's files, `artifact.json` (title, description, view, job)
+  included; the db isn't versioned, so it isn't in it. Published again, it's the same artifact; `meta`, labels and
   the quota key aren't in it, since they belong to whoever owns it.
 - **Compare:** there's no compare endpoint; `GET …/versions/{n}` lists
   every file with its hash, so two versions diff by path and hash. The
@@ -438,31 +433,28 @@ created. A run:
    refusal fails the run with the broker's error code.
 2. **Sets up the sandbox:**
    - empties `runner.workdir` (`/artifact`) and unpacks the current
-     version's files into it, with the latest output in `.output/` (so a
-     run can build on the last one: append, count, cache);
+     version's files into it;
    - writes the trigger to `/tmp/fired-artifacts/trigger.json` as
      `{type, run_id, at, payload}`.
 3. **Starts the job** as a background process. Environment:
    - `ARTIFACT_ID`, `ARTIFACT_VERSION`, `ARTIFACT_RUN_ID`,
      `TRIGGER`, `TRIGGER_FILE`;
+   - `FIRED_DB_URL` (`<runner.db_url>/v1/artifacts/<id>/db`) and, as a
+     secret, `FIRED_DB_TOKEN`, valid for this artifact's db while the run
+     runs (when `runner.db_url` is set);
    - the credentials as fired `secret_env` / `secret_files`, so they are
      never stored and are redacted from output.
 4. **Follows its output** until it exits or hits its timeout. A timed-out
    run gets `SIGTERM`, then `SIGKILL`.
-5. **On success, reads back `.output/`.** If any file there
-   contains a credential value (or its base64 or URL encoding), the result
-   is rejected and the run fails: artifacts get shared, so a run must never
-   publish the credentials it ran with.
-6. **Records an output:** what it left in `.output/` becomes the next
-   output (the run's `output`), unless it's the current one unchanged.
-   Versions don't move, so edits published during the run, or by an agent
-   working on the page meanwhile, never conflict with it. A failed run
-   records nothing, so the next run starts from the last good output.
+5. **Records the outcome**, with `db_writes`, the documents it wrote or
+   deleted. Versions don't move, so edits published during the run, or by
+   an agent working on the page meanwhile, never conflict with it. Its db
+   writes land as it makes them, so a run that fails halfway leaves what
+   it wrote: write in a batch for all or nothing.
 
-**Outputs:** `GET /v1/artifacts/{id}/outputs` lists the outputs kept
-(newest first, with files; `current` is the one in `.output/`), and
-`DELETE /v1/artifacts/{id}/outputs` clears them: `.output/` is empty and
-the next run starts from nothing.
+A db write by a job that contains one of the run's credential values (or
+its base64 or URL encoding) is refused (`422 secret`): artifacts get
+shared, so a run must never publish the credentials it ran with.
 
 Run statuses:
 - `pending`, `running`;
@@ -482,25 +474,96 @@ redacted).
 |---|---|
 | `artifact.created`, `artifact.deleted` | |
 | `artifact.version` | Every new version, with `origin`. Not sent for an unchanged publish or restore. |
-| `artifact.output` | A run recorded an output (`output`, `run_id`), or the outputs were cleared (no `output`). |
+| `db.changed` | Documents were written or deleted (`paths`). |
 | `run.started` | A run left `pending`. |
-| `run.finished` | With `status`, `reason`, `output` if it recorded one, and `notify` if the publish asked for it. |
+| `run.finished` | With `status`, `reason`, and `notify` if the publish asked for it. |
 | `run.dropped` | With `reason`: `queue_full`, `expired`, `job_removed`, `needs_approval`. |
 
 Monitors in your backend subscribe to an artifact's events and forward
 what matters to sessions.
 
+## The db
+
+Every artifact has a db: JSON objects ("documents") at slash-separated
+paths, like Firestore. A path with an even number of segments is a
+document (`stats/today`, `tasks/t1/notes/n1`), an odd one a collection
+(`tasks`, `tasks/t1/notes`): the documents directly in it. Segments are 1
+to 128 of `A-Z a-z 0-9 _ . ~ @ + : -`, up to 16 deep. The db isn't
+versioned: it's the artifact's live data.
+
+**Who may do what** is fixed, not configured (artifacts are personal
+apps: their owner shares what they made, others look):
+
+| Caller | Reads | Writes |
+|---|---|---|
+| The API token (your backend, agents) | everything | everything |
+| The owner, through a view with `X-Artifact-Owner: true` | everything | everything |
+| The job, while it runs, with `$FIRED_DB_TOKEN` | its artifact's db | its artifact's db |
+| Anyone else your backend lets view the artifact | all but `_private/` | nothing (`403 read_only`) |
+
+`_private/` is the owner's and the job's: the job's working state and raw
+data go there, and what it publishes for viewers goes anywhere else. To a
+viewer, `_private/` doesn't exist. Shared data comes only from the owner
+and their job, so a page can trust what it reads.
+
+**The API** is the same under `/v1/artifacts/{id}/db/` (API token, or a
+job's token) and under `/.fired/db/` in a view (the viewer's access):
+
+| | |
+|---|---|
+| `GET …/db/{doc}` | `{path, data, rev, created_at, updated_at}`; `404 no_document` |
+| `GET …/db/{collection}` | `{docs, next}`: `?where=field op value` (repeatable; `==` `!=` `<` `<=` `>` `>=`, a dotted field for nested keys, the value JSON or a bare string), `?order=field` or `-field` (missing values last), `?limit=` (100, at most 1000), `?after=` (the `next` of the previous page) |
+| `GET …/db/` | every document, by path (a viewer's without `_private/`) |
+| `GET …?watch` | the same as server-sent events: a `snapshot` now and after every change (a document is `null` while it doesn't exist) |
+| `PUT …/db/{doc}` | sets it to the body, a JSON object |
+| `PATCH …/db/{doc}` | merges the body into it (JSON merge patch: `null` removes a key), creating it |
+| `DELETE …/db/{doc\|collection}` | deletes the document, or the collection and everything under it; `DELETE …/db` clears the db |
+| `POST …/db` | `{"writes": [{"op": "set"\|"update"\|"delete", "path", "data", "rev"}]}`, applied in order, all or none |
+
+Every write bumps the document's `rev`. `If-Match: <rev>` (or a write's
+`rev`) makes it conditional, `-1` meaning "only if it doesn't exist";
+otherwise it fails with `412 rev_mismatch`. Range filters compare values
+of the filter's type only (`n>2` skips `"n": "10"`).
+
+Limits: `limits.max_doc_bytes` (1 MiB) per document, `limits.max_docs`
+(10,000) per artifact, `limits.max_batch_writes` (500) per batch, and the
+quota key's `storage_bytes`, which counts documents too.
+
+**From a page,** `/.fired/db.js` is a client:
+
+```js
+import { db } from "/.fired/db.js";
+const today = await db.doc("stats/today").get();          // {id, path, data, rev, …} or null
+db.collection("tasks").where("done", "==", false).orderBy("due").onSnapshot(tasks => render(tasks));
+if (db.canWrite) await db.doc("tasks/t1").update({ done: true });
+await db.collection("tasks").add({ title: "New" });        // a new id
+```
+
+`db.canWrite` is true for the owner. A page's writes are JSON requests
+(`415` otherwise), so another site's form can't post to it.
+
+**From the job,** with any HTTP client:
+
+```sh
+curl -H "Authorization: Bearer $FIRED_DB_TOKEN" -X PUT -H 'Content-Type: application/json' \
+  -d '{"runs": 3}' "$FIRED_DB_URL/_private/state"
+```
+
+Jobs reach the service through fired's egress proxy at `runner.db_url`,
+which is added to the runner sandboxes' allowlist. It can't be a loopback
+address (sandboxes don't proxy those), and a private one (a cluster
+Service) must be in fired's `egress.allow_private_cidrs`. Without
+`runner.db_url`, jobs have no db.
+
 ## Retention and garbage collection
 
-- **Job outputs:** each artifact keeps its newest `retain_outputs`
-  (artifact setting, else `limits.retain_outputs`, 24), the current one
-  included. Versions are always kept.
+- **Versions** are always kept; the db is kept with its artifact.
 - **Inactive artifacts:** with `delete_after` set (on the artifact, else
   `limits.delete_after`; 0 means never, negative means never for that
   artifact), an artifact with no reads, publishes or runs for that long is
   deleted, along with its runner sandbox.
 - **Run records:** finished runs and their logs are kept for 30 days.
-- **Blobs:** blobs that no version, output or log references are deleted on
+- **Blobs:** blobs that no version or log references are deleted on
   the next GC (`gc_interval`). Blobs younger than 2 hours are kept, which
   covers uploads waiting for their publish.
 
@@ -511,7 +574,7 @@ All endpoints are under `/v1`. They need `X-Fired-Token: <token>` or
 `{"error": {"code", "message"}}`. A Go client is in `pkg/artifacts`.
 
 `PATCH /artifacts/{id}` changes settings (`quota_key`, `labels`, `meta`,
-`delete_after`, `retain_outputs`) and never makes a version. The title and
+`delete_after`) and never makes a version. The title and
 description aren't settings: publish `{"base_version", "title"}` to rename. Omitted fields are
 left alone; `labels` and `meta` are merged as a JSON merge patch (RFC 7386):
 `{"labels": {"stage": "review", "draft": null}}` sets `stage`, removes
@@ -525,7 +588,7 @@ left alone; `labels` and `meta` are merged as a JSON merge patch (RFC 7386):
 | History | `POST /artifacts/{id}/restore`, `POST /artifacts/{id}/fork` |
 | Files | `GET /artifacts/{id}/files/{path}?version=` |
 | Job | `GET /artifacts/{id}/job`, `PUT /artifacts/{id}/job/grant`, `POST /artifacts/{id}/job/runs` |
-| Outputs | `GET/DELETE /artifacts/{id}/outputs` |
+| Db | `GET/PUT/PATCH/DELETE /artifacts/{id}/db/{path}`, `POST /artifacts/{id}/db` (batch), `DELETE /artifacts/{id}/db` (see The db) |
 | Runs | `GET /artifacts/{id}/runs?status=&limit=`, `GET /artifacts/{id}/runs/{run}`, `GET …/runs/{run}/logs` |
 | Quotas | `GET/PUT /quotas/{key}` |
 | Ops | `GET /events` (SSE), `GET /healthz` |
@@ -541,10 +604,10 @@ make dev-artifacts  # fired-artifacts on :8444, token "dev", detached; same Post
 `make dev-artifacts` turns on the console (`ui: true` or
 `FIRED_ARTIFACTS_UI=1`) at http://127.0.0.1:8444/ui/. Sign in with the token.
 It lists artifacts with their version history, edits and uploads files and
-publishes them, shows each artifact's view, previews files, compares and restores versions, forks, runs the job, shows its data
-(with payloads), approves grants, shows runs with their logs, edits quotas, and
+publishes them, shows each artifact's view (as its owner or as a viewer), previews files, compares and restores versions, forks, browses and edits
+its db, runs the job (with payloads), approves grants, shows runs with their logs, edits quotas, and
 follows `/v1/events` live. The home page has examples that cover each
-feature: a page, a markdown view, a scheduled job and its output, a queue, approval and a failing job.
+feature: a page, a markdown view, a scheduled job writing the db, a batch, a queue, a checklist only its owner ticks, approval and a failing job.
 
 The console shows a `page` view on the artifact's own origin (for the
 console only; in production your backend serves it with header routing,

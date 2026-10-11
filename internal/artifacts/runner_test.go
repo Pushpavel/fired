@@ -138,26 +138,27 @@ func (b *brokerStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, pa.CredentialsResponse{SecretEnv: map[string]string{"API_TOKEN": "s3cret-" + req.RunID}})
 }
 
-// genScript is the test job: the trigger payload's "mode" picks what it does.
+// genScript is the test job: the trigger payload's "mode" picks what it
+// does. It keeps a count in _private/state and publishes stats/result.
 const genScript = `#!/bin/sh
 set -e
 trig="$PWD/../tmp/fired-artifacts/trigger.json"
 mode=$(sed -n 's/.*"mode":"\([a-z]*\)".*/\1/p' "$trig")
+db() { curl -sf -H "Authorization: Bearer $FIRED_DB_TOKEN" -H 'Content-Type: application/json' "$@"; }
 case "$mode" in
 fail) echo boom >&2; exit 3 ;;
 slow) sleep 30 ;;
 same) exit 0 ;;
-leak) mkdir -p .output && echo "$API_TOKEN" > .output/leak.txt && echo "$API_TOKEN"; exit 0 ;;
+leak) echo "$API_TOKEN"; db -X PUT -d "{\"v\":\"$API_TOKEN\"}" "$FIRED_DB_URL/leak/x"; exit 0 ;;
 esac
-mkdir -p .output
 echo edited > README.md
-n=$(cat .output/count 2>/dev/null || echo 0)
-n=$((n+1))
-echo $n > .output/count
+n=$(db "$FIRED_DB_URL/_private/state" 2>/dev/null | sed -n 's/.*"n": *\([0-9]*\).*/\1/p')
+n=$((${n:-0}+1))
+db -X PUT -d "{\"n\":$n}" "$FIRED_DB_URL/_private/state" >/dev/null
 token=missing
 case "$API_TOKEN" in s3cret-$ARTIFACT_RUN_ID) token=ok ;; esac
-echo "run $n token=$token" > .output/result.txt
-cp "$trig" .output/trigger.json
+db -X PUT -d "{\"run\":$n,\"token\":\"$token\"}" "$FIRED_DB_URL/stats/result" >/dev/null
+db -X PUT -d @"$trig" "$FIRED_DB_URL/runs/last" >/dev/null
 echo "hello from job"
 echo "a warning" >&2
 `
@@ -195,6 +196,9 @@ func TestRunsInFired(t *testing.T) {
 		c.SchedulerInterval = pa.Duration(100 * time.Millisecond)
 		c.Runner.Template = "base"
 	})
+	// Jobs here are host processes (the fake driver): they reach the
+	// service directly, at an address db_url doesn't accept.
+	h.svc.cfg.Runner.DBURL = h.srv.URL
 	h.svc.now = func() time.Time { return time.Now().UTC() }
 	if err := h.svc.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -216,17 +220,18 @@ func TestRunsInFired(t *testing.T) {
 
 	script := genScript
 	res := must(c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{
-		Files:  []pa.FileOp{{Path: "gen.sh", Content: &script, Mode: 0o755}, pa.Text("README.md", "source"), pa.Text(".output/result.txt", "never stored")},
+		Files:  []pa.FileOp{{Path: "gen.sh", Content: &script, Mode: 0o755}, pa.Text("README.md", "source")},
 		Spec:   &pa.Spec{Job: &pa.Job{Run: "./gen.sh", Timeout: pa.Duration(2 * time.Second)}},
 		RunNow: true, Notify: "session-1",
 	}}))(t)
 	id := res.Artifact.ID
-	if strings.Join(res.Publish.Skipped, ",") != ".output/result.txt" || res.Publish.Version.FileCount != 3 {
-		t.Fatalf("publishing into .output/: skipped %v, %d files", res.Publish.Skipped, res.Publish.Version.FileCount)
-	}
 	trigger := func(mode string) *pa.Run {
 		t.Helper()
 		return waitRun(t, c, id, must(c.Trigger(ctx, id, json.RawMessage(`{"mode":"`+mode+`"}`)))(t).ID)
+	}
+	result := func() string {
+		t.Helper()
+		return string(must(c.GetDoc(ctx, id, "stats/result"))(t).Data)
 	}
 
 	runs := must(c.Runs(ctx, id, ""))(t)
@@ -234,27 +239,22 @@ func TestRunsInFired(t *testing.T) {
 		t.Fatalf("run_now: %+v", runs)
 	}
 	r := waitRun(t, c, id, runs[0].ID)
-	if r.Status != pa.RunSucceeded || r.Version != 1 || r.Output != 1 || r.ExitCode == nil || *r.ExitCode != 0 || r.Trigger != pa.TriggerPublish {
+	if r.Status != pa.RunSucceeded || r.Version != 1 || r.DBWrites != 3 || r.ExitCode == nil || *r.ExitCode != 0 || r.Trigger != pa.TriggerPublish {
 		logs, _ := c.RunLogs(ctx, id, r.ID)
 		t.Fatalf("first run: %+v logs: %+v", r, logs)
 	}
-	// A run records an output, not a version, and its changes outside
-	// .output/ don't land.
-	if a := must(c.Get(ctx, id))(t); a.CurrentVersion != 1 || a.Output != 1 {
-		t.Fatalf("after a run: version %d output %d", a.CurrentVersion, a.Output)
+	// A run writes the db, never the artifact.
+	if a := must(c.Get(ctx, id))(t); a.CurrentVersion != 1 {
+		t.Fatalf("after a run: version %d", a.CurrentVersion)
 	}
 	if b := must(c.ReadFile(ctx, id, "README.md", 0))(t); string(b) != "source" {
 		t.Fatalf("a run changed the source: %q", b)
 	}
-	d := must(c.Outputs(ctx, id))(t)
-	if d.Current != 1 || len(d.Outputs) != 1 || d.Outputs[0].RunID != r.ID || len(d.Outputs[0].Files) != 3 {
-		t.Fatalf("outputs: %+v", d)
-	}
-	if b := must(c.ReadFile(ctx, id, ".output/result.txt", 0))(t); string(b) != "run 1 token=ok\n" {
-		t.Fatalf("result: %q", b)
+	if got := result(); got != `{"run":1,"token":"ok"}` {
+		t.Fatalf("result: %s", got)
 	}
 	var trig map[string]any
-	_ = json.Unmarshal(must(c.ReadFile(ctx, id, ".output/trigger.json", 0))(t), &trig)
+	_ = json.Unmarshal(must(c.GetDoc(ctx, id, "runs/last"))(t).Data, &trig)
 	if trig["type"] != pa.TriggerPublish || trig["run_id"] != r.ID {
 		t.Fatalf("trigger file: %+v", trig)
 	}
@@ -268,23 +268,19 @@ func TestRunsInFired(t *testing.T) {
 	}
 	bs.mu.Unlock()
 
-	t.Run("each run starts from the last output", func(t *testing.T) {
+	t.Run("each run reads what the last one kept", func(t *testing.T) {
 		r := trigger("gen")
-		if r.Status != pa.RunSucceeded || r.Output != 2 {
+		if r.Status != pa.RunSucceeded || r.DBWrites != 3 {
 			t.Fatalf("second run: %+v", r)
 		}
-		if b := must(c.ReadFile(ctx, id, ".output/result.txt", 0))(t); string(b) != "run 2 token=ok\n" {
-			t.Fatalf("result: %q", b)
+		if got := result(); got != `{"run":2,"token":"ok"}` {
+			t.Fatalf("result: %s", got)
 		}
 	})
 
-	t.Run("no change, no output", func(t *testing.T) {
-		r := trigger("same")
-		if r.Status != pa.RunSucceeded || r.Output != 0 {
-			t.Fatalf("unchanged run: %+v", r)
-		}
-		if a := must(c.Get(ctx, id))(t); a.Output != 2 || a.CurrentVersion != 1 {
-			t.Fatalf("after an unchanged run: %+v", a)
+	t.Run("no writes", func(t *testing.T) {
+		if r := trigger("same"); r.Status != pa.RunSucceeded || r.DBWrites != 0 {
+			t.Fatalf("run without writes: %+v", r)
 		}
 	})
 
@@ -297,7 +293,7 @@ func TestRunsInFired(t *testing.T) {
 
 	t.Run("failure", func(t *testing.T) {
 		r := trigger("fail")
-		if r.Status != pa.RunFailed || r.Reason != "exit status 3" || r.Output != 0 {
+		if r.Status != pa.RunFailed || r.Reason != "exit status 3" {
 			t.Fatalf("failed run: %+v", r)
 		}
 		if l := must(c.RunLogs(ctx, id, r.ID))(t); !strings.Contains(l.Stderr, "boom") {
@@ -305,20 +301,42 @@ func TestRunsInFired(t *testing.T) {
 		}
 	})
 
-	t.Run("timeout", func(t *testing.T) {
-		if r := trigger("slow"); r.Status != pa.RunTimedOut {
+	t.Run("a job's token opens its artifact's db while it runs", func(t *testing.T) {
+		other := must(c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a.txt", "a")}}}))(t).Artifact.ID
+		run := must(c.Trigger(ctx, id, json.RawMessage(`{"mode":"slow"}`)))(t)
+		jc := pa.NewClient(h.srv.URL, h.svc.runToken(run.ID))
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			if r := must(c.Run(ctx, id, run.ID))(t); r.Status == pa.RunRunning {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the slow run didn't start")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if d := must(jc.GetDoc(ctx, id, "_private/state"))(t); string(d.Data) != `{"n":2}` {
+			t.Fatalf("the job reads _private/: %s", d.Data)
+		}
+		_, err := jc.Get(ctx, id)
+		wantCode(t, err, 401, "unauthorized")
+		_, err = jc.GetDoc(ctx, other, "a/b")
+		wantCode(t, err, 401, "unauthorized")
+		r := waitRun(t, c, id, run.ID)
+		if r.Status != pa.RunTimedOut {
 			t.Fatalf("slow run: %+v", r)
 		}
+		_, err = jc.GetDoc(ctx, id, "stats/result")
+		wantCode(t, err, 401, "unauthorized")
 	})
 
-	t.Run("credential values are never published", func(t *testing.T) {
+	t.Run("credential values are never written", func(t *testing.T) {
 		r := trigger("leak")
-		if r.Status != pa.RunFailed || r.Reason != "result rejected: .output/leak.txt contains the value of credential API_TOKEN" {
+		if r.Status != pa.RunFailed || r.Reason != "exit status 22" {
 			t.Fatalf("leaking run: %+v", r)
 		}
-		if _, err := c.ReadFile(ctx, id, ".output/leak.txt", 0); !client.IsNotFound(err) {
-			t.Fatalf("leak published: %v", err)
-		}
+		_, err := c.GetDoc(ctx, id, "leak/x")
+		wantCode(t, err, 404, "no_document")
 		if l := must(c.RunLogs(ctx, id, r.ID))(t); strings.Contains(l.Stdout, "s3cret") {
 			t.Fatalf("logs contain the secret: %+v", l)
 		}
@@ -334,29 +352,13 @@ func TestRunsInFired(t *testing.T) {
 		}
 	})
 
-	t.Run("export and fork carry the output", func(t *testing.T) {
+	t.Run("a fork copies the db but not _private/", func(t *testing.T) {
 		f := must(c.Fork(ctx, id, pa.ForkRequest{QuotaKey: "u2"}))(t)
-		if b := must(c.ReadFile(ctx, f.ID, ".output/result.txt", 0))(t); string(b) != "run 2 token=ok\n" || f.Output != 1 {
-			t.Fatalf("fork: %q, output %d", b, f.Output)
+		if d := must(c.GetDoc(ctx, f.ID, "stats/result"))(t); string(d.Data) != `{"run":2,"token":"ok"}` || d.Rev != 1 {
+			t.Fatalf("fork: %+v", d)
 		}
-		if v := must(c.Version(ctx, f.ID, 1))(t); strings.Contains(strings.Join(paths(v), ","), ".output") {
-			t.Fatalf("the fork's version has output files: %v", paths(v))
-		}
-	})
-
-	t.Run("clearing outputs empties .output", func(t *testing.T) {
-		if err := c.ClearOutputs(ctx, id); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := c.ReadFile(ctx, id, ".output/result.txt", 0); !client.IsNotFound(err) {
-			t.Fatalf("after clearing: %v", err)
-		}
-		if r := trigger("gen"); r.Output != 1 {
-			t.Fatalf("a run after clearing starts over: %+v", r)
-		}
-		if b := must(c.ReadFile(ctx, id, ".output/result.txt", 0))(t); string(b) != "run 1 token=ok\n" {
-			t.Fatalf("after clearing, the count restarts: %q", b)
-		}
+		_, err := c.GetDoc(ctx, f.ID, "_private/state")
+		wantCode(t, err, 404, "no_document")
 	})
 
 	t.Run("events", func(t *testing.T) {
@@ -371,7 +373,7 @@ func TestRunsInFired(t *testing.T) {
 				t.Errorf("notify on a later run: %+v", e)
 			}
 			started = started || e.Type == "run.started"
-			data = data || (e.Type == "artifact.output" && e.Output == 1)
+			data = data || (e.Type == "db.changed" && e.Artifact == id && len(e.Paths) == 1)
 		}
 		if !notified || !started || !data {
 			t.Fatalf("events (notified %v started %v data %v): %+v", notified, started, data, evs)

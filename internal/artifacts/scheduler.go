@@ -255,9 +255,7 @@ func (s *Service) dispatch(ctx context.Context) error {
 			if err := putRun(ctx, q, cur); err != nil {
 				return err
 			}
-			// The job starts from the version's files and its latest output
-			// in .output/, so it can build on it (append, update).
-			tree, err := s.liveTree(ctx, q, a, a.CurrentVersion)
+			tree, err := getTree(ctx, q, a.ID, a.CurrentVersion)
 			if err != nil {
 				return err
 			}

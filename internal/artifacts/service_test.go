@@ -2,6 +2,7 @@ package artifacts
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -330,9 +331,8 @@ func TestPublishSemantics(t *testing.T) {
 		if len(l) != 1 || l[0].ID != id {
 			t.Fatalf("list: %+v", l)
 		}
-		ra := 3
-		a := must(c.Update(ctx, id, pa.UpdateArtifactRequest{RetainOutputs: &ra, Meta: json.RawMessage(`{"title":"New","n":12345678901234567890}`)}))(t)
-		if a.RetainOutputs != 3 || string(a.Meta) != `{"n":12345678901234567890,"title":"New"}` {
+		a := must(c.Update(ctx, id, pa.UpdateArtifactRequest{Meta: json.RawMessage(`{"title":"New","n":12345678901234567890}`)}))(t)
+		if string(a.Meta) != `{"n":12345678901234567890,"title":"New"}` {
 			t.Fatalf("update: %+v %s", a, a.Meta)
 		}
 		// Labels and meta merge: null removes a key, the rest are kept.
@@ -340,7 +340,7 @@ func TestPublishSemantics(t *testing.T) {
 		a = must(c.Update(ctx, id, pa.UpdateArtifactRequest{
 			Labels: map[string]*string{"session": nil, "stage": str("draft")},
 			Meta:   json.RawMessage(`{"n":null,"description":"d"}`)}))(t)
-		if len(a.Labels) != 1 || a.Labels["stage"] != "draft" || string(a.Meta) != `{"description":"d","title":"New"}` || a.RetainOutputs != 3 {
+		if len(a.Labels) != 1 || a.Labels["stage"] != "draft" || string(a.Meta) != `{"description":"d","title":"New"}` {
 			t.Fatalf("merge: %+v %s", a, a.Meta)
 		}
 		a = must(c.Update(ctx, id, pa.UpdateArtifactRequest{Labels: map[string]*string{"stage": nil}, Meta: json.RawMessage(`null`)}))(t)
@@ -876,39 +876,264 @@ func TestChunkedContent(t *testing.T) {
 	}
 }
 
-// .output/ is at the root of every view, whatever folder the entry is in,
-// and in exports.
-func TestOutputInViews(t *testing.T) {
-	h := newHarness(t, nil)
+func TestDB(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.Limits.MaxDocBytes = 200; c.Limits.MaxDocs = 6 })
 	ctx := context.Background()
-	must(h.c.Create(ctx, pa.CreateArtifactRequest{ID: "site", QuotaKey: "u", Publish: &pa.PublishRequest{
-		Files: []pa.FileOp{pa.Text("dist/index.html", "page")},
-		Spec:  &pa.Spec{View: &pa.View{Type: pa.ViewPage, Entry: "dist/index.html"}, Job: &pa.Job{Run: "true"}}}}))(t)
-	err := h.svc.st.tx(ctx, func(q querier) error {
-		h3 := must(h.svc.blobs.PutBytes([]byte("1,2")))(t)
-		if err := insertOutput(ctx, q, "site", &pa.Output{Output: 1, FileCount: 1, CreatedAt: h.now},
-			map[string]pa.File{".output/data.csv": {Path: ".output/data.csv", Hash: h3, Size: 3, Mode: 0o644}}); err != nil {
-			return err
+	c := h.c
+	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "app", QuotaKey: "u", Publish: &pa.PublishRequest{
+		Files: []pa.FileOp{pa.Text("index.html", "page")}, Spec: &pa.Spec{View: &pa.View{Type: pa.ViewPage, Entry: "index.html"}}}}))(t)
+
+	t.Run("documents", func(t *testing.T) {
+		d := must(c.SetDoc(ctx, "app", "tasks/t1", map[string]any{"title": "one", "n": 3, "done": false, "meta": map[string]any{"p": 2}}))(t)
+		if d.Rev != 1 || string(d.Data) != `{"n":3,"done":false,"meta":{"p":2},"title":"one"}` {
+			t.Fatalf("set: %+v %s", d, d.Data)
 		}
-		a, err := getArtifact(ctx, q, "site")
-		if err != nil {
-			return err
+		d = must(c.UpdateDoc(ctx, "app", "tasks/t1", map[string]any{"done": true, "meta": nil}))(t)
+		if d.Rev != 2 || string(d.Data) != `{"n":3,"done":true,"title":"one"}` {
+			t.Fatalf("update: %+v %s", d, d.Data)
 		}
-		a.Output = 1
-		return putArtifact(ctx, q, a)
+		// update creates; its nulls are dropped.
+		d = must(c.UpdateDoc(ctx, "app", "tasks/t2", map[string]any{"title": "two", "n": 1, "x": nil}))(t)
+		if d.Rev != 1 || string(d.Data) != `{"n":1,"title":"two"}` {
+			t.Fatalf("update creates: %s", d.Data)
+		}
+		must(c.SetDoc(ctx, "app", "tasks/t3", map[string]any{"title": "three", "n": "10"}))(t)
+		must(c.SetDoc(ctx, "app", "tasks/t1/notes/a", map[string]any{"text": "deeper"}))(t)
+		if got := must(c.GetDoc(ctx, "app", "tasks/t1"))(t); got.Rev != 2 {
+			t.Fatalf("get: %+v", got)
+		}
+		_, err := c.GetDoc(ctx, "app", "tasks/nope")
+		wantCode(t, err, 404, "no_document")
+		_, err = c.SetDoc(ctx, "app", "tasks", map[string]any{})
+		wantCode(t, err, 400, "invalid_request")
+		_, err = c.SetDoc(ctx, "app", "tasks/../x", map[string]any{})
+		wantCode(t, err, 400, "invalid_request")
+		_, err = c.SetDoc(ctx, "app", "tasks/arr", []int{1})
+		wantCode(t, err, 400, "invalid_request")
+		_, err = c.SetDoc(ctx, "app", "tasks/big", map[string]any{"s": strings.Repeat("x", 300)})
+		wantCode(t, err, 413, "too_large")
+		_, err = c.GetDoc(ctx, "nope", "a/b")
+		wantCode(t, err, 404, "not_found")
 	})
-	if err != nil {
-		t.Fatal(err)
+
+	t.Run("queries", func(t *testing.T) {
+		ids := func(l *pa.DocList) string {
+			var out []string
+			for _, d := range l.Docs {
+				out = append(out, d.Path)
+			}
+			return strings.Join(out, ",")
+		}
+		q := func(dq pa.DocQuery) string { return ids(must(c.Query(ctx, "app", "tasks", dq))(t)) }
+		// A collection is the documents directly in it.
+		if got := q(pa.DocQuery{}); got != "tasks/t1,tasks/t2,tasks/t3" {
+			t.Fatalf("all: %s", got)
+		}
+		if got := q(pa.DocQuery{Where: []string{"done==true"}}); got != "tasks/t1" {
+			t.Fatalf("where ==: %s", got)
+		}
+		if got := q(pa.DocQuery{Where: []string{"title!=one"}}); got != "tasks/t2,tasks/t3" {
+			t.Fatalf("where != (bare string): %s", got)
+		}
+		// Ranges only match values of the filter's type: "10" isn't > 2.
+		if got := q(pa.DocQuery{Where: []string{"n>=2"}}); got != "tasks/t1" {
+			t.Fatalf("where >=: %s", got)
+		}
+		// Across types, jsonb orders strings before numbers.
+		if got := q(pa.DocQuery{Order: "n"}); got != "tasks/t3,tasks/t2,tasks/t1" {
+			t.Fatalf("order n: %s", got)
+		}
+		if got := q(pa.DocQuery{Order: "-n"}); got != "tasks/t1,tasks/t2,tasks/t3" {
+			t.Fatalf("order -n: %s", got)
+		}
+		if got := q(pa.DocQuery{Order: "done"}); got != "tasks/t1,tasks/t2,tasks/t3" {
+			t.Fatalf("order done (missing last): %s", got)
+		}
+		p1 := must(c.Query(ctx, "app", "tasks", pa.DocQuery{Limit: 2}))(t)
+		p2 := must(c.Query(ctx, "app", "tasks", pa.DocQuery{Limit: 2, After: p1.Next}))(t)
+		if ids(p1) != "tasks/t1,tasks/t2" || p1.Next == "" || ids(p2) != "tasks/t3" || p2.Next != "" {
+			t.Fatalf("pages: %s %q, %s %q", ids(p1), p1.Next, ids(p2), p2.Next)
+		}
+		if got := ids(must(c.Query(ctx, "app", "tasks/t1/notes", pa.DocQuery{}))(t)); got != "tasks/t1/notes/a" {
+			t.Fatalf("subcollection: %s", got)
+		}
+		_, err := c.Query(ctx, "app", "tasks", pa.DocQuery{Where: []string{"n~3"}})
+		wantCode(t, err, 400, "invalid_request")
+	})
+
+	t.Run("revisions and batches", func(t *testing.T) {
+		_, err := c.Batch(ctx, "app", []pa.DBWrite{{Op: pa.DBSet, Path: "tasks/t1", Data: json.RawMessage(`{}`), Rev: 1}})
+		wantCode(t, err, 412, "rev_mismatch")
+		_, err = c.Batch(ctx, "app", []pa.DBWrite{{Op: pa.DBSet, Path: "tasks/t1", Data: json.RawMessage(`{}`), Rev: -1}})
+		wantCode(t, err, 412, "rev_mismatch")
+		// All or none: the second write fails, so the first doesn't land.
+		_, err = c.Batch(ctx, "app", []pa.DBWrite{
+			{Op: pa.DBSet, Path: "tasks/t4", Data: json.RawMessage(`{"a":1}`)},
+			{Op: pa.DBUpdate, Path: "tasks/t2", Data: json.RawMessage(`{"n":2}`), Rev: 7},
+		})
+		wantCode(t, err, 412, "rev_mismatch")
+		_, err = c.GetDoc(ctx, "app", "tasks/t4")
+		wantCode(t, err, 404, "no_document")
+		res := must(c.Batch(ctx, "app", []pa.DBWrite{
+			{Op: pa.DBUpdate, Path: "tasks/t2", Data: json.RawMessage(`{"n":2}`), Rev: 1},
+			{Op: pa.DBDelete, Path: "tasks/t3"},
+			{Op: pa.DBDelete, Path: "tasks/never"},
+		}))(t)
+		if len(res.Docs) != 3 || res.Docs[0].Rev != 2 || !res.Docs[1].Deleted || !res.Docs[2].Deleted {
+			t.Fatalf("batch: %+v", res.Docs)
+		}
+		// t1, t2, t1/notes/a: three of the six documents allowed.
+		_, err = c.Batch(ctx, "app", []pa.DBWrite{
+			{Op: pa.DBSet, Path: "x/1", Data: json.RawMessage(`{}`)}, {Op: pa.DBSet, Path: "x/2", Data: json.RawMessage(`{}`)},
+			{Op: pa.DBSet, Path: "x/3", Data: json.RawMessage(`{}`)}, {Op: pa.DBSet, Path: "x/4", Data: json.RawMessage(`{}`)},
+		})
+		wantCode(t, err, 413, "too_many_docs")
+	})
+
+	// Views: the owner writes and sees _private/, everyone else reads the rest.
+	view := func(method, p, body string, owner bool) (int, string, http.Header) {
+		t.Helper()
+		req, _ := http.NewRequest(method, h.srv.URL+p, strings.NewReader(body))
+		req.Header.Set("X-Fired-Token", testToken)
+		req.Header.Set("X-Artifact", "app")
+		if owner {
+			req.Header.Set("X-Artifact-Owner", "true")
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp := must(http.DefaultClient.Do(req))(t)
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b), resp.Header
 	}
-	req, _ := http.NewRequest("GET", h.srv.URL+"/.output/data.csv", nil)
-	req.Header.Set("X-Fired-Token", testToken)
-	req.Header.Set("X-Artifact", "site")
-	resp := must(http.DefaultClient.Do(req))(t)
-	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != 200 || string(b) != "1,2" {
-		t.Fatalf("view /.output/: %d %q", resp.StatusCode, b)
-	}
-	// A csv view can point at the job's output before it exists.
-	must(h.c.Publish(ctx, "site", pa.PublishRequest{BaseVersion: 1, Spec: &pa.Spec{View: &pa.View{Type: pa.ViewCSV, Entry: ".output/other.csv"}, Job: &pa.Job{Run: "true"}}}))(t)
+	t.Run("from the page", func(t *testing.T) {
+		must(c.SetDoc(ctx, "app", "_private/state", map[string]any{"cursor": 7}))(t)
+		if code, body, _ := view("GET", "/.fired/db/tasks/t1", "", false); code != 200 || !strings.Contains(body, `"title":"one"`) {
+			t.Fatalf("viewer reads: %d %s", code, body)
+		}
+		for _, p := range []string{"/.fired/db/_private/state", "/.fired/db/_private"} {
+			code, body, _ := view("GET", p, "", false)
+			if p == "/.fired/db/_private" && (code != 200 || !strings.Contains(body, `"docs":[]`)) || p != "/.fired/db/_private" && code != 404 {
+				t.Fatalf("viewer reads %s: %d %s", p, code, body)
+			}
+		}
+		if code, body, _ := view("GET", "/.fired/db", "", false); code != 200 || strings.Contains(body, "_private") || !strings.Contains(body, "tasks/t1/notes/a") {
+			t.Fatalf("viewer lists all: %d %s", code, body)
+		}
+		if code, body, _ := view("PUT", "/.fired/db/tasks/t9", `{"a":1}`, false); code != 403 {
+			t.Fatalf("viewer writes: %d %s", code, body)
+		}
+		if code, _, _ := view("DELETE", "/.fired/db/tasks", "", false); code != 403 {
+			t.Fatalf("viewer deletes: %d", code)
+		}
+		if code, body, _ := view("GET", "/.fired/db/_private/state", "", true); code != 200 || !strings.Contains(body, `"cursor":7`) {
+			t.Fatalf("owner reads _private/: %d %s", code, body)
+		}
+		if code, body, _ := view("PATCH", "/.fired/db/tasks/t1", `{"n":4}`, true); code != 200 || !strings.Contains(body, `"rev":3`) {
+			t.Fatalf("owner writes: %d %s", code, body)
+		}
+		if code, _, _ := view("PATCH", "/.fired/db/tasks/t1", `{"n":5}`, true); code != 200 {
+			t.Fatalf("owner writes again: %d", code)
+		}
+		req, _ := http.NewRequest("PATCH", h.srv.URL+"/.fired/db/tasks/t1", strings.NewReader(`{"n":6}`))
+		req.Header.Set("X-Fired-Token", testToken)
+		req.Header.Set("X-Artifact", "app")
+		req.Header.Set("X-Artifact-Owner", "true")
+		req.Header.Set("Content-Type", "text/plain")
+		resp := must(http.DefaultClient.Do(req))(t)
+		resp.Body.Close()
+		if resp.StatusCode != 415 {
+			t.Fatalf("a write that isn't JSON: %d", resp.StatusCode)
+		}
+		if code, body, hdr := view("GET", "/.fired/db.js", "", false); code != 200 || !strings.Contains(body, "const canWrite = false;") || !strings.HasPrefix(hdr.Get("Content-Type"), "text/javascript") {
+			t.Fatalf("db.js for a viewer: %d %s", code, hdr)
+		}
+		if _, body, _ := view("GET", "/.fired/db.js", "", true); !strings.Contains(body, "const canWrite = true;") {
+			t.Fatal("db.js for the owner")
+		}
+		if code, _, _ := view("GET", "/.fired/other", "", true); code != 404 {
+			t.Fatalf("/.fired/other: %d", code)
+		}
+	})
+
+	t.Run("watch", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", h.srv.URL+"/.fired/db/tasks?watch&where=done==true", nil)
+		req.Header.Set("X-Fired-Token", testToken)
+		req.Header.Set("X-Artifact", "app")
+		resp := must(http.DefaultClient.Do(req))(t)
+		defer resp.Body.Close()
+		br := bufio.NewReader(resp.Body)
+		next := func() string {
+			t.Helper()
+			for {
+				line, err := br.ReadString('\n')
+				if err != nil {
+					t.Fatal(err)
+				}
+				if d, ok := strings.CutPrefix(line, "data: "); ok {
+					return strings.TrimSpace(d)
+				}
+			}
+		}
+		if first := next(); !strings.Contains(first, "tasks/t1") || strings.Contains(first, "tasks/t2") {
+			t.Fatalf("first snapshot: %s", first)
+		}
+		must(c.SetDoc(ctx, "app", "other/x", map[string]any{"a": 1}))(t) // not in tasks
+		must(c.UpdateDoc(ctx, "app", "tasks/t2", map[string]any{"done": true}))(t)
+		if got := next(); !strings.Contains(got, "tasks/t1") || !strings.Contains(got, "tasks/t2") {
+			t.Fatalf("after a change: %s", got)
+		}
+
+		dreq, _ := http.NewRequest("GET", h.srv.URL+"/v1/artifacts/app/db/tasks/gone?watch", nil)
+		dreq.Header.Set("X-Fired-Token", testToken)
+		dresp := must(http.DefaultClient.Do(dreq))(t)
+		defer dresp.Body.Close()
+		br = bufio.NewReader(dresp.Body)
+		if got := next(); got != "null" {
+			t.Fatalf("a missing document: %s", got)
+		}
+		must(c.SetDoc(ctx, "app", "tasks/gone", map[string]any{"a": 1}))(t)
+		if got := next(); !strings.Contains(got, `"rev":1`) {
+			t.Fatalf("created: %s", got)
+		}
+	})
+
+	t.Run("a viewer can't watch _private/", func(t *testing.T) {
+		if code, _, _ := view("GET", "/.fired/db/_private/state?watch", "", false); code != 404 {
+			t.Fatalf("viewer watches _private/: %d", code)
+		}
+	})
+
+	t.Run("delete a collection, clear, events and quota", func(t *testing.T) {
+		if err := c.DeleteDoc(ctx, "app", "tasks"); err != nil {
+			t.Fatal(err)
+		}
+		if l := must(c.Query(ctx, "app", "", pa.DocQuery{}))(t); len(l.Docs) != 2 {
+			t.Fatalf("after deleting tasks: %+v", l.Docs)
+		}
+		st := must(c.Quota(ctx, "u"))(t)
+		if st.DBBytes == 0 || st.StorageUsed < st.DBBytes {
+			t.Fatalf("quota: %+v", st)
+		}
+		must(c.SetQuota(ctx, "u", pa.Quota{StorageBytes: st.StorageUsed + 10}))(t)
+		_, err := c.SetDoc(ctx, "app", "other/big", map[string]any{"s": strings.Repeat("x", 50)})
+		wantCode(t, err, 413, "quota_exceeded")
+		// Shrinking always works.
+		must(c.SetDoc(ctx, "app", "other/x", map[string]any{}))(t)
+		if err := c.ClearDB(ctx, "app"); err != nil {
+			t.Fatal(err)
+		}
+		if l := must(c.Query(ctx, "app", "", pa.DocQuery{}))(t); len(l.Docs) != 0 {
+			t.Fatalf("after clearing: %+v", l.Docs)
+		}
+		if err := c.Delete(ctx, "app"); err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		_ = h.svc.st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM docs`).Scan(&n)
+		if n != 0 {
+			t.Fatalf("docs left after delete: %d", n)
+		}
+	})
 }
