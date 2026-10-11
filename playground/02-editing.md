@@ -105,13 +105,14 @@ zip uploaded elsewhere couldn't be set up the same way.
   and `description` show the current version's. Publish (and fork) take
   `title`/`description` to set just those fields, winning over the files'
   `artifact.json`: an agent naming an unzipped copy keeps its view and jobs.
-- **A default view follows the files.** Writing the default into
-  `artifact.json` froze it: a sandbox folder mirrored again with a new
-  `index.html` kept `{}` (no view), and one that dropped `index.html`
-  failed ("view.entry … is not a file"). Now, when a publish doesn't bring
-  `artifact.json` and the current one has no view or the default one, the
-  view is recomputed from the files; a view someone set is kept.
-  Republishing the same folder is still `unchanged`. Tried live.
+- **The view is explicit.** Writing a default view into `artifact.json`
+  froze it (a mirrored folder that gained `index.html` kept no view; one
+  that lost it failed). A first fix recomputed a default view from the
+  files, which was more inference to explain. Now there's no default: no
+  `"view"`, no view, `index.html` or not; a new artifact without
+  `artifact.json` gets `{}` (plus its title). Files coming and going never
+  change it; republishing the same folder is `unchanged`. The console's
+  new-artifact dialog and "A web page" example set the view explicitly.
 - **No backwards compatibility** (not in prod yet): the legacy `views`
   list, the read-back of stored multi-view specs and export's
   write-a-missing-artifact.json are gone. Dev versions from before (e.g.

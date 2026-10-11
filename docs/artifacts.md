@@ -52,8 +52,8 @@ durable storage. Runs happen on whichever fired host it points at.
 - **`artifact.json`**: an ordinary file in the tree, so it is versioned,
   exported and forked with everything else. Every version has one: when a
   publish doesn't bring one, the current one is kept, and a new artifact
-  gets the default (an html view of `index.html` if there is one, no jobs).
-  It can't be deleted. A view nobody set follows the files (below).
+  gets an empty one (`{}`, plus a title if the create sets one). It can't
+  be deleted. Nothing in it is inferred from the files.
 
 ## artifact.json
 
@@ -97,12 +97,9 @@ listed as files, each at its own URL. The service serves raw files;
 rendering (compiling a JSX entry, showing a CSV as a table) is the viewer's
 job.
 
-Unless someone sets it, the view follows the files: when a publish doesn't
-bring `artifact.json` (say, a sandbox folder mirrored at the root) and the
-current one has no view or the default one, `index.html` appearing sets
-the view to html of it, and `index.html` going away removes it. A view
-that was set (any other) is kept, and its entry going away fails the
-publish. Republishing the same files changes nothing.
+The view is only what `artifact.json` says: without `"view"`, there is no
+view, even with an `index.html` (it's still served as a file). Files coming
+and going never change it; an entry that goes away fails the publish.
 
 **Jobs**:
 

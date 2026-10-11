@@ -15,7 +15,7 @@ type Duration = api.Duration
 // ---- artifact.json
 
 // SpecFile is the path of the config file inside an artifact's file tree.
-// Every version has one: the service writes the default when a publish
+// Every version has one: the service writes an empty one when a create
 // doesn't bring one.
 const SpecFile = "artifact.json"
 
@@ -27,8 +27,7 @@ type Spec struct {
 	Description string `json:"description,omitempty"`
 	// View is how the artifact is shown: one entry file and how to render
 	// it. Other files are reached from it (links, imports) or listed as
-	// files. Unless someone sets it, it follows the files: html of
-	// index.html when there is one, none otherwise.
+	// files. It is only what's set here: without it, there is no view.
 	View *View          `json:"view,omitempty"`
 	Jobs map[string]Job `json:"jobs,omitempty"`
 }
@@ -175,7 +174,7 @@ type FileOp struct {
 // PublishRequest creates a new version on top of BaseVersion, which must be
 // the artifact's current version (required, except in a create). Every
 // version has at least one file, and an artifact.json: when the files leave
-// it out, the current one is kept (on a create, the default is written). A publish that leaves the files as they are makes no
+// it out, the current one is kept (on a create, an empty one is written). A publish that leaves the files as they are makes no
 // version (PublishResult.Unchanged).
 type PublishRequest struct {
 	BaseVersion int `json:"base_version"`

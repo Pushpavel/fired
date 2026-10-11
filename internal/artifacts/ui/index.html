@@ -726,7 +726,7 @@ async function tabView(p) {
   const vw = v.spec?.view;
   if (!vw) {
     p.append(h("div", { class: "empty" }, h("h3", {}, "Nothing to show in this version"),
-      h("p", { class: "note" }, "Add an index.html at the root, or set the view in artifact.json, for example a md view of README.md."),
+      h("p", { class: "note" }, "Set the view in artifact.json, for example { \"view\": { \"type\": \"html\", \"entry\": \"index.html\" } }."),
       h("p", {}, h("button", { class: "btn", onclick: () => { S.tab = "files"; renderArtifact(); } }, "Open files"))));
     return;
   }
@@ -851,7 +851,7 @@ async function fillEditor(box, f, editable) {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); publish(); }
   });
   box.append(ta);
-  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. The view (unless set, html of index.html when there is one) is one entry file and a type: html, react, md, csv, json, text, image, svg or pdf. Jobs take run, writes, state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
+  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. The view is one entry file and a type: html, react, md, csv, json, text, image, svg or pdf; without it, there's nothing to show. Jobs take run, writes, state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
 }
 
 function stagePut(path, content) { S.stage.set(path, { content, size: new Blob([content]).size, text: true }); }
@@ -1227,7 +1227,8 @@ dlgNew.addEventListener("close", async () => {
     const labels = kvLines(f.labels.value); if (Object.keys(labels).length) req.labels = labels;
     if (f.delete_after.value.trim()) req.delete_after = f.delete_after.value.trim();
     if (+f.retain_runs.value) req.retain_runs = +f.retain_runs.value;
-    req.publish = { title, label: "first version", files: [{ path: "index.html", content: starterPage(title) }] };
+    req.publish = { title, label: "first version", files: [{ path: "index.html", content: starterPage(title) }],
+      spec: { view: { type: "html", entry: "index.html" } } };
     const r = await guard(() => api("POST", "/artifacts", req), `Created ${title}`);
     await refreshList(); openArtifact(r.artifact.id, null, "view");
   } catch (e) { if (!e.shown) toast(e.message, "err"); }
@@ -1374,8 +1375,9 @@ function starterPage(title) {
 // ---------- examples
 KITS.push(
   { slug: "page", title: "A web page", tab: "view",
-    about: "index.html with a stylesheet and a script, and no artifact.json, so the default html view applies. Relative paths work because files are served at the root of their own origin.",
+    about: "index.html with a stylesheet and a script, shown by an html view of index.html. Relative paths work because files are served at the root of their own origin.",
     files: {
+      "artifact.json": JSON.stringify({ view: { type: "html", entry: "index.html" } }, null, 2) + "\n",
       "index.html": `<!doctype html>
 <html lang="en">
 <head>

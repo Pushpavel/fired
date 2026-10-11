@@ -66,19 +66,6 @@ func EncodeSpec(s pa.Spec) []byte {
 	return append(b, '\n')
 }
 
-// defaultView is the view of a tree with an index.html at the root.
-var defaultView = pa.View{Type: "html", Entry: "index.html"}
-
-// DefaultSpec is what a new artifact's artifact.json says when it brings
-// none: an index.html at the root is viewed as html; there are no jobs.
-func DefaultSpec(tree map[string]pa.File) pa.Spec {
-	if _, ok := tree[defaultView.Entry]; ok {
-		v := defaultView
-		return pa.Spec{View: &v}
-	}
-	return pa.Spec{}
-}
-
 // ValidateSpec checks a spec against the tree it will be published with.
 func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 	var errs []string

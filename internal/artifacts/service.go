@@ -467,7 +467,7 @@ func (s *Service) blobSize(h string) (int64, error) {
 func (s *Service) specFor(tree map[string]pa.File) (pa.Spec, error) {
 	f, ok := tree[pa.SpecFile]
 	if !ok {
-		return DefaultSpec(tree), nil
+		return pa.Spec{}, nil
 	}
 	data, err := s.blobs.ReadAll(f.Hash, 1<<20)
 	if err != nil {
@@ -483,18 +483,16 @@ func (s *Service) specFor(tree map[string]pa.File) (pa.Spec, error) {
 	return spec, nil
 }
 
-// specFile gives tree its artifact.json. When the publish didn't bring one
-// (supplied is false), the current one is kept, or the default written for
-// a new artifact, and a default view (none, or html of index.html) follows
-// the files: index.html added or removed changes it. A view someone chose
-// is kept. Title and description, when set, replace just those fields.
-func (s *Service) specFile(tree, cur map[string]pa.File, supplied bool, title, description *string) error {
+// specFile gives tree its artifact.json: when the publish's files leave it
+// out, the current one is kept, and a new artifact gets an empty one. Title
+// and description, when set, replace just those fields.
+func (s *Service) specFile(tree, cur map[string]pa.File, title, description *string) error {
 	f, ok := tree[pa.SpecFile]
 	if !ok {
 		f, ok = cur[pa.SpecFile] // left out by replace or a mirrored folder
 	}
 	var sp pa.Spec
-	if ok {
+	if ok && (title != nil || description != nil) {
 		data, err := s.blobs.ReadAll(f.Hash, 1<<20)
 		if err != nil {
 			return badRequest("%s: %v", pa.SpecFile, err)
@@ -504,11 +502,6 @@ func (s *Service) specFile(tree, cur map[string]pa.File, supplied bool, title, d
 		}
 	}
 	changed := !ok
-	if v := sp.View; !supplied && (v == nil || *v == defaultView) {
-		if want := DefaultSpec(tree).View; (v == nil) != (want == nil) {
-			sp.View, changed = want, true
-		}
-	}
 	if title != nil && *title != sp.Title {
 		sp.Title, changed = *title, true
 	}
@@ -723,11 +716,7 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 	if len(tree) == 0 {
 		return nil, false, badRequest("a version needs at least one file")
 	}
-	supplied := p.specHash != ""
-	for _, op := range p.ops {
-		supplied = supplied || op.path == pa.SpecFile
-	}
-	if err := s.specFile(tree, cur, supplied, req.Title, req.Description); err != nil {
+	if err := s.specFile(tree, cur, req.Title, req.Description); err != nil {
 		return nil, false, err
 	}
 	if a.CurrentVersion > 0 && treesEqual(cur, tree) {
@@ -946,7 +935,7 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		if req.Title != "" {
 			title, spec.Title = &req.Title, req.Title
 		}
-		if err := s.specFile(tree, nil, true, title, nil); err != nil {
+		if err := s.specFile(tree, nil, title, nil); err != nil {
 			return err
 		}
 		size, err := s.checkTree(ctx, q, req.QuotaKey, tree)

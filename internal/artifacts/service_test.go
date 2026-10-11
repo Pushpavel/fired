@@ -119,8 +119,9 @@ func TestPublishSemantics(t *testing.T) {
 	if res.Artifact.CurrentVersion != 1 || res.Publish.Version.Version != 1 {
 		t.Fatalf("create: %+v", res)
 	}
-	if v := res.Publish.Version.Spec.View; v == nil || v.Type != "html" || v.Entry != "index.html" {
-		t.Fatalf("default spec: %+v", res.Publish.Version.Spec)
+	// No view unless one is set, index.html or not.
+	if v := res.Publish.Version.Spec.View; v != nil {
+		t.Fatalf("view without one set: %+v", v)
 	}
 
 	t.Run("serve", func(t *testing.T) {
@@ -593,41 +594,42 @@ func TestSpecFileAlwaysThere(t *testing.T) {
 	str := func(s string) *string { return &s }
 	r := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "page", QuotaKey: "u", Publish: &pa.PublishRequest{
 		Files: []pa.FileOp{pa.Text("index.html", "hi")}, Title: str("Page")}}))(t)
-	if r.Artifact.Title != "Page" || r.Publish.Version.Spec.Title != "Page" || r.Publish.Version.Spec.View.Entry != "index.html" {
+	if r.Artifact.Title != "Page" || r.Publish.Version.Spec.Title != "Page" || r.Publish.Version.Spec.View != nil {
 		t.Fatalf("create: %+v %+v", r.Artifact, r.Publish.Version.Spec)
 	}
 	b := must(c.ReadFile(ctx, "page", pa.SpecFile, 0))(t)
-	if !bytes.Contains(b, []byte(`"title": "Page"`)) || !bytes.Contains(b, []byte(`"view"`)) {
-		t.Fatalf("artifact.json: %s", b)
+	if string(b) != "{\n  \"title\": \"Page\"\n}\n" {
+		t.Fatalf("artifact.json: %q", b)
 	}
+	must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 1, Spec: &pa.Spec{Title: "Page", View: &pa.View{Type: "html", Entry: "index.html"}}}))(t)
 
 	// A folder mirrored at the root without artifact.json keeps the current one.
-	p := must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 1, Replace: true, Files: []pa.FileOp{pa.Text("index.html", "v2")}}))(t)
-	if p.Version.Spec.Title != "Page" {
+	p := must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 2, Replace: true, Files: []pa.FileOp{pa.Text("index.html", "v2")}}))(t)
+	if p.Version.Spec.Title != "Page" || p.Version.Spec.View == nil {
 		t.Fatalf("replace dropped artifact.json: %+v", p.Version.Spec)
 	}
 
 	// Title and description change only those fields; the view stays.
-	p = must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 2, Description: str("About it")}))(t)
+	p = must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 3, Description: str("About it")}))(t)
 	if p.Unchanged || p.Version.Spec.Title != "Page" || p.Version.Spec.Description != "About it" || p.Version.Spec.View == nil {
 		t.Fatalf("description: %+v", p.Version.Spec)
 	}
-	must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 3, Title: str("Renamed")}))(t)
+	must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 4, Title: str("Renamed")}))(t)
 	if a := must(c.Get(ctx, "page"))(t); a.Title != "Renamed" || a.Description != "About it" {
 		t.Fatalf("rename: %+v", a)
 	}
 	// Spec replaces artifact.json; Title still wins over it.
-	p = must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 4, Title: str("Renamed"), Spec: &pa.Spec{Title: "Ignored"}}))(t)
+	p = must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 5, Title: str("Renamed"), Spec: &pa.Spec{Title: "Ignored"}}))(t)
 	if sp := p.Version.Spec; sp.Title != "Renamed" || sp.Description != "" || sp.View != nil {
 		t.Fatalf("spec and title: %+v", sp)
 	}
 
 	// Restore and fork carry the version's title; a fork can rename.
-	must(c.Restore(ctx, "page", pa.RestoreRequest{Version: 1, BaseVersion: 5}))(t)
+	must(c.Restore(ctx, "page", pa.RestoreRequest{Version: 1, BaseVersion: 6}))(t)
 	if a := must(c.Get(ctx, "page"))(t); a.Title != "Page" || a.Description != "" {
 		t.Fatalf("restore: %+v", a)
 	}
-	f := must(c.Fork(ctx, "page", pa.ForkRequest{QuotaKey: "u2", Version: 4, Title: "Copy"}))(t)
+	f := must(c.Fork(ctx, "page", pa.ForkRequest{QuotaKey: "u2", Version: 5, Title: "Copy"}))(t)
 	if f.Title != "Copy" || f.Description != "About it" {
 		t.Fatalf("fork: %+v", f)
 	}
@@ -636,11 +638,9 @@ func TestSpecFileAlwaysThere(t *testing.T) {
 	}
 }
 
-// A view nobody chose follows the files when a publish doesn't bring
-// artifact.json (a sandbox folder mirrored at the root): republishing the
-// same files is unchanged, index.html coming or going changes the view, and
-// a chosen view is kept.
-func TestDefaultViewFollowsFiles(t *testing.T) {
+// There is no view unless artifact.json sets one: files coming and going
+// (a sandbox folder mirrored at the root) never change it.
+func TestViewOnlyWhenSet(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
 	c := h.c
@@ -656,17 +656,13 @@ func TestDefaultViewFollowsFiles(t *testing.T) {
 	if r := mirror(1, "page.html"); !r.Unchanged {
 		t.Fatalf("same files: %+v", r)
 	}
-	if r := mirror(1, "page.html", "index.html"); r.Version.Spec.View == nil || r.Version.Spec.View.Entry != "index.html" {
+	if r := mirror(1, "page.html", "index.html"); r.Version.Spec.View != nil {
 		t.Fatalf("index.html added: %+v", r.Version.Spec)
 	}
-	if r := mirror(2, "page.html"); r.Version.Spec.View != nil {
-		t.Fatalf("index.html removed: %+v", r.Version.Spec)
+	must(c.Publish(ctx, "mirror", pa.PublishRequest{BaseVersion: 2, Spec: &pa.Spec{View: &pa.View{Type: "html", Entry: "index.html"}}}))(t)
+	if r := mirror(3, "page.html", "index.html"); !r.Unchanged {
+		t.Fatalf("set view kept: %+v", r)
 	}
-	// Chosen: kept, and its entry going away is an error.
-	must(c.Publish(ctx, "mirror", pa.PublishRequest{BaseVersion: 3, Spec: &pa.Spec{View: &pa.View{Type: "text", Entry: "page.html"}}}))(t)
-	if r := mirror(4, "page.html", "index.html"); r.Version.Spec.View.Type != "text" {
-		t.Fatalf("chosen view: %+v", r.Version.Spec)
-	}
-	_, err := c.Publish(ctx, "mirror", pa.PublishRequest{BaseVersion: 5, Replace: true, Files: []pa.FileOp{pa.Text("index.html", "x")}})
+	_, err := c.Publish(ctx, "mirror", pa.PublishRequest{BaseVersion: 3, Replace: true, Files: []pa.FileOp{pa.Text("page.html", "x")}})
 	wantCode(t, err, 400, "invalid_request")
 }
