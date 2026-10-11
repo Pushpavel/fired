@@ -2,7 +2,7 @@
 
 Artifact `hello-page`, continued from 01 (it was at v3). Real VMs
 (`make dev-vm`), fired-artifacts from the image (`make dev-artifacts`).
-Everything below was done with curl; the console's Compare still to look at.
+Done with curl; Compare and the Settings rename checked in the console.
 
 ## Tried
 
@@ -148,8 +148,9 @@ themselves; everything else is a file with its own URL. So:
 - ~~Should `PATCH` merge `labels` and `meta`?~~ Yes, done.
 - ~~Should export include the effective `artifact.json` even when it's the
   default?~~ Yes: every version has one now (see Decided).
-- Still to look at: the console's Compare (v4 vs v3, v8 vs v7) and the
-  settings tab saving after the merge change.
+- ~~Still to look at: the console's Compare and the settings tab.~~
+  Checked in the console (2026-10-11): Compare works, and renaming from
+  Settings publishes a "rename" version.
 
 ## Could change
 

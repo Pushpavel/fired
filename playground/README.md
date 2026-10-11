@@ -30,17 +30,16 @@ Each use case gets its own file, `NN-name.md`, written as we go:
 - fired-artifacts charging runs to the user's `artifacts` pool;
 - the Helm chart, Skaffold and CD in [.k8s/](../.k8s/README.md).
 
-**Next: resume with 02, editing over time.** The `hello-page` artifact from
-01 is still in the dev service (fired-artifacts keeps its own SQLite; fired's
-dev state moved to Postgres; the `base` template was recreated there on
-2026-10-10 and is ready).
+**Next: 03, the page** (decided while finishing 02, see
+[03-the-page.md](03-the-page.md)): artifact.json validation, a page that
+goes away, and pages for the Markdown / CSV / React examples.
 
 ## Use cases
 
 | # | Use case | Covers | Status |
 |---|---|---|---|
 | 01 | A static page | create + first publish, the default spec (index.html, no artifact.json), serving, preview origin | done: [01-static-page.md](01-static-page.md) |
-| 02 | Editing over time | publish as a patch, labels, `base_version` conflicts (409), compare, restore, zip export | in progress: [02-editing.md](02-editing.md) |
+| 02 | Editing over time | publish as a patch, labels, `base_version` conflicts (409), compare, restore, zip export | done: [02-editing.md](02-editing.md) |
 | 03 | The page | artifact.json `page` (an HTML page plus its folder, decided in 02), strict spec validation, a page that goes away, pages for the md / csv / react examples | decided: [03-the-page.md](03-the-page.md) |
 | 04 | Uploading a build | blobs, `/blobs/missing` dedup, folder upload with `replace_dirs`, size and file limits | not started |
 | 05 | A scheduled job | cron + timezone, `writes`, run versions, a run that changes nothing, the 12h activity window, expiry | not started |
