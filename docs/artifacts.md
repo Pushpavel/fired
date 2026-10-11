@@ -55,10 +55,7 @@ durable storage. Runs happen on whichever fired host it points at.
 
 ```json
 {
-  "views": [
-    {"type": "react", "entry": "app/App.jsx"},
-    {"type": "csv", "entry": "data/sales.csv"}
-  ],
+  "view": {"type": "react", "entry": "app/App.jsx"},
   "jobs": {
     "refresh": {
       "run": "python refresh.py",
@@ -80,10 +77,18 @@ durable storage. Runs happen on whichever fired host it points at.
 Decoding is strict: an unknown field (say `"schedul"`) fails the publish
 instead of being ignored.
 
-**Views** tell your frontend how to present a file. `type` is one of `html`,
-`react`, `md`, `csv`, `json`, `text`, `image`, `svg`, `pdf`, and `entry` must
-be a file in the version. The service serves raw files; rendering (compiling
-a JSX entry, showing a CSV as a table) is the viewer's job.
+**The view** tells your frontend how to present the artifact: one `entry`
+file, which must be in the version, and a `type`: `html`, `react`, `md`,
+`csv`, `json`, `text`, `image`, `svg` or `pdf`. An artifact has one view.
+Its other files are reached from the entry (links, imports, `fetch`) or
+listed as files, each at its own URL. Without a view, an `index.html` at
+the root is shown as html; without either, there's nothing to show but the
+files. The service serves raw files; rendering (compiling a JSX entry,
+showing a CSV as a table) is the viewer's job.
+
+The earlier form, a `"views"` list, is still read when it has one entry
+(it becomes `"view"`). A list of several is an error: pick the entry and
+link the rest from it.
 
 **Jobs**:
 
@@ -135,7 +140,7 @@ one file changed copies one file.
     {"path": "run.sh", "content": "#!/bin/sh\n…", "mode": 493},
     {"path": "old.css", "delete": true}
   ],
-  "spec": {"views": [{"type": "html", "entry": "app/index.html"}]},
+  "spec": {"view": {"type": "html", "entry": "app/index.html"}},
   "label": "add weekly chart",
   "run_now": ["refresh"],
   "notify": "session-8f2c"
@@ -454,10 +459,10 @@ make dev-artifacts  # fired-artifacts on :8444, token "dev", in another
 `make dev-artifacts` turns on the console (`ui: true` or
 `FIRED_ARTIFACTS_UI=1`) at http://127.0.0.1:8444/ui/. Sign in with the token.
 It lists artifacts with their version history, edits and uploads files and
-publishes them, shows views, compares and restores versions, forks, runs jobs
+publishes them, shows each artifact's view, compares and restores versions, forks, runs jobs
 (with payloads), approves grants, shows runs with their logs, edits quotas, and
 follows `/v1/events` live. The home page has examples that cover each
-feature: views, scheduled jobs with state, a queue, approval and a failing job.
+feature: view types, scheduled jobs with state, a queue, approval and a failing job.
 
 The console shows artifact files on their own origin (for the console only;
 in production your backend serves them with header routing, above),

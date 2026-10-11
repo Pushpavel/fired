@@ -104,6 +104,23 @@ same way. Now:
   the files with `meta.title` "Hello copy": that title won, 3 files, no
   `.fired`, no `artifact.json`. Without meta, the copy got "Hello page".
 
+**One view per artifact** (2026-10-11). In the console, `about.html` (v4,
+v8) wasn't in the preview: the view is `index.html`, and v1's page has no
+link to it, so it was only reachable by typing `/about.html`. That raised
+what a list of views is for. A version is one tree served from `/`; the
+viewer's domain shows one thing; HTML and React reach their other files
+themselves; everything else is a file with its own URL. So:
+
+- `artifact.json` has `"view": {"type", "entry"}` (optional; default html
+  of `index.html`), not a `"views"` list. The console's view tabs are gone.
+- A legacy `"views"` with one entry is read as `"view"`; several are a
+  400 ("an artifact has one view: … link the other files from it").
+  Versions stored with several keep the first when read back.
+- The console examples that had two views now have one (the note embeds
+  its SVG; the table's README is a file).
+- v9 of `hello-page` links `about.html` from `index.html`, which is how
+  it's meant to be reached.
+
 ## Questions
 
 - ~~Should an edit that changes nothing be a no-op?~~ Yes, done.

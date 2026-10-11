@@ -41,7 +41,7 @@ dev state moved to Postgres; the `base` template was recreated there on
 |---|---|---|---|
 | 01 | A static page | create + first publish, the default spec (index.html, no artifact.json), serving, preview origin | done: [01-static-page.md](01-static-page.md) |
 | 02 | Editing over time | publish as a patch, labels, `base_version` conflicts (409), compare, restore, zip export | in progress: [02-editing.md](02-editing.md) |
-| 03 | Views | artifact.json views (md, csv, json, svg, react), strict spec validation, a view whose entry is deleted | not started |
+| 03 | The view | artifact.json `view` (md, csv, json, svg, react; one per artifact since 02), strict spec validation, a view whose entry is deleted | not started |
 | 04 | Uploading a build | blobs, `/blobs/missing` dedup, folder upload with `replace_dirs`, size and file limits | not started |
 | 05 | A scheduled job | cron + timezone, `writes`, run versions, a run that changes nothing, the 12h activity window, expiry | not started |
 | 06 | Job state | the `state` dir across runs, state on a failed run, state not copied on fork | not started |

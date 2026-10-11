@@ -39,15 +39,21 @@ type ExportInfo struct {
 	Spec *Spec `json:"spec,omitempty"`
 }
 
-// Spec is the content of artifact.json: how the files are viewed and which
-// jobs run against them. It is versioned with the files.
+// Spec is the content of artifact.json: how the artifact is viewed and
+// which jobs run against it. It is versioned with the files.
 type Spec struct {
+	// View is how the artifact is shown: one entry file and how to render
+	// it. Other files are reached from it (links, imports) or listed as
+	// files. Without a view, an index.html at the root is shown as html.
+	View *View `json:"view,omitempty"`
+	// Views is the earlier form of View. It is still read, with at most
+	// one entry, and becomes View when the spec is parsed or loaded.
 	Views []View         `json:"views,omitempty"`
 	Jobs  map[string]Job `json:"jobs,omitempty"`
 }
 
-// View says how one file is presented. The service serves raw files; the
-// view tells the viewer (your frontend) how to render them.
+// View says how the artifact's entry file is presented. The service serves
+// raw files; the view tells the viewer (your frontend) how to render it.
 type View struct {
 	// Type is one of: html, react, md, csv, json, text, image, svg, pdf.
 	Type  string `json:"type"`

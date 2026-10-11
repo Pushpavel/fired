@@ -57,11 +57,44 @@ func ParseSpec(data []byte) (pa.Spec, error) {
 	if dec.More() {
 		return s, fmt.Errorf("%s: trailing data after the JSON object", pa.SpecFile)
 	}
+	if err := oneView(&s); err != nil {
+		return s, fmt.Errorf("%s: %v", pa.SpecFile, err)
+	}
 	return s, nil
 }
 
-// EncodeSpec renders a spec as artifact.json content.
+// oneView moves the earlier "views" form into View. An artifact has one
+// view: a list of several is an error.
+func oneView(s *pa.Spec) error {
+	switch {
+	case len(s.Views) == 0:
+		return nil
+	case s.View != nil:
+		return fmt.Errorf(`set "view", not both "view" and "views"`)
+	case len(s.Views) > 1:
+		return fmt.Errorf(`an artifact has one view: set "view" to the entry to show (views lists %d) and link the other files from it`, len(s.Views))
+	}
+	s.View, s.Views = &s.Views[0], nil
+	return nil
+}
+
+// loadedSpec is a spec read back from the database: one stored with
+// several views (before an artifact had one) keeps the first.
+func loadedSpec(s pa.Spec) pa.Spec {
+	if len(s.Views) > 0 && s.View == nil {
+		s.View = &s.Views[0]
+	}
+	s.Views = nil
+	return s
+}
+
+// EncodeSpec renders a spec as artifact.json content, a one-entry "views"
+// as "view".
 func EncodeSpec(s pa.Spec) []byte {
+	if len(s.Views) == 1 && s.View == nil {
+		v := s.Views[0]
+		s.View, s.Views = &v, nil
+	}
 	b, _ := json.MarshalIndent(s, "", "  ")
 	return append(b, '\n')
 }
@@ -70,7 +103,7 @@ func EncodeSpec(s pa.Spec) []byte {
 // at the root is viewed as html; there are no jobs.
 func DefaultSpec(tree map[string]pa.File) pa.Spec {
 	if _, ok := tree["index.html"]; ok {
-		return pa.Spec{Views: []pa.View{{Type: "html", Entry: "index.html"}}}
+		return pa.Spec{View: &pa.View{Type: "html", Entry: "index.html"}}
 	}
 	return pa.Spec{}
 }
@@ -79,19 +112,21 @@ func DefaultSpec(tree map[string]pa.File) pa.Spec {
 func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 	var errs []string
 	add := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
-	for i, v := range s.Views {
+	if err := oneView(s); err != nil {
+		add("%v", err)
+	}
+	if v := s.View; v != nil {
 		if !viewTypes[v.Type] {
-			add("views[%d]: unknown type %q (want one of %s)", i, v.Type, strings.Join(sortedKeys(viewTypes), ", "))
+			add("view: unknown type %q (want one of %s)", v.Type, strings.Join(sortedKeys(viewTypes), ", "))
 		}
-		e, err := cleanPath(v.Entry)
-		if err != nil {
-			add("views[%d].entry: %v", i, err)
-			continue
+		if e, err := cleanPath(v.Entry); err != nil {
+			add("view.entry: %v", err)
+		} else {
+			if _, ok := tree[e]; !ok {
+				add("view.entry: %q is not a file in this version", v.Entry)
+			}
+			v.Entry = e
 		}
-		if _, ok := tree[e]; !ok {
-			add("views[%d].entry: %q is not a file in this version", i, v.Entry)
-		}
-		s.Views[i].Entry = e
 	}
 	names := make([]string, 0, len(s.Jobs))
 	for n := range s.Jobs {

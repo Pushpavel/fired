@@ -120,7 +120,7 @@ func TestPublishSemantics(t *testing.T) {
 	if res.Artifact.CurrentVersion != 1 || res.Publish.Version.Version != 1 {
 		t.Fatalf("create: %+v", res)
 	}
-	if v := res.Publish.Version.Spec.Views; len(v) != 1 || v[0].Type != "html" || v[0].Entry != "index.html" {
+	if v := res.Publish.Version.Spec.View; v == nil || v.Type != "html" || v.Entry != "index.html" {
 		t.Fatalf("default spec: %+v", res.Publish.Version.Spec)
 	}
 
@@ -233,8 +233,10 @@ func TestPublishSemantics(t *testing.T) {
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text("index.html/x", "x")}},
 			{BaseVersion: cur, Files: []pa.FileOp{{Path: "x"}}},
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"views":[]}`)}, Spec: &pa.Spec{}},
-			{BaseVersion: cur, Spec: &pa.Spec{Views: []pa.View{{Type: "html", Entry: "nope.html"}}}},
-			{BaseVersion: cur, Spec: &pa.Spec{Views: []pa.View{{Type: "flash", Entry: "index.html"}}}},
+			{BaseVersion: cur, Spec: &pa.Spec{View: &pa.View{Type: "html", Entry: "nope.html"}}},
+			{BaseVersion: cur, Spec: &pa.Spec{View: &pa.View{Type: "flash", Entry: "index.html"}}},
+			{BaseVersion: cur, Spec: &pa.Spec{Views: []pa.View{{Type: "html", Entry: "index.html"}, {Type: "text", Entry: "index.html"}}}},
+			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"view":{"type":"html","entry":"index.html"},"views":[{"type":"html","entry":"index.html"}]}`)}},
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"jobs":{"a":{"run":"x","schedul":"* * * * *"}}}`)}},
 			{BaseVersion: cur, Spec: &pa.Spec{Jobs: map[string]pa.Job{"a": {Run: "x", Schedule: "61 * * * *"}}}},
 			{BaseVersion: cur, Spec: &pa.Spec{Jobs: map[string]pa.Job{"a": {Run: "x", Writes: []string{pa.SpecFile}}}}},
@@ -255,13 +257,13 @@ func TestPublishSemantics(t *testing.T) {
 
 	t.Run("spec written as artifact.json", func(t *testing.T) {
 		cur := must(c.Get(ctx, id))(t).CurrentVersion
-		r := must(c.Publish(ctx, id, pa.PublishRequest{BaseVersion: cur, Spec: &pa.Spec{Views: []pa.View{{Type: "md", Entry: "b.txt"}}}}))(t)
+		r := must(c.Publish(ctx, id, pa.PublishRequest{BaseVersion: cur, Spec: &pa.Spec{View: &pa.View{Type: "md", Entry: "b.txt"}}}))(t)
 		b := must(c.ReadFile(ctx, id, pa.SpecFile, 0))(t)
 		spec, err := ParseSpec(b)
-		if err != nil || len(spec.Views) != 1 || spec.Views[0].Type != "md" {
+		if err != nil || spec.View == nil || spec.View.Type != "md" || !bytes.Contains(b, []byte(`"view"`)) {
 			t.Fatalf("artifact.json: %s %v", b, err)
 		}
-		if r.Version.Spec.Views[0].Entry != "b.txt" {
+		if r.Version.Spec.View.Entry != "b.txt" {
 			t.Fatalf("version spec: %+v", r.Version.Spec)
 		}
 		// A later publish without spec keeps artifact.json and re-validates it.
@@ -611,7 +613,7 @@ func TestExportRoundTrip(t *testing.T) {
 	files := export("orig", 1)
 	var info pa.ExportInfo
 	if err := json.Unmarshal(files[pa.ExportFile], &info); err != nil || info.Artifact != "orig" || info.Version != 1 ||
-		info.Spec == nil || len(info.Spec.Views) != 1 || !bytes.Contains(info.Meta, []byte(`"description": "d"`)) {
+		info.Spec == nil || info.Spec.View == nil || !bytes.Contains(info.Meta, []byte(`"description": "d"`)) {
 		t.Fatalf("export.json: %s %v", files[pa.ExportFile], err)
 	}
 	r := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "copy", QuotaKey: "u", Publish: &pa.PublishRequest{Files: ops(files)}}))(t)
@@ -631,14 +633,14 @@ func TestExportRoundTrip(t *testing.T) {
 
 	// A spec that isn't the default is written as artifact.json, unless the
 	// files or the request bring their own.
-	files[pa.ExportFile] = []byte(`{"spec":{"views":[{"type":"md","entry":"index.html"}]}}`)
+	files[pa.ExportFile] = []byte(`{"spec":{"view":{"type":"md","entry":"index.html"}}}`)
 	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "as-md", QuotaKey: "u", Publish: &pa.PublishRequest{Files: ops(files)}}))(t)
-	if v := must(c.Version(ctx, "as-md", 1))(t); strings.Join(paths(v), ",") != "artifact.json,index.html" || v.Spec.Views[0].Type != "md" {
+	if v := must(c.Version(ctx, "as-md", 1))(t); strings.Join(paths(v), ",") != "artifact.json,index.html" || v.Spec.View.Type != "md" {
 		t.Fatalf("spec fallback: %v %+v", paths(v), v.Spec)
 	}
 	r2 := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "own-spec", QuotaKey: "u", Publish: &pa.PublishRequest{Files: ops(files),
-		Spec: &pa.Spec{Views: []pa.View{{Type: "text", Entry: "index.html"}}}}}))(t)
-	if r2.Publish.Version.Spec.Views[0].Type != "text" {
+		Spec: &pa.Spec{View: &pa.View{Type: "text", Entry: "index.html"}}}}))(t)
+	if r2.Publish.Version.Spec.View.Type != "text" {
 		t.Fatalf("request spec wins: %+v", r2.Publish.Version.Spec)
 	}
 
@@ -651,4 +653,23 @@ func TestExportRoundTrip(t *testing.T) {
 	wantCode(t, err, 400, "invalid_request")
 	_, err = c.Publish(ctx, "copy", pa.PublishRequest{BaseVersion: 1, Spec: &pa.Spec{Jobs: map[string]pa.Job{"a": {Run: "x", Writes: []string{".fired"}}}}})
 	wantCode(t, err, 400, "invalid_request")
+}
+
+// An artifact has one view. The earlier "views" list is read when it has one
+// entry, and versions stored with several keep the first.
+func TestOneView(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	c := h.c
+	r := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "legacy", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{
+		pa.Text("README.md", "# hi"), pa.Text(pa.SpecFile, `{"views":[{"type":"md","entry":"README.md"}]}`)}}}))(t)
+	if v := r.Publish.Version.Spec; v.View == nil || v.View.Type != "md" || v.Views != nil {
+		t.Fatalf("legacy views: %+v", v)
+	}
+	if v := loadedSpec(pa.Spec{Views: []pa.View{{Type: "md", Entry: "a"}, {Type: "csv", Entry: "b"}}}); v.View == nil || v.View.Entry != "a" || v.Views != nil {
+		t.Fatalf("loaded: %+v", v)
+	}
+	if _, err := ParseSpec([]byte(`{"views":[{"type":"md","entry":"a"},{"type":"csv","entry":"b"}]}`)); err == nil || !strings.Contains(err.Error(), "one view") {
+		t.Fatalf("two views: %v", err)
+	}
 }
