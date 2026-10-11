@@ -99,8 +99,9 @@ func unavailable(err error) bool {
 	return errors.As(err, &oe) || errors.As(err, &ne) && ne.Timeout()
 }
 
-// firedBackoff is how long runs wait after fired was unavailable.
-const firedBackoff = 15 * time.Second
+// downBackoff is how long runs wait after fired or the broker was
+// unavailable.
+const downBackoff = 15 * time.Second
 
 // overQuota reports fired refusing a start for the quota key's limits.
 func overQuota(err error) bool {
@@ -151,6 +152,10 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, lr *liveRun, timeou
 	creds, err := s.broker.credentials(ctx, pa.CredentialsRequest{Artifact: a.ID, QuotaKey: a.QuotaKey, Labels: a.Labels,
 		Version: r.Version, RunID: r.ID})
 	if err != nil {
+		var down *brokerDown
+		if errors.As(err, &down) {
+			return &outcome{retry: true, reason: err.Error()}
+		}
 		return failed("credentials", err)
 	}
 	sb, err := s.ensureRunner(ctx, a, j.Template)
@@ -344,10 +349,10 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 		if out.overQuota {
 			s.quotaWait[a.QuotaKey] = s.now().Add(time.Duration(s.cfg.Runner.QuotaBackoff))
 		} else {
-			s.firedWait = s.now().Add(firedBackoff)
+			s.downWait = s.now().Add(downBackoff)
 		}
 		s.mu.Unlock()
-		s.log.Info("run waits for fired", "run", r.ID, "quota_key", a.QuotaKey, "over_quota", out.overQuota, "reason", out.reason)
+		s.log.Info("run waits", "run", r.ID, "quota_key", a.QuotaKey, "over_quota", out.overQuota, "reason", out.reason)
 		r.Status, r.StartedAt, r.Version, r.Reason = pa.RunPending, nil, 0, "waiting: "+out.reason
 		return putRun(ctx, s.st.db, r)
 	}

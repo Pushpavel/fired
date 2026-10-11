@@ -435,7 +435,9 @@ created. A run:
 
 1. **Gets credentials:** POSTs `{artifact, quota_key, labels, version,
    run_id}` to `broker.url`, and gets `{secret_env, secret_files}` back. A
-   refusal fails the run with the broker's error code.
+   refusal fails the run with the broker's error code; a broker that can't
+   be reached or answers `502`/`503`/`504` makes the run wait, like fired
+   (below).
 2. **Sets up the sandbox:**
    - empties `runner.workdir` (`/artifact`) and unpacks the current
      version's files into it;

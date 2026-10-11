@@ -119,6 +119,7 @@ type brokerStub struct {
 	mu   sync.Mutex
 	reqs []pa.CredentialsRequest
 	fail bool
+	down bool
 }
 
 func (b *brokerStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -130,8 +131,12 @@ func (b *brokerStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	b.mu.Lock()
 	b.reqs = append(b.reqs, req)
-	fail := b.fail
+	fail, down := b.fail, b.down
 	b.mu.Unlock()
+	if down {
+		http.Error(w, "restarting", http.StatusServiceUnavailable)
+		return
+	}
 	if fail {
 		writeJSON(w, 403, api.Error{Err: api.ErrorBody{Code: "owner_gone", Message: "the owner was removed"}})
 		return
@@ -364,6 +369,26 @@ func TestRunsInFired(t *testing.T) {
 		}
 	})
 
+	t.Run("a broker that's down makes runs wait", func(t *testing.T) {
+		bs.mu.Lock()
+		bs.down = true
+		bs.mu.Unlock()
+		run := must(c.Trigger(ctx, id, json.RawMessage(`{"mode":"gen"}`)))(t)
+		time.Sleep(500 * time.Millisecond)
+		if r := must(c.Run(ctx, id, run.ID))(t); r.Status != pa.RunPending || !strings.Contains(r.Reason, "broker unavailable: 503") {
+			t.Fatalf("with the broker down: %+v", r)
+		}
+		bs.mu.Lock()
+		bs.down = false
+		bs.mu.Unlock()
+		h.svc.mu.Lock()
+		h.svc.downWait = time.Time{} // skip the 15s backoff
+		h.svc.mu.Unlock()
+		if r := waitRun(t, c, id, run.ID); r.Status != pa.RunSucceeded {
+			t.Fatalf("once the broker is back: %+v", r)
+		}
+	})
+
 	t.Run("a new allowlist makes a new runner", func(t *testing.T) {
 		before := must(fc.ListSandboxes(ctx, map[string]string{labelArtifact: id}, ""))(t)
 		h.svc.cfg.Runner.Egress = []string{"example.com"}
@@ -379,7 +404,8 @@ func TestRunsInFired(t *testing.T) {
 
 	t.Run("a fork copies the db but not _private/", func(t *testing.T) {
 		f := must(c.Fork(ctx, id, pa.ForkRequest{QuotaKey: "u2"}))(t)
-		if d := must(c.GetDoc(ctx, f.ID, "stats/result"))(t); string(d.Data) != `{"run":3,"token":"ok"}` || d.Rev != 1 {
+		src := must(c.GetDoc(ctx, id, "stats/result"))(t)
+		if d := must(c.GetDoc(ctx, f.ID, "stats/result"))(t); string(d.Data) != string(src.Data) || d.Rev != 1 {
 			t.Fatalf("fork: %+v", d)
 		}
 		_, err := c.GetDoc(ctx, f.ID, "_private/state")

@@ -43,10 +43,13 @@ func (b *broker) credentials(ctx context.Context, req pa.CredentialsRequest) (*p
 	}
 	resp, err := b.http.Do(hr)
 	if err != nil {
-		return nil, err
+		return nil, &brokerDown{err}
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+		return nil, &brokerDown{fmt.Errorf("%d: %s", resp.StatusCode, strings.TrimSpace(string(data)))}
+	}
 	if resp.StatusCode >= 300 {
 		var e api.Error
 		if json.Unmarshal(data, &e) == nil && e.Err.Code != "" {
@@ -59,3 +62,11 @@ func (b *broker) credentials(ctx context.Context, req pa.CredentialsRequest) (*p
 	}
 	return out, nil
 }
+
+// brokerDown is the broker being unreachable or unavailable: runs wait for
+// it, as they do for fired. A refusal (any other error status) fails the
+// run.
+type brokerDown struct{ err error }
+
+func (e *brokerDown) Error() string { return "broker unavailable: " + e.err.Error() }
+func (e *brokerDown) Unwrap() error { return e.err }

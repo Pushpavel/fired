@@ -65,7 +65,10 @@ Deleted afterwards.
   is `failed`, though the job may still be running in the VM. Retrying
   would risk running it twice; reconnecting to the same process would be
   better.
-- The broker being unreachable fails the run (it's your backend); should
-  it wait like fired does?
+- ~~The broker being unreachable fails the run; should it wait like fired
+  does?~~ Yes (decided after 08): an unreachable broker or its `502`/`503`/
+  `504` puts the run back to pending ("waiting: broker unavailable: …")
+  with the same 15s backoff; a refusal still fails it. Tested with a stub
+  broker answering 503.
 - After rebuilding a template, fired could tell clients; here each run
   asks for the template (one extra call per run).

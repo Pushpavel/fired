@@ -242,11 +242,11 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 // artifact and the service-wide cap. Per-user compute limits are fired's
 // (runner sandboxes carry the quota key): a run fired refuses goes back to
 // pending, and that key's runs wait (quotaBackoff) before trying again;
-// when fired is unavailable, every run waits firedBackoff.
+// when fired or the broker is unavailable, every run waits downBackoff.
 // Runs that can't start yet stay pending.
 func (s *Service) dispatch(ctx context.Context) error {
 	s.mu.Lock()
-	wait := s.now().Before(s.firedWait)
+	wait := s.now().Before(s.downWait)
 	s.mu.Unlock()
 	if wait {
 		return nil
