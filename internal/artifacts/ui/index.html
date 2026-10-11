@@ -454,8 +454,7 @@ function kvLines(text) {
 }
 const kvText = o => Object.entries(o || {}).map(([k, v]) => `${k}=${v}`).join("\n");
 const ORIGIN = { edit: "Edited", run: "Job run", restore: "Restored", fork: "Forked" };
-const meta = a => { try { return typeof a.meta === "string" ? JSON.parse(a.meta) : (a.meta || {}); } catch { return {}; } };
-const titleOf = a => meta(a).title || a.id;
+const titleOf = a => a.title || a.id;
 
 function toast(msg, kind = "") {
   const t = h("div", { class: "toast " + kind }, msg);
@@ -616,8 +615,8 @@ async function createKit(k, btn) {
   btn.disabled = true;
   try {
     const files = Object.entries(k.files).map(([path, f]) => typeof f === "string" ? { path, content: f } : { path, ...f });
-    const r = await guard(() => api("POST", "/artifacts", { quota_key: quotaKey(), meta: { title: k.title }, labels: { example: k.slug },
-      publish: { files, label: "first version", run_now: k.run_now } }), `Created ${k.title}`);
+    const r = await guard(() => api("POST", "/artifacts", { quota_key: quotaKey(), labels: { example: k.slug },
+      publish: { files, title: k.title, label: "first version", run_now: k.run_now } }), `Created ${k.title}`);
     for (const j of r.publish?.jobs || []) if (j.needs_approval?.length) toast(`${j.name} needs approval: ${j.needs_approval.join("; ")}`);
     await refreshList(); openArtifact(r.artifact.id, null, k.tab);
   } catch {} finally { btn.disabled = false; }
@@ -661,7 +660,6 @@ async function loadArtifact(keepPane) {
 // (a live view frame, half-typed settings) in place.
 function renderArtifact(keepPane) {
   const a = S.art; if (!a) return;
-  const m = meta(a);
   const fact = (k, v) => v ? h("div", {}, h("dt", {}, k), h("dd", {}, v)) : null;
   const n = shownVersion();
   const v = S.versions.find(x => x.version === n);
@@ -673,7 +671,7 @@ function renderArtifact(keepPane) {
       fact("ID", h("code", {}, a.id)), fact("Quota key", a.quota_key),
       Object.keys(a.labels || {}).length ? fact("Labels", kvText(a.labels).replace(/\n/g, ", ")) : null,
       a.forked_from ? fact("Forked from", h("button", { onclick: () => openArtifact(a.forked_from.artifact, a.forked_from.version) }, `${a.forked_from.artifact} v${a.forked_from.version}`)) : null,
-      m.description ? fact("About", m.description) : null,
+      a.description ? fact("About", a.description) : null,
       fact("Last active", ago(a.last_active_at))),
     S.versions.length ? spine(S.versions, { label: "Versions", current: a.current_version, selected: n, pick: x => pickVersion(x.version) }) : null,
     pickedLine(v));
@@ -772,6 +770,15 @@ mkdir -p data
 date -u +%Y-%m-%dT%H:%M:%SZ > data/updated.txt
 echo "wrote data/updated.txt"
 `;
+// Stages the current artifact.json with a sample job added (and its script).
+function stageSampleJob(cur) {
+  const paths = (cur?.files || []).map(f => f.path);
+  if (!paths.includes("artifact.json")) { stageSpecTemplate(paths, true); return; }
+  const spec = { ...(cur.spec || {}) }; delete spec.views;
+  spec.jobs = { ...(spec.jobs || {}), refresh: { run: "sh refresh.sh", writes: ["data"] } };
+  if (!paths.includes("refresh.sh")) stagePut("refresh.sh", REFRESH_SH);
+  stagePut("artifact.json", JSON.stringify(spec, null, 2) + "\n");
+}
 function stageSpecTemplate(paths, wantJob) {
   const spec = {};
   if (!paths.includes("index.html")) {
@@ -1026,7 +1033,7 @@ async function tabJobs(p) {
     p.append(h("div", { class: "empty" }, h("h3", {}, "No jobs"),
       h("p", { class: "note" }, "Jobs are commands in artifact.json. They run in a fired sandbox with the artifact's files, on a schedule or when triggered, and their writes become new versions."),
       h("p", {}, h("button", { class: "btn", onclick: () => {
-        S.tab = "files"; if (!cur?.files?.some(f => f.path === "artifact.json")) stageSpecTemplate((cur?.files || []).map(f => f.path), true); S.fileSel = "artifact.json"; renderArtifact(); } }, "Edit artifact.json"))));
+        S.tab = "files"; stageSampleJob(cur); S.fileSel = "artifact.json"; renderArtifact(); } }, "Add a job"))));
     return;
   }
   for (const j of S.jobs) {
@@ -1152,9 +1159,9 @@ async function showRun() {
 
 // ---------- Settings tab
 async function tabSettings(p) {
-  const a = S.art, m = meta(a);
-  const title = h("input", { type: "text", value: m.title || "", placeholder: a.id });
-  const desc = h("input", { type: "text", value: m.description || "" });
+  const a = S.art;
+  const title = h("input", { type: "text", value: a.title || "", placeholder: a.id });
+  const desc = h("input", { type: "text", value: a.description || "" });
   const labels = h("textarea", { rows: 2 }); labels.value = kvText(a.labels);
   const qk = h("input", { type: "text", value: a.quota_key });
   const da = h("input", { type: "text", value: a.delete_after && a.delete_after !== "0s" ? fmtDur(a.delete_after) === "never" ? "-1" : fmtDur(a.delete_after) : "", placeholder: "Service default" });
@@ -1165,10 +1172,15 @@ async function tabSettings(p) {
     h("div", { class: "cols" }, h("label", { class: "field" }, h("span", {}, h("strong", {}, "Delete after inactive for"), ", -1 for never"), da), h("label", { class: "field" }, h("span", {}, h("strong", {}, "Job-run versions to keep")), rr)),
     h("div", { class: "row" }, h("button", { class: "btn primary", onclick: async () => {
       try {
-        // PATCH merges labels and meta: removed keys are sent as null.
+        // Title and description are in artifact.json, so changing them
+        // publishes a version; the rest are settings (PATCH, which merges
+        // labels: removed keys are sent as null).
+        const t = title.value.trim(), d = desc.value.trim();
+        if (t !== (a.title || "") || d !== (a.description || ""))
+          await guard(() => api("POST", `/artifacts/${enc(a.id)}/versions`, { base_version: a.current_version, title: t, description: d, label: "rename" }));
         const lb = kvLines(labels.value);
         for (const k of Object.keys(a.labels || {})) if (!(k in lb)) lb[k] = null;
-        const req = { meta: { title: title.value.trim() || null, description: desc.value.trim() || null }, labels: lb, quota_key: qk.value.trim() };
+        const req = { labels: lb, quota_key: qk.value.trim() };
         req.delete_after = da.value.trim() || "0s";
         req.retain_runs = +rr.value || 0;
         await guard(() => api("PATCH", `/artifacts/${enc(a.id)}`, req), "Saved");
@@ -1229,13 +1241,13 @@ dlgNew.addEventListener("close", async () => {
   const f = dlgNew.querySelector("form").elements;
   try {
     const title = f.title.value.trim();
-    const req = { quota_key: f.quota_key.value.trim(), meta: { title } };
+    const req = { quota_key: f.quota_key.value.trim() };
     setQuotaKey(req.quota_key);
     if (f.id.value.trim()) req.id = f.id.value.trim();
     const labels = kvLines(f.labels.value); if (Object.keys(labels).length) req.labels = labels;
     if (f.delete_after.value.trim()) req.delete_after = f.delete_after.value.trim();
     if (+f.retain_runs.value) req.retain_runs = +f.retain_runs.value;
-    req.publish = { label: "first version", files: [{ path: "index.html", content: starterPage(title) }] };
+    req.publish = { title, label: "first version", files: [{ path: "index.html", content: starterPage(title) }] };
     const r = await guard(() => api("POST", "/artifacts", req), `Created ${title}`);
     await refreshList(); openArtifact(r.artifact.id, null, "view");
   } catch (e) { if (!e.shown) toast(e.message, "err"); }
@@ -1251,7 +1263,7 @@ function forkDialog(n) {
 dlgFork.addEventListener("close", async () => {
   if (dlgFork.returnValue !== "ok") return;
   const f = dlgFork.querySelector("form").elements;
-  const req = { quota_key: f.quota_key.value.trim(), version: +dlgFork.dataset.version, meta: { title: f.title.value.trim() } };
+  const req = { quota_key: f.quota_key.value.trim(), version: +dlgFork.dataset.version, title: f.title.value.trim() };
   if (f.id.value.trim()) req.id = f.id.value.trim();
   try { const a = await guard(() => api("POST", `/artifacts/${enc(S.art.id)}/fork`, req), "Forked"); await refreshList(); openArtifact(a.id); } catch {}
 });

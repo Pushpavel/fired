@@ -53,7 +53,8 @@ Everything below was done with curl; the console's Compare still to look at.
   two `GET /versions/{n}` file lists by hash.
 
 History now: v1 first page, v2 from sandbox, v3 restore v1, v4 add about
-page, v5/v6 no-ops (before the fix), v7 restore v1, v8 restore v4.
+page, v5/v6 no-ops (before the fix), v7 restore v1, v8 restore v4, v9 link
+the about page, v10 title into artifact.json.
 
 ## Decided
 
@@ -85,24 +86,31 @@ unchanged; restore v3 (same files as v7) → 200 unchanged; stale restore
 409 with the hint; restore v4 → v8; PATCH `{"labels":{"stage":"review"}}`
 kept `usecase`, and `null`s removed `stage` and `description`.
 
-**Exports carry a `.fired/` folder** (2026-10-11). An artifact's settings
-that aren't files (title, description, and the spec when it's the default)
-were lost in a zip, so a zip uploaded somewhere else couldn't be set up the
-same way. Now:
+**Exports carry the artifact's name** (2026-10-11). The title and
+description were in `meta` on the artifact record, so a zip lost them and a
+zip uploaded elsewhere couldn't be set up the same way.
 
-- Export adds `.fired/export.json`: `{artifact, version, exported_at,
-  meta, spec}`, with the effective spec even when it's the default.
-- `.fired/` is reserved at a tree's root and never stored. A publish
-  whose files include `.fired/export.json` uses it only as a **fallback**:
-  its spec when nothing else gives one (written as `artifact.json` only if
-  it isn't the default, so a round trip is the same tree), and its meta on
-  a create, under the request's meta. An agent that unzips and names the
-  copy itself wins; a bare re-upload gets the old title back.
-- Labels, quota key and retention stay out: they're the backend's (who
-  owns it, how long it's kept), and a new home sets its own.
-- Tried live: exported `hello-page` v8, unzipped, created `hello-copy` from
-  the files with `meta.title` "Hello copy": that title won, 3 files, no
-  `.fired`, no `artifact.json`. Without meta, the copy got "Hello page".
+- *First try (superseded the same day):* export added `.fired/export.json`
+  with the meta and the effective spec, read back as a fallback. It
+  overlapped with `artifact.json` (both described the view) and needed
+  special rules (`.fired/` reserved, spec written only if not the default).
+- *Now:* **every version has an `artifact.json`,** and it holds `title`
+  and `description` as well as the view and jobs. The service writes the
+  default when a create brings none, keeps the current one when files leave
+  it out (`replace`, a mirrored folder), and refuses deleting it. A zip is
+  complete: published again, it's the same artifact. `.fired/export.json`
+  is gone.
+- **Title is versioned:** renaming makes a version (the console labels it
+  "rename"), and restore and fork bring the name along. `Artifact.title`
+  and `description` show the current version's. Publish (and fork) take
+  `title`/`description` to set just those fields, winning over the files'
+  `artifact.json`: an agent naming an unzipped copy keeps its view and jobs.
+- **`meta` is backend-only again:** opaque, not exported or forked, not
+  shown to jobs. Labels, quota key and retention stay settings (PATCH).
+- Moved `hello-page` (v10) and `hello-copy` (v2) titles from meta into
+  `artifact.json` and cleared their meta. Exports of v10 and of v4 (which
+  had no `artifact.json`; the zip gets one written from its spec) both
+  include it.
 
 **One view per artifact** (2026-10-11). In the console, `about.html` (v4,
 v8) wasn't in the preview: the view is `index.html`, and v1's page has no
@@ -126,7 +134,7 @@ themselves; everything else is a file with its own URL. So:
 - ~~Should an edit that changes nothing be a no-op?~~ Yes, done.
 - ~~Should `PATCH` merge `labels` and `meta`?~~ Yes, done.
 - ~~Should export include the effective `artifact.json` even when it's the
-  default?~~ Yes, in `.fired/export.json` with the meta (see Decided).
+  default?~~ Yes: every version has one now (see Decided).
 - Still to look at: the console's Compare (v4 vs v3, v8 vs v7) and the
   settings tab saving after the merge change.
 

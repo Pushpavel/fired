@@ -573,7 +573,8 @@ func (s *Service) commitRun(ctx context.Context, q querier, r *runRow, j pa.Job,
 	if err := insertVersion(ctx, q, v, next); err != nil {
 		return nil, err
 	}
-	a.CurrentVersion, a.UpdatedAt = v.Version, now
+	setCurrent(a, v)
+	a.UpdatedAt = now
 	if err := putArtifact(ctx, q, a); err != nil {
 		return nil, err
 	}

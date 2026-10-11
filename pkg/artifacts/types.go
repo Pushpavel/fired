@@ -15,33 +15,16 @@ type Duration = api.Duration
 // ---- artifact.json
 
 // SpecFile is the path of the config file inside an artifact's file tree.
+// Every version has one: the service writes the default when a publish
+// doesn't bring one.
 const SpecFile = "artifact.json"
 
-// FiredDir is reserved at the root of a file tree: an export writes
-// ExportFile there, and a publish reads it and never stores the folder.
-const (
-	FiredDir   = ".fired"
-	ExportFile = ".fired/export.json"
-)
-
-// ExportInfo is ExportFile in an exported zip: where the files came from
-// and the settings that aren't files. When the files are published again
-// (a create, or a publish), it is a fallback: Spec applies only if there is
-// no artifact.json and no spec in the request, and Meta (on a create only)
-// fills keys the request's meta leaves out.
-type ExportInfo struct {
-	Artifact   string          `json:"artifact,omitempty"`
-	Version    int             `json:"version,omitempty"`
-	ExportedAt time.Time       `json:"exported_at"`
-	Meta       json.RawMessage `json:"meta,omitempty"`
-	// Spec is the version's effective spec, also when it has no
-	// artifact.json and uses the default.
-	Spec *Spec `json:"spec,omitempty"`
-}
-
-// Spec is the content of artifact.json: how the artifact is viewed and
-// which jobs run against it. It is versioned with the files.
+// Spec is the content of artifact.json: what the artifact is called, how
+// it is viewed and which jobs run against it. It is versioned with the
+// files, so it travels with exports, restores and forks.
 type Spec struct {
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
 	// View is how the artifact is shown: one entry file and how to render
 	// it. Other files are reached from it (links, imports) or listed as
 	// files. Without a view, an index.html at the root is shown as html.
@@ -112,7 +95,12 @@ type Artifact struct {
 	ID       string            `json:"id"`
 	QuotaKey string            `json:"quota_key"`
 	Labels   map[string]string `json:"labels,omitempty"`
-	// Meta is opaque JSON owned by the caller (title, description, …).
+	// Title and Description are the current version's, from its
+	// artifact.json. Change them by publishing.
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	// Meta is opaque JSON owned by your backend. It isn't exported, forked
+	// or shown to jobs.
 	Meta json.RawMessage `json:"meta,omitempty"`
 	// CurrentVersion is the version files are served from. An artifact
 	// is created with version 1, so it is never 0.
@@ -188,8 +176,9 @@ type FileOp struct {
 
 // PublishRequest creates a new version on top of BaseVersion, which must be
 // the artifact's current version (required, except in a create). Every
-// version has at least one file. A publish that leaves the files as they are
-// makes no version (PublishResult.Unchanged).
+// version has at least one file, and an artifact.json: when the files leave
+// it out, the current one is kept (on a create, the default is written). A publish that leaves the files as they are makes no
+// version (PublishResult.Unchanged).
 type PublishRequest struct {
 	BaseVersion int `json:"base_version"`
 	// Replace starts from an empty tree instead of the base version's files.
@@ -201,9 +190,14 @@ type PublishRequest struct {
 	Files []FileOp `json:"files,omitempty"`
 	// Spec, when set, is written to artifact.json. Passing both Spec and an
 	// artifact.json file is an error.
-	Spec   *Spec             `json:"spec,omitempty"`
-	Label  string            `json:"label,omitempty"`
-	Labels map[string]string `json:"labels,omitempty"`
+	Spec *Spec `json:"spec,omitempty"`
+	// Title and Description, when set, change those fields in
+	// artifact.json and keep the rest of it (unlike Spec, which replaces
+	// it). They win over the files' artifact.json and Spec.
+	Title       *string           `json:"title,omitempty"`
+	Description *string           `json:"description,omitempty"`
+	Label       string            `json:"label,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
 	// RunNow triggers these jobs as soon as the version is published.
 	RunNow []string `json:"run_now,omitempty"`
 	// Notify is an opaque target (e.g. an agent session). The first run of
@@ -271,7 +265,9 @@ type RestoreRequest struct {
 
 type ForkRequest struct {
 	// Version defaults to the current version.
-	Version  int               `json:"version,omitempty"`
+	Version int `json:"version,omitempty"`
+	// Title, when set, is the fork's title in its artifact.json.
+	Title    string            `json:"title,omitempty"`
 	ID       string            `json:"id,omitempty"`
 	QuotaKey string            `json:"quota_key"`
 	Labels   map[string]string `json:"labels,omitempty"`

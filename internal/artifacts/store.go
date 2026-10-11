@@ -155,6 +155,8 @@ func (s *store) tx(ctx context.Context, fn func(q querier) error) error {
 // ---- artifacts
 
 type artifactData struct {
+	Title       string            `json:"title,omitempty"`
+	Description string            `json:"description,omitempty"`
 	Labels      map[string]string `json:"labels,omitempty"`
 	Meta        json.RawMessage   `json:"meta,omitempty"`
 	DeleteAfter pa.Duration       `json:"delete_after,omitempty"`
@@ -163,7 +165,7 @@ type artifactData struct {
 }
 
 func putArtifact(ctx context.Context, q querier, a *pa.Artifact) error {
-	d, _ := json.Marshal(artifactData{Labels: a.Labels, Meta: a.Meta, DeleteAfter: a.DeleteAfter, RetainRuns: a.RetainRuns, ForkedFrom: a.ForkedFrom})
+	d, _ := json.Marshal(artifactData{Title: a.Title, Description: a.Description, Labels: a.Labels, Meta: a.Meta, DeleteAfter: a.DeleteAfter, RetainRuns: a.RetainRuns, ForkedFrom: a.ForkedFrom})
 	_, err := q.ExecContext(ctx, `
 INSERT INTO artifacts(id, quota_key, current_version, data, created_at, updated_at, last_active_at) VALUES(?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET quota_key=excluded.quota_key, current_version=excluded.current_version,
@@ -184,6 +186,7 @@ func scanArtifact(sc interface{ Scan(...any) error }) (*pa.Artifact, error) {
 	}
 	var d artifactData
 	_ = json.Unmarshal([]byte(data), &d)
+	a.Title, a.Description = d.Title, d.Description
 	a.Labels, a.Meta, a.DeleteAfter, a.RetainRuns, a.ForkedFrom = d.Labels, d.Meta, d.DeleteAfter, d.RetainRuns, d.ForkedFrom
 	a.CreatedAt, a.UpdatedAt, a.LastActiveAt = fromMS(c), fromMS(u), fromMS(l)
 	return &a, nil

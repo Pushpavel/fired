@@ -35,9 +35,11 @@ durable storage. Runs happen on whichever fired host it points at.
 
 ## Concepts
 
-- **Artifact**: an ID, a quota key, opaque `labels` and `meta` (title,
-  description, anything your backend wants), and a current version. It is
-  created together with its first version, so it always has files.
+- **Artifact**: an ID, a quota key, opaque `labels` and `meta` (anything
+  your backend wants to keep with it; not exported, forked or shown to
+  jobs), and a current version. Its `title` and `description` are the
+  current version's, from `artifact.json`. It is created together with its
+  first version, so it always has files.
 - **Version**: an immutable file tree. Versions are numbered 1, 2, 3… and
   never change. Each has an `origin`:
   - `edit`: a publish
@@ -48,13 +50,17 @@ durable storage. Runs happen on whichever fired host it points at.
   stored once, named by the SHA-256 of its content and zstd-compressed, so
   unchanged files cost nothing across versions, forks and artifacts.
 - **`artifact.json`**: an ordinary file in the tree, so it is versioned,
-  exported and forked with everything else. Without it, an `index.html` at
-  the root is viewed as html and there are no jobs.
+  exported and forked with everything else. Every version has one: when a
+  publish doesn't bring one, the current one is kept, and a new artifact
+  gets the default (an html view of `index.html` if there is one, no jobs).
+  It can't be deleted.
 
 ## artifact.json
 
 ```json
 {
+  "title": "Weekly sales",
+  "description": "Refreshed every weekday morning",
   "view": {"type": "react", "entry": "app/App.jsx"},
   "jobs": {
     "refresh": {
@@ -76,6 +82,12 @@ durable storage. Runs happen on whichever fired host it points at.
 
 Decoding is strict: an unknown field (say `"schedul"`) fails the publish
 instead of being ignored.
+
+**`title` and `description`** name the artifact (up to 200 and 2000
+bytes). They're versioned like everything else here: renaming makes a
+version, and a restore or fork brings the old name along. A zip of a
+version is therefore complete: published again elsewhere, it comes back
+with its name, view and jobs.
 
 **The view** tells your frontend how to present the artifact: one `entry`
 file, which must be in the version, and a `type`: `html`, `react`, `md`,
@@ -111,8 +123,8 @@ An artifact is created with its first version, and each later publish adds
 one. Both are one call:
 
 ```
-POST /v1/artifacts                {"id": "weekly-report", "quota_key": "u1", "meta": {...},
-                                   "publish": {"files": [...], ...}}          → v1
+POST /v1/artifacts                {"id": "weekly-report", "quota_key": "u1",
+                                   "publish": {"title": "Weekly report", "files": [...], ...}}   → v1
 POST /v1/artifacts/{id}/versions  {"base_version": 7, "files": [...], ...}   → v8
 ```
 
@@ -156,8 +168,10 @@ one file changed copies one file.
   `artifact.version` event is sent. Its `label` and `labels` are dropped;
   `run_now` and `notify` still apply, to the current version. Job runs work
   the same way: a run whose writes change nothing makes no version.
-- **A version always has at least one file.** A create without files, or a
-  publish that deletes every file, fails with `400`.
+- **A version always has at least one file**, and `artifact.json` counts (a
+  jobs-only artifact is fine). A create or `replace` without files fails
+  with `400`, and so does deleting `artifact.json`. Files that leave it out
+  (`replace`, a folder mirrored at the root) keep the current one.
 - **Files are a patch:** listed files are added or replaced, the rest are
   kept, `delete` removes one. Later entries win for the same path.
   `replace: true` starts from an empty tree instead.
@@ -166,10 +180,15 @@ one file changed copies one file.
 - **Each file op sets exactly one of** `hash` (an uploaded blob), `content`,
   `content_base64`, `delete` or `from_sandbox` (below). Inline content is
   capped by `limits.max_inline_bytes`. `mode` is 0644 (default) or 0755.
-- **`spec` writes `artifact.json`.** Passing both `spec` and an
+- **`spec` writes `artifact.json`,** replacing it. Passing both `spec` and an
   `artifact.json` file is an error. Without either, the previous
   `artifact.json` carries over and is validated again against the new files
   (a view whose entry was deleted fails the publish).
+- **`title` and `description` change just those fields** of `artifact.json`
+  and keep the rest; they win over `spec` and over an `artifact.json` in the
+  files. An agent publishing an unzipped export sets `title` to name its
+  copy and keeps the zip's view and jobs. A publish with only `title` is a
+  rename.
 - **All or nothing:** any invalid path, missing blob, invalid spec or limit
   breach means no version is created.
 - **Limits:** `limits.max_files_per_version`, `limits.max_version_bytes`, and
@@ -248,28 +267,13 @@ Runs).
   `"unchanged": true`, like a publish.
 - **Fork:** `POST /v1/artifacts/{id}/fork {"quota_key": "u2", "version": 4}`
   creates a new artifact whose v1 has v4's files (blobs are shared, nothing
-  is copied). Its jobs come along in `artifact.json`, but schedules are off
+  is copied); `"title"` renames the fork in its `artifact.json`. Its jobs come along in `artifact.json`, but schedules are off
   until the new owner publishes or a grant turns them on. Run state is not
   copied.
 - **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of the
-  version's files (`artifact.json` included when the version has one) plus
-  `.fired/export.json`: the artifact and version it came from, the
-  artifact's `meta`, and the version's effective `spec` (also when it's the
-  default). It carries what isn't in the files, so the zip can be published
-  again somewhere else (below).
-- **`.fired/` is reserved** at the root of a tree: it's never stored. When
-  a publish's files include `.fired/export.json` (an exported zip uploaded
-  again, or unzipped in a sandbox and published with `from_sandbox`), it's
-  a fallback for what the request doesn't say:
-  - its `spec` applies when there's no `artifact.json` in the files or the
-    version and no `spec` in the request, and is written as `artifact.json`
-    only if it differs from the default, so a round trip gives the same tree;
-  - its `meta` applies on a create, merged under the request's `meta`: the
-    request's keys win, and a `null` drops one (an agent naming the copy
-    sets `title` and keeps the rest).
-
-  The export's `artifact`, `version` and `exported_at` are informational.
-  Jobs can't write under `.fired/`.
+  version's files, `artifact.json` (title, description, view, jobs)
+  included. Published again, it's the same artifact; `meta`, labels and
+  the quota key aren't in it, since they belong to whoever owns it.
 - **Compare:** there's no compare endpoint; `GET …/versions/{n}` lists
   every file with its hash, so two versions diff by path and hash. The
   console does this.
@@ -431,7 +435,8 @@ All endpoints are under `/v1`. They need `X-Fired-Token: <token>` or
 `{"error": {"code", "message"}}`. A Go client is in `pkg/artifacts`.
 
 `PATCH /artifacts/{id}` changes settings (`quota_key`, `labels`, `meta`,
-`delete_after`, `retain_runs`) and never makes a version. Omitted fields are
+`delete_after`, `retain_runs`) and never makes a version. The title and
+description aren't settings: publish `{"base_version", "title"}` to rename. Omitted fields are
 left alone; `labels` and `meta` are merged as a JSON merge patch (RFC 7386):
 `{"labels": {"stage": "review", "draft": null}}` sets `stage`, removes
 `draft` and keeps the other labels.

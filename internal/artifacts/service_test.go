@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -191,7 +190,7 @@ func TestPublishSemantics(t *testing.T) {
 			pa.Text("b.txt", "b"), {Path: "data/a.csv", Delete: true}, pa.Text("b.txt", "b2"),
 		}}))(t)
 		v := must(c.Version(ctx, id, r.Version.Version))(t)
-		if got := strings.Join(paths(v), ","); got != "b.txt,index.html" || v.Parent != 1 {
+		if got := strings.Join(paths(v), ","); got != "artifact.json,b.txt,index.html" || v.Parent != 1 {
 			t.Fatalf("patched tree: %s parent %d", got, v.Parent)
 		}
 		if b := must(c.ReadFile(ctx, id, "b.txt", 0))(t); string(b) != "b2" {
@@ -203,7 +202,7 @@ func TestPublishSemantics(t *testing.T) {
 		must(c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 2, Files: []pa.FileOp{pa.Text("app/x.js", "1"), pa.Text("app/y.js", "2")}}))(t)
 		r := must(c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 3, ReplaceDirs: []string{"app"}, Files: []pa.FileOp{pa.Text("app/x.js", "3")}}))(t)
 		v := must(c.Version(ctx, id, r.Version.Version))(t)
-		if got := strings.Join(paths(v), ","); got != "app/x.js,b.txt,index.html" {
+		if got := strings.Join(paths(v), ","); got != "app/x.js,artifact.json,b.txt,index.html" {
 			t.Fatalf("mirrored tree: %s", got)
 		}
 	})
@@ -275,7 +274,7 @@ func TestPublishSemantics(t *testing.T) {
 		cur := must(c.Get(ctx, id))(t).CurrentVersion
 		r := must(c.Restore(ctx, id, pa.RestoreRequest{Version: 1, BaseVersion: cur}))(t)
 		v := must(c.Version(ctx, id, 0))(t)
-		if v.Version != r.Version.Version || v.Origin != pa.OriginRestore || strings.Join(paths(v), ",") != "data/a.csv,index.html" {
+		if v.Version != r.Version.Version || v.Origin != pa.OriginRestore || strings.Join(paths(v), ",") != "artifact.json,data/a.csv,index.html" {
 			t.Fatalf("restore: %+v %v", v, paths(v))
 		}
 		f := must(c.Fork(ctx, id, pa.ForkRequest{Version: 2, QuotaKey: "u2"}))(t)
@@ -283,7 +282,7 @@ func TestPublishSemantics(t *testing.T) {
 			t.Fatalf("fork: %+v", f)
 		}
 		fv := must(c.Version(ctx, f.ID, 1))(t)
-		if fv.Origin != pa.OriginFork || strings.Join(paths(fv), ",") != "b.txt,index.html" {
+		if fv.Origin != pa.OriginFork || strings.Join(paths(fv), ",") != "artifact.json,b.txt,index.html" {
 			t.Fatalf("fork tree: %v", paths(fv))
 		}
 		vs := must(c.Versions(ctx, id))(t)
@@ -309,7 +308,7 @@ func TestPublishSemantics(t *testing.T) {
 			names = append(names, f.Name)
 		}
 		sort.Strings(names)
-		if strings.Join(names, ",") != ".fired/export.json,data/a.csv,index.html" {
+		if strings.Join(names, ",") != "artifact.json,data/a.csv,index.html" {
 			t.Fatalf("zip: %v", names)
 		}
 	})
@@ -351,7 +350,8 @@ func TestPublishSemantics(t *testing.T) {
 func TestStorageQuota(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
-	must(h.c.SetQuota(ctx, "small", pa.Quota{StorageBytes: 10}))(t)
+	// Every version has an artifact.json: here the default, "{}\n" (3 bytes).
+	must(h.c.SetQuota(ctx, "small", pa.Quota{StorageBytes: 12}))(t)
 	_, err := h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "small", Publish: &pa.PublishRequest{
 		Files: []pa.FileOp{pa.Text("a.txt", "0123456789abcdef")}}})
 	wantCode(t, err, 413, "quota_exceeded")
@@ -362,7 +362,7 @@ func TestStorageQuota(t *testing.T) {
 	must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "small", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a.txt", "12345678")}}}))(t)
 	must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "small", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("b.txt", "12345678")}}}))(t)
 	st := must(h.c.Quota(ctx, "small"))(t)
-	if st.StorageUsed != 8 {
+	if st.StorageUsed != 11 {
 		t.Fatalf("storage used: %d", st.StorageUsed)
 	}
 }
@@ -566,93 +566,15 @@ func TestCreateNeedsFirstVersion(t *testing.T) {
 	_, err = c.Create(ctx, pa.CreateArtifactRequest{ID: "one", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", "y")}}})
 	wantCode(t, err, 409, "exists")
 
-	// No version may be empty: deleting the last file is refused.
-	_, err = c.Publish(ctx, "one", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{{Path: "a", Delete: true}}})
-	wantCode(t, err, 400, "invalid_request")
+	// No version may be empty. artifact.json counts (a jobs-only artifact
+	// is fine) and can't be deleted, but a publish of nothing is refused.
 	_, err = c.Publish(ctx, "one", pa.PublishRequest{BaseVersion: 1, Replace: true})
+	wantCode(t, err, 400, "invalid_request")
+	_, err = c.Publish(ctx, "one", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{{Path: pa.SpecFile, Delete: true}}})
 	wantCode(t, err, 400, "invalid_request")
 	if a := must(c.Get(ctx, "one"))(t); a.CurrentVersion != 1 {
 		t.Fatalf("refused publishes changed the artifact: %+v", a)
 	}
-}
-
-// An export carries what isn't in the files (meta, the effective spec) in
-// .fired/export.json; publishing the zip's files again uses it as a fallback
-// and never stores .fired.
-func TestExportRoundTrip(t *testing.T) {
-	h := newHarness(t, nil)
-	ctx := context.Background()
-	c := h.c
-	export := func(id string, v int) map[string][]byte {
-		t.Helper()
-		req, _ := http.NewRequest("GET", fmt.Sprintf("%s/v1/artifacts/%s/versions/%d/export", h.srv.URL, id, v), nil)
-		req.Header.Set("X-Fired-Token", testToken)
-		resp := must(http.DefaultClient.Do(req))(t)
-		data, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		zr := must(zip.NewReader(bytes.NewReader(data), int64(len(data))))(t)
-		out := map[string][]byte{}
-		for _, f := range zr.File {
-			rc := must(f.Open())(t)
-			out[f.Name], _ = io.ReadAll(rc)
-			rc.Close()
-		}
-		return out
-	}
-	ops := func(files map[string][]byte) []pa.FileOp {
-		var out []pa.FileOp
-		for p, b := range files {
-			out = append(out, pa.Text(p, string(b)))
-		}
-		return out
-	}
-
-	// Default spec: the zip comes back as the same tree, with the meta.
-	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "orig", QuotaKey: "u", Meta: json.RawMessage(`{"title":"Orig","description":"d"}`),
-		Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("index.html", "hi")}}}))(t)
-	files := export("orig", 1)
-	var info pa.ExportInfo
-	if err := json.Unmarshal(files[pa.ExportFile], &info); err != nil || info.Artifact != "orig" || info.Version != 1 ||
-		info.Spec == nil || info.Spec.View == nil || !bytes.Contains(info.Meta, []byte(`"description": "d"`)) {
-		t.Fatalf("export.json: %s %v", files[pa.ExportFile], err)
-	}
-	r := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "copy", QuotaKey: "u", Publish: &pa.PublishRequest{Files: ops(files)}}))(t)
-	if v := must(c.Version(ctx, "copy", 1))(t); strings.Join(paths(v), ",") != "index.html" {
-		t.Fatalf("copy tree: %v", paths(v))
-	}
-	if string(r.Artifact.Meta) != `{"title":"Orig","description":"d"}` {
-		t.Fatalf("meta fallback: %s", r.Artifact.Meta)
-	}
-
-	// The request's meta wins key by key; null drops a fallback key.
-	r = must(c.Create(ctx, pa.CreateArtifactRequest{ID: "named", QuotaKey: "u", Meta: json.RawMessage(`{"title":"Mine","description":null}`),
-		Publish: &pa.PublishRequest{Files: ops(files)}}))(t)
-	if string(r.Artifact.Meta) != `{"title":"Mine"}` {
-		t.Fatalf("meta override: %s", r.Artifact.Meta)
-	}
-
-	// A spec that isn't the default is written as artifact.json, unless the
-	// files or the request bring their own.
-	files[pa.ExportFile] = []byte(`{"spec":{"view":{"type":"md","entry":"index.html"}}}`)
-	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "as-md", QuotaKey: "u", Publish: &pa.PublishRequest{Files: ops(files)}}))(t)
-	if v := must(c.Version(ctx, "as-md", 1))(t); strings.Join(paths(v), ",") != "artifact.json,index.html" || v.Spec.View.Type != "md" {
-		t.Fatalf("spec fallback: %v %+v", paths(v), v.Spec)
-	}
-	r2 := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "own-spec", QuotaKey: "u", Publish: &pa.PublishRequest{Files: ops(files),
-		Spec: &pa.Spec{View: &pa.View{Type: "text", Entry: "index.html"}}}}))(t)
-	if r2.Publish.Version.Spec.View.Type != "text" {
-		t.Fatalf("request spec wins: %+v", r2.Publish.Version.Spec)
-	}
-
-	// .fired is never stored, and a broken export.json says so.
-	pr := must(c.Publish(ctx, "copy", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{pa.Text(".fired/other", "x")}}))(t)
-	if !pr.Unchanged {
-		t.Fatalf(".fired stored: %+v", pr)
-	}
-	_, err := c.Publish(ctx, "copy", pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{pa.Text(pa.ExportFile, "{")}})
-	wantCode(t, err, 400, "invalid_request")
-	_, err = c.Publish(ctx, "copy", pa.PublishRequest{BaseVersion: 1, Spec: &pa.Spec{Jobs: map[string]pa.Job{"a": {Run: "x", Writes: []string{".fired"}}}}})
-	wantCode(t, err, 400, "invalid_request")
 }
 
 // An artifact has one view. The earlier "views" list is read when it has one
@@ -671,5 +593,58 @@ func TestOneView(t *testing.T) {
 	}
 	if _, err := ParseSpec([]byte(`{"views":[{"type":"md","entry":"a"},{"type":"csv","entry":"b"}]}`)); err == nil || !strings.Contains(err.Error(), "one view") {
 		t.Fatalf("two views: %v", err)
+	}
+}
+
+// Every version has an artifact.json, with the title and description: the
+// default is written when the files bring none, title and description can be
+// set without replacing the rest, and they travel with restores and forks.
+func TestSpecFileAlwaysThere(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	c := h.c
+	str := func(s string) *string { return &s }
+	r := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "page", QuotaKey: "u", Publish: &pa.PublishRequest{
+		Files: []pa.FileOp{pa.Text("index.html", "hi")}, Title: str("Page")}}))(t)
+	if r.Artifact.Title != "Page" || r.Publish.Version.Spec.Title != "Page" || r.Publish.Version.Spec.View.Entry != "index.html" {
+		t.Fatalf("create: %+v %+v", r.Artifact, r.Publish.Version.Spec)
+	}
+	b := must(c.ReadFile(ctx, "page", pa.SpecFile, 0))(t)
+	if !bytes.Contains(b, []byte(`"title": "Page"`)) || !bytes.Contains(b, []byte(`"view"`)) {
+		t.Fatalf("artifact.json: %s", b)
+	}
+
+	// A folder mirrored at the root without artifact.json keeps the current one.
+	p := must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 1, Replace: true, Files: []pa.FileOp{pa.Text("index.html", "v2")}}))(t)
+	if p.Version.Spec.Title != "Page" {
+		t.Fatalf("replace dropped artifact.json: %+v", p.Version.Spec)
+	}
+
+	// Title and description change only those fields; the view stays.
+	p = must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 2, Description: str("About it")}))(t)
+	if p.Unchanged || p.Version.Spec.Title != "Page" || p.Version.Spec.Description != "About it" || p.Version.Spec.View == nil {
+		t.Fatalf("description: %+v", p.Version.Spec)
+	}
+	must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 3, Title: str("Renamed")}))(t)
+	if a := must(c.Get(ctx, "page"))(t); a.Title != "Renamed" || a.Description != "About it" {
+		t.Fatalf("rename: %+v", a)
+	}
+	// Spec replaces artifact.json; Title still wins over it.
+	p = must(c.Publish(ctx, "page", pa.PublishRequest{BaseVersion: 4, Title: str("Renamed"), Spec: &pa.Spec{Title: "Ignored"}}))(t)
+	if sp := p.Version.Spec; sp.Title != "Renamed" || sp.Description != "" || sp.View != nil {
+		t.Fatalf("spec and title: %+v", sp)
+	}
+
+	// Restore and fork carry the version's title; a fork can rename.
+	must(c.Restore(ctx, "page", pa.RestoreRequest{Version: 1, BaseVersion: 5}))(t)
+	if a := must(c.Get(ctx, "page"))(t); a.Title != "Page" || a.Description != "" {
+		t.Fatalf("restore: %+v", a)
+	}
+	f := must(c.Fork(ctx, "page", pa.ForkRequest{QuotaKey: "u2", Version: 4, Title: "Copy"}))(t)
+	if f.Title != "Copy" || f.Description != "About it" {
+		t.Fatalf("fork: %+v", f)
+	}
+	if fv := must(c.Version(ctx, f.ID, 1))(t); fv.Spec.Title != "Copy" {
+		t.Fatalf("fork spec: %+v", fv.Spec)
 	}
 }

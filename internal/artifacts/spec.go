@@ -115,6 +115,12 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 	if err := oneView(s); err != nil {
 		add("%v", err)
 	}
+	if len(s.Title) > 200 {
+		add("title is longer than 200 bytes")
+	}
+	if len(s.Description) > 2000 {
+		add("description is longer than 2000 bytes")
+	}
 	if v := s.View; v != nil {
 		if !viewTypes[v.Type] {
 			add("view: unknown type %q (want one of %s)", v.Type, strings.Join(sortedKeys(viewTypes), ", "))
@@ -147,8 +153,8 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 				add("jobs.%s.writes[%d]: %v", n, k, err)
 				continue
 			}
-			if c == pa.SpecFile || under(c, pa.FiredDir) {
-				add("jobs.%s.writes[%d]: a job can't write %s", n, k, c)
+			if c == pa.SpecFile {
+				add("jobs.%s.writes[%d]: a job can't write %s", n, k, pa.SpecFile)
 			}
 			j.Writes[k] = c
 		}

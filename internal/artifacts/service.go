@@ -116,20 +116,9 @@ func (s *Service) Create(ctx context.Context, req pa.CreateArtifactRequest) (*pa
 	if err != nil {
 		return nil, err
 	}
-	meta := req.Meta
-	if prep.info != nil && len(prep.info.Meta) > 0 {
-		// The export's meta is a fallback: the request's keys win, and a
-		// null in the request drops one.
-		meta = prep.info.Meta
-		if len(req.Meta) > 0 {
-			if meta, err = mergePatch(prep.info.Meta, req.Meta); err != nil {
-				return nil, err
-			}
-		}
-	}
 	s.tierOf(ctx, req.QuotaKey)
 	now := s.now()
-	a := &pa.Artifact{ID: id, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: meta, DeleteAfter: req.DeleteAfter,
+	a := &pa.Artifact{ID: id, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta, DeleteAfter: req.DeleteAfter,
 		RetainRuns: req.RetainRuns, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
 	var v *pa.Version
 	err = s.st.tx(ctx, func(q querier) error {
@@ -367,37 +356,6 @@ type resolvedOp struct {
 	file  pa.File
 }
 
-// takeFiredDir removes the ops for the reserved .fired folder and returns
-// its export.json, if one was given.
-func (s *Service) takeFiredDir(ops []resolvedOp) ([]resolvedOp, *pa.ExportInfo, error) {
-	var info *pa.ExportInfo
-	out := ops[:0]
-	for _, op := range ops {
-		if op.path == "" || !under(op.path, pa.FiredDir) {
-			out = append(out, op)
-			continue
-		}
-		if op.path != pa.ExportFile || op.delete || op.clear {
-			continue
-		}
-		data, err := s.blobs.ReadAll(op.file.Hash, 1<<20)
-		if err != nil {
-			return nil, nil, badRequest("%s: %v", pa.ExportFile, err)
-		}
-		info = &pa.ExportInfo{}
-		if err := json.Unmarshal(data, info); err != nil {
-			return nil, nil, badRequest("%s: %v", pa.ExportFile, err)
-		}
-		if len(info.Meta) > 0 {
-			var b bytes.Buffer
-			if err := json.Compact(&b, info.Meta); err == nil {
-				info.Meta = b.Bytes()
-			}
-		}
-	}
-	return out, info, nil
-}
-
 // resolveOps validates file ops and stores inline content as blobs.
 func (s *Service) resolveOps(ctx context.Context, req pa.PublishRequest) ([]resolvedOp, error) {
 	var ops []resolvedOp
@@ -525,6 +483,50 @@ func (s *Service) specFor(tree map[string]pa.File) (pa.Spec, error) {
 	return spec, nil
 }
 
+// ensureSpecFile makes sure tree has an artifact.json, writing spec (or,
+// when nil, the default for the tree) if it has none, and sets the title
+// and description given.
+func (s *Service) ensureSpecFile(tree map[string]pa.File, spec *pa.Spec, title, description *string) error {
+	f, ok := tree[pa.SpecFile]
+	if ok && title == nil && description == nil {
+		return nil
+	}
+	var sp pa.Spec
+	switch {
+	case ok:
+		data, err := s.blobs.ReadAll(f.Hash, 1<<20)
+		if err != nil {
+			return badRequest("%s: %v", pa.SpecFile, err)
+		}
+		if sp, err = ParseSpec(data); err != nil {
+			return badRequest("%v", err)
+		}
+	case spec != nil:
+		sp = *spec
+	default:
+		sp = DefaultSpec(tree)
+	}
+	if title != nil {
+		sp.Title = *title
+	}
+	if description != nil {
+		sp.Description = *description
+	}
+	data := EncodeSpec(sp)
+	h, err := s.blobs.PutBytes(data)
+	if err != nil {
+		return err
+	}
+	tree[pa.SpecFile] = pa.File{Path: pa.SpecFile, Hash: h, Size: int64(len(data)), Mode: 0o644}
+	return nil
+}
+
+// setCurrent makes v the artifact's current version, and its title and
+// description the artifact's.
+func setCurrent(a *pa.Artifact, v *pa.Version) {
+	a.CurrentVersion, a.Title, a.Description = v.Version, v.Spec.Title, v.Spec.Description
+}
+
 // checkTree enforces per-version limits and the quota key's storage limit.
 func (s *Service) checkTree(ctx context.Context, q querier, key string, tree map[string]pa.File) (int64, error) {
 	if len(tree) > s.cfg.Limits.MaxFilesPerVersion {
@@ -588,11 +590,6 @@ type publishPrep struct {
 	specHash    string
 	specSize    int64
 	replaceDirs []string
-	// info is .fired/export.json from the files, if they had one;
-	// infoSpec is its spec as artifact.json, used when there's no other.
-	info         *pa.ExportInfo
-	infoSpecHash string
-	infoSpecSize int64
 }
 
 func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*publishPrep, error) {
@@ -600,17 +597,11 @@ func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*p
 	if err != nil {
 		return nil, err
 	}
-	ops, info, err := s.takeFiredDir(ops)
-	if err != nil {
-		return nil, err
-	}
-	p := &publishPrep{ops: ops, info: info, replaceDirs: make([]string, 0, len(req.ReplaceDirs))}
-	if info != nil && info.Spec != nil && req.Spec == nil {
-		data := EncodeSpec(*info.Spec)
-		if p.infoSpecHash, err = s.blobs.PutBytes(data); err != nil {
-			return nil, err
+	p := &publishPrep{ops: ops, replaceDirs: make([]string, 0, len(req.ReplaceDirs))}
+	for _, op := range ops {
+		if op.path == pa.SpecFile && op.delete {
+			return nil, badRequest("%s can't be deleted: every version has one (publish a new one to change it)", pa.SpecFile)
 		}
-		p.infoSpecSize = int64(len(data))
 	}
 	if req.Spec != nil {
 		for _, op := range ops {
@@ -719,21 +710,19 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 		}
 		tree[op.path] = op.file
 	}
-	for path := range tree {
-		if under(path, pa.FiredDir) {
-			delete(tree, path)
-		}
-	}
 	if p.specHash != "" {
 		tree[pa.SpecFile] = pa.File{Path: pa.SpecFile, Hash: p.specHash, Size: p.specSize, Mode: 0o644}
 	}
-	if _, ok := tree[pa.SpecFile]; !ok && p.infoSpecHash != "" && !bytes.Equal(EncodeSpec(*p.info.Spec), EncodeSpec(DefaultSpec(tree))) {
-		// The export's spec, written out only when it isn't what the tree
-		// gets anyway, so an exported zip published again is the same tree.
-		tree[pa.SpecFile] = pa.File{Path: pa.SpecFile, Hash: p.infoSpecHash, Size: p.infoSpecSize, Mode: 0o644}
-	}
 	if len(tree) == 0 {
 		return nil, false, badRequest("a version needs at least one file")
+	}
+	if _, ok := tree[pa.SpecFile]; !ok {
+		if f, ok := cur[pa.SpecFile]; ok {
+			tree[pa.SpecFile] = f // left out (replace, a mirrored folder): kept
+		}
+	}
+	if err := s.ensureSpecFile(tree, nil, req.Title, req.Description); err != nil {
+		return nil, false, err
 	}
 	if a.CurrentVersion > 0 && treesEqual(cur, tree) {
 		if v, err = getVersion(ctx, q, id, a.CurrentVersion); err != nil {
@@ -777,7 +766,8 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 			return nil, false, err
 		}
 	}
-	a.CurrentVersion, a.UpdatedAt, a.LastActiveAt = v.Version, now, now
+	setCurrent(a, v)
+	a.UpdatedAt, a.LastActiveAt = now, now
 	if err := putArtifact(ctx, q, a); err != nil {
 		return nil, false, err
 	}
@@ -857,6 +847,9 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 		if err != nil {
 			return err
 		}
+		if err := s.ensureSpecFile(tree, &old.Spec, nil, nil); err != nil {
+			return err
+		}
 		cur, err := getTree(ctx, q, id, a.CurrentVersion)
 		if err != nil {
 			return err
@@ -883,7 +876,8 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 		if err := insertVersion(ctx, q, v, tree); err != nil {
 			return err
 		}
-		a.CurrentVersion, a.UpdatedAt, a.LastActiveAt = v.Version, now, now
+		setCurrent(a, v)
+		a.UpdatedAt, a.LastActiveAt = now, now
 		if err := putArtifact(ctx, q, a); err != nil {
 			return err
 		}
@@ -944,21 +938,30 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		if err != nil {
 			return err
 		}
+		spec := old.Spec
+		var title *string
+		if req.Title != "" {
+			title, spec.Title = &req.Title, req.Title
+		}
+		if err := s.ensureSpecFile(tree, &old.Spec, title, nil); err != nil {
+			return err
+		}
 		size, err := s.checkTree(ctx, q, req.QuotaKey, tree)
 		if err != nil {
 			return err
 		}
-		out = &pa.Artifact{ID: newIDv, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta, CurrentVersion: 1,
+		v := &pa.Version{Artifact: newIDv, Version: 1, Origin: pa.OriginFork, Label: fmt.Sprintf("fork of %s v%d", id, n),
+			FileCount: len(tree), SizeBytes: size, Spec: spec, CreatedAt: now}
+		out = &pa.Artifact{ID: newIDv, QuotaKey: req.QuotaKey, Labels: req.Labels, Meta: req.Meta,
 			ForkedFrom: &pa.VersionRef{Artifact: id, Version: n}, CreatedAt: now, UpdatedAt: now, LastActiveAt: now}
+		setCurrent(out, v)
 		if err := putArtifact(ctx, q, out); err != nil {
 			return err
 		}
-		v := &pa.Version{Artifact: newIDv, Version: 1, Origin: pa.OriginFork, Label: fmt.Sprintf("fork of %s v%d", id, n),
-			FileCount: len(tree), SizeBytes: size, Spec: old.Spec, CreatedAt: now}
 		if err := insertVersion(ctx, q, v, tree); err != nil {
 			return err
 		}
-		return s.syncJobs(ctx, q, newIDv, old.Spec, now, false)
+		return s.syncJobs(ctx, q, newIDv, spec, now, false)
 	})
 	if err != nil {
 		return nil, err
