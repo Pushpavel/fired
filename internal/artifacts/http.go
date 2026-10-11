@@ -816,6 +816,9 @@ func (s *Service) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if filter != "" && ev.Artifact != filter {
 				continue
 			}
+			if len(ev.Paths) > pa.MaxEventPaths {
+				ev.PathsTotal, ev.Paths = len(ev.Paths), ev.Paths[:pa.MaxEventPaths]
+			}
 			b, _ := json.Marshal(ev)
 			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b); err != nil {
 				return

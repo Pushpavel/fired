@@ -543,7 +543,7 @@ redacted).
 |---|---|
 | `artifact.created`, `artifact.deleted` | |
 | `artifact.version` | Every new version, with `origin`. Not sent for an unchanged publish or restore. |
-| `db.changed` | Documents were written or deleted (`paths`). |
+| `db.changed` | Documents were written or deleted (`paths`: at most 100, with `paths_total` when there were more). |
 | `run.started` | A run left `pending`. |
 | `run.finished` | With `status`, `reason`, and `notify` if the publish asked for it. |
 | `run.dropped` | With `reason`: `queue_full`, `expired`, `job_removed`, `needs_approval`. |

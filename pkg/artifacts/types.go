@@ -436,6 +436,9 @@ type CredentialsResponse struct {
 
 // ---- events
 
+// MaxEventPaths is the most paths a db.changed event lists.
+const MaxEventPaths = 100
+
 type Event struct {
 	// Type: artifact.created, artifact.version, artifact.deleted,
 	// db.changed (Paths: the documents written or deleted), run.started,
@@ -445,9 +448,12 @@ type Event struct {
 	Version  int      `json:"version,omitempty"`
 	Origin   string   `json:"origin,omitempty"`
 	Paths    []string `json:"paths,omitempty"`
-	RunID    string   `json:"run_id,omitempty"`
-	Status   string   `json:"status,omitempty"`
-	Reason   string   `json:"reason,omitempty"`
+	// PathsTotal is how many documents changed when Paths was cut to its
+	// first MaxEventPaths (a batch, a collection deleted).
+	PathsTotal int    `json:"paths_total,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 	// Notify is copied from the publish that asked to hear about this
 	// version's first run.
 	Notify string    `json:"notify,omitempty"`
