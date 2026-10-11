@@ -149,8 +149,9 @@ func parseWhere(w string) (dbFilter, error) {
 	if i <= 0 {
 		return dbFilter{}, badRequest("where %q: want field op value, op one of == != < <= > >=", w)
 	}
-	f := dbFilter{field: strings.Split(w[:i], ".")}
-	if !dbFieldRE.MatchString(w[:i]) {
+	name := strings.TrimSpace(w[:i])
+	f := dbFilter{field: strings.Split(name, ".")}
+	if !dbFieldRE.MatchString(name) {
 		return f, badRequest("where %q: a field is a key or a dotted path (a.b) of A-Z a-z 0-9 _ -", w)
 	}
 	rest := w[i:]
@@ -314,15 +315,15 @@ func (s *Service) Write(ctx context.Context, id string, writes []pa.DBWrite, acc
 		w.Path = p
 		switch w.Op {
 		case pa.DBSet, pa.DBUpdate:
-			if err := object(w.Data, fmt.Sprintf("writes[%d].data", i)); err != nil {
+			if err := object(w.Data, "the data of "+p); err != nil {
 				return nil, err
 			}
 		case pa.DBDelete:
 			if len(w.Data) > 0 {
-				return nil, badRequest("writes[%d]: a delete has no data", i)
+				return nil, badRequest("deleting %s: a delete has no data", p)
 			}
 		default:
-			return nil, badRequest("writes[%d].op must be set, update or delete", i)
+			return nil, badRequest("writes[%d] (%s): op must be set, update or delete", i, p)
 		}
 		if acc.run != nil && acc.run.secrets != nil {
 			if name, ok := acc.run.secrets.Find(w.Data); ok {
@@ -347,11 +348,11 @@ func (s *Service) Write(ctx context.Context, id string, writes []pa.DBWrite, acc
 			}
 			switch {
 			case w.Rev == -1 && cur != nil:
-				return errf(http.StatusPreconditionFailed, "rev_mismatch", "%s exists (rev %d)", w.Path, cur.Rev)
+				return errf(http.StatusPreconditionFailed, "rev_mismatch", "document %s already exists (rev %d)", w.Path, cur.Rev)
 			case w.Rev > 0 && cur == nil:
-				return errf(http.StatusPreconditionFailed, "rev_mismatch", "%s doesn't exist (expected rev %d)", w.Path, w.Rev)
+				return errf(http.StatusPreconditionFailed, "rev_mismatch", "document %s doesn't exist (expected rev %d)", w.Path, w.Rev)
 			case w.Rev > 0 && cur.Rev != w.Rev:
-				return errf(http.StatusPreconditionFailed, "rev_mismatch", "%s is at rev %d, not %d: read it again", w.Path, cur.Rev, w.Rev)
+				return errf(http.StatusPreconditionFailed, "rev_mismatch", "document %s is at rev %d, not %d: read it again", w.Path, cur.Rev, w.Rev)
 			}
 			var oldSize int64
 			if cur != nil {

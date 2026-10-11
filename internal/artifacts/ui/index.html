@@ -797,7 +797,7 @@ def call(method, path="", data=None):
     except urllib.error.HTTPError as e:
         if e.code == 404 and method == "GET":
             return None
-        raise RuntimeError(f"{method} {path}: {e.code} {e.read().decode()}") from None
+        raise RuntimeError(f"db {method} {path or '(batch)'}: {e.code} {e.read().decode()}") from None
 
 
 def get(path):
