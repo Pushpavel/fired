@@ -363,7 +363,9 @@ Runs).
   is copied) and, if v4 is the current version (the default), a copy of
   the source's db except `_private/`, which was the source owner's. A fork
   of an older version starts with an empty db: the db is the current
-  version's data, which an older page may not understand. `"title"`
+  version's data, which an older page may not understand.
+  `"include_private": true` copies `_private/` too, for an owner
+  duplicating their own artifact (see What your backend offers). `"title"`
   renames the fork in its `artifact.json`. Which versions someone may fork
   is your backend's call (say, the latest of an artifact shared with them,
   any of their own); the fork's storage, documents included, counts
@@ -575,7 +577,7 @@ job's token) and under `/.fired/db/` in a view (the viewer's access):
 | `GET …?watch` | the same as server-sent events: a `snapshot` now and after every change (a document is `null` while it doesn't exist) |
 | `PUT …/db/{doc}` | sets it to the body, a JSON object |
 | `PATCH …/db/{doc}` | merges the body into it (JSON merge patch: `null` removes a key), creating it |
-| `DELETE …/db/{doc\|collection}` | deletes the document, or the collection and everything under it; `DELETE …/db` clears the db |
+| `DELETE …/db/{doc\|collection}` | deletes the document, or the collection and everything under it; `DELETE …/db` empties the whole db, `_private/` included (the owner's "reset data") |
 | `POST …/db` | `{"writes": [{"op": "set"\|"update"\|"delete", "path", "data", "rev"}]}`, applied in order, all or none |
 
 Every write bumps the document's `rev`. `If-Match: <rev>` (or a write's
@@ -625,6 +627,28 @@ which is added to the runner sandboxes' allowlist. It can't be a loopback
 address (sandboxes don't proxy those), and a private one (a cluster
 Service) must be in fired's `egress.allow_private_cidrs`. Without
 `runner.db_url`, jobs have no db.
+
+## What your backend offers its users
+
+The service doesn't know who anyone is; these are the user-facing actions
+it's built for, and the calls behind them. "Owner" is whoever your backend
+says owns the artifact.
+
+| The user… | Who | Your backend calls |
+|---|---|---|
+| opens an artifact | anyone it's shared with | header routing with `X-Artifact` (add `X-Artifact-Owner: true` for the owner); `X-Artifact-Version` for a link to a past version, which is read-only |
+| looks at its history | the owner | `GET …/versions`, `…/versions/{n}`, a pinned view per version |
+| restores a version | the owner | `POST …/restore` (the db stays as it is) |
+| **forks** an artifact shared with them | anyone it's shared with | `POST …/fork {"quota_key": <theirs>}`: the latest version only (they don't see the others), its db without `_private/`, the job off until they publish, no grant |
+| **duplicates** their own artifact | the owner | `POST …/fork {"quota_key": <theirs>, "version": n}`: any version; for the current one, `"include_private": true` keeps the job's state, so the copy's job carries on where the original left off (an older version's copy starts with an empty db) |
+| **resets its data** | the owner | `DELETE …/db`: every document, `_private/` included; the job starts from nothing on its next run. A collection or a document: `DELETE …/db/{path}` |
+| runs its job now | the owner | `POST …/job/runs` (or the page's `job.run`) |
+| approves a longer job | the owner | `PUT …/job/grant` |
+| deletes it | the owner | `DELETE /v1/artifacts/{id}`: versions, db, runs and its runner sandbox |
+
+Never set `include_private` for someone else's fork: `_private/` is where
+a job keeps what its owner doesn't show (raw data, cursors, anything
+derived from the owner's credentials).
 
 ## Retention and garbage collection
 

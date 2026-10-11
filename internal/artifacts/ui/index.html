@@ -370,6 +370,7 @@ details[open] summary { margin-bottom: var(--s3); }
       <label class="field"><span><strong>ID</strong>, optional</span><input type="text" name="id" placeholder="Generated if empty" pattern="[a-z0-9\-]{3,44}"></label>
     </div>
     <label class="field"><span><strong>Title</strong></span><input type="text" name="title"></label>
+    <label class="check"><input type="checkbox" name="include_private"> Include <code>_private/</code>: the owner duplicating their own artifact, so its job carries on where this one left off</label>
   </div>
   <div class="d-foot"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" value="ok">Fork</button></div>
 </form></dialog>
@@ -1463,6 +1464,7 @@ function forkDialog(n) {
   $("#dlg-fork-title").textContent = `Fork v${n}`;
   $("#fork-note").textContent = "The fork starts with this version's files and, if it's the current version, a copy of the db except _private/ (an older version's fork starts with an empty db). Blobs are shared, not copied. The job comes along but its schedule stays off until the new owner publishes.";
   f.elements.quota_key.value = S.art.quota_key; f.elements.title.value = titleOf(S.art) + " (fork)";
+  f.elements.include_private.disabled = n !== S.art.current_version;
   dlgFork.showModal();
 }
 dlgFork.addEventListener("close", async () => {
@@ -1470,6 +1472,7 @@ dlgFork.addEventListener("close", async () => {
   const f = dlgFork.querySelector("form").elements;
   const req = { quota_key: f.quota_key.value.trim(), version: +dlgFork.dataset.version, title: f.title.value.trim() };
   if (f.id.value.trim()) req.id = f.id.value.trim();
+  if (f.include_private.checked) req.include_private = true;
   try { const a = await guard(() => api("POST", `/artifacts/${enc(S.art.id)}/fork`, req), "Forked"); await refreshList(); openArtifact(a.id); } catch {}
 });
 

@@ -1149,6 +1149,19 @@ func TestDB(t *testing.T) {
 		if l := must(c.Query(ctx, old.ID, "", pa.DocQuery{}))(t); len(l.Docs) != 0 {
 			t.Fatalf("a fork of v1 got the current db: %+v", l.Docs)
 		}
+		if _, err := c.GetDoc(ctx, cur.ID, "_private/state"); err == nil {
+			t.Fatal("a fork got _private/ without include_private")
+		}
+		// The owner duplicating their own artifact keeps its job's state.
+		dup := must(c.Fork(ctx, "app", pa.ForkRequest{ID: "app-dup", QuotaKey: "u", IncludePrivate: true}))(t)
+		if d := must(c.GetDoc(ctx, dup.ID, "_private/state"))(t); string(d.Data) != `{"cursor":7}` {
+			t.Fatalf("a duplicate's _private/state: %s", d.Data)
+		}
+		_, err := c.Fork(ctx, "app", pa.ForkRequest{QuotaKey: "u", Version: 1, IncludePrivate: true})
+		wantCode(t, err, 400, "invalid_request")
+		if err := c.Delete(ctx, dup.ID); err != nil {
+			t.Fatal(err)
+		}
 		for _, id := range []string{cur.ID, old.ID} {
 			if err := c.Delete(ctx, id); err != nil {
 				t.Fatal(err)

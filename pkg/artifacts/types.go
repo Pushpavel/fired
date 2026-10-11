@@ -275,6 +275,13 @@ type ForkRequest struct {
 	QuotaKey string            `json:"quota_key"`
 	Labels   map[string]string `json:"labels,omitempty"`
 	Meta     json.RawMessage   `json:"meta,omitempty"`
+	// IncludePrivate copies the db's _private/ too (the job's state and raw
+	// data), so the copy's job carries on where the source's left off. Set
+	// it only when the source's owner duplicates their own artifact: it's
+	// that owner's data, never for someone forking an artifact shared with
+	// them. Only with the current version (a fork of an older one gets no
+	// db at all).
+	IncludePrivate bool `json:"include_private,omitempty"`
 }
 
 type MissingBlobsRequest struct {

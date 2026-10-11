@@ -46,3 +46,13 @@ of documents, forked into a key limited to 100 kB. Deleted afterwards.
   forks what: someone forking an artifact shared with them gets its latest
   version (they never see the others); an owner duplicating their own
   artifact may pick any version.
+- **`include_private`** (after 12): a fork option for an owner duplicating
+  their own artifact (current version only, else `400`): `_private/` comes
+  along, so the copy's job carries on where the original left off. Never
+  for someone else's fork. The console's Fork dialog has it as a
+  checkbox. Docs: a table of what the backend offers users (open, history,
+  restore, fork vs duplicate, reset data, run, approve, delete) and the
+  calls behind each.
+- **Resetting data** already existed: `DELETE /v1/artifacts/{id}/db` (Go:
+  `ClearDB`) empties the db, `_private/` included; now documented as the
+  owner's "reset data".

@@ -389,7 +389,8 @@ func (c *Client) Batch(ctx context.Context, id string, writes []DBWrite) (*DBBat
 	return &out, c.do(ctx, "POST", ap(id)+"/db", DBBatch{Writes: writes}, &out)
 }
 
-// ClearDB deletes all of the artifact's documents.
+// ClearDB deletes all of the artifact's documents, _private/ included:
+// the owner's "reset data". The job starts from nothing on its next run.
 func (c *Client) ClearDB(ctx context.Context, id string) error {
 	return c.do(ctx, "DELETE", ap(id)+"/db", nil, nil)
 }

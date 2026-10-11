@@ -518,12 +518,17 @@ func dbBytes(ctx context.Context, q querier, key string) (int64, error) {
 	return n.Int64, err
 }
 
-// copyDocs copies src's documents, except _private/, to dst (a fork).
-func copyDocs(ctx context.Context, q querier, src, dst string, now time.Time) error {
+// copyDocs copies src's documents to dst (a fork): all of them with
+// private, else all but _private/.
+func copyDocs(ctx context.Context, q querier, src, dst string, private bool, now time.Time) error {
+	skip := pa.PrivateCollection
+	if private {
+		skip = "" // no first segment is empty
+	}
 	_, err := q.ExecContext(ctx, `
 INSERT INTO docs(artifact, path, parent, data, size, rev, created_at, updated_at)
 SELECT ?, path, parent, data, size, 1, ?, ? FROM docs WHERE artifact=? AND split_part(path, '/', 1) <> ?`,
-		dst, ms(now), ms(now), src, pa.PrivateCollection)
+		dst, ms(now), ms(now), src, skip)
 	return err
 }
 

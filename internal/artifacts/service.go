@@ -952,9 +952,11 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		// The db is the current version's data: an older version's page
 		// may expect another shape, so its fork starts with an empty one.
 		if n == src.CurrentVersion {
-			if err := copyDocs(ctx, q, id, newIDv, now); err != nil {
+			if err := copyDocs(ctx, q, id, newIDv, req.IncludePrivate, now); err != nil {
 				return err
 			}
+		} else if req.IncludePrivate {
+			return badRequest("include_private copies the db, which only a fork of the current version (%d) gets", src.CurrentVersion)
 		}
 		// The files were checked against the new key's storage; the
 		// documents it gets count too.
