@@ -73,9 +73,16 @@ Artifacts `u04-*` (quota keys `u04`, `u04b`, `u04q`). All artifacts from
 
 ## Questions
 
-- The console hashes with `crypto.subtle`, which only exists on secure
-  origins (https, localhost). On plain http elsewhere it falls back to
-  inline/base64, so a large build fails there. Fine for now; a JS SHA-256
-  would fix it.
-- Version rows: every version stores all its file rows (5001 for the
-  5000-file artifact). Still fine at this size (noted in 01).
+- ~~The console hashes with `crypto.subtle`, only on secure origins.~~
+  The console is reached over plain http, so it now falls back to a
+  built-in SHA-256 (matches Node's at every edge length; 6 MiB in 250 ms),
+  and Copy source / Copy as curl fall back from `navigator.clipboard` to
+  `execCommand`. Tried on `127.0.0.1.nip.io` (not a secure origin): the
+  301-file upload sent 1 changed blob in a 30 KB request, and Copy source
+  worked.
+- **File rows, decided to leave:** contents are stored once (blobs); each
+  version stores its file list as rows (path, hash, size, mode, ~150 B), so
+  a 5000-file artifact with 24 run versions is ~125k rows, ~20 MB of
+  SQLite. That's fine, and it keeps serving a single indexed lookup. If it
+  ever hurts: store each version's list as one content-addressed blob (git
+  trees), one row per version, cached in memory for serving.
