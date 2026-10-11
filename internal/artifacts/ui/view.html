@@ -4,9 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>View</title>
-<!-- Served on an artifact's preview origin at /.fired/view?type=…&entry=…
-     It renders one view of the artifact's files; the files themselves are
-     fetched from this same origin. -->
+<!-- The console's file preview: /ui/view.html#type=…&entry=…, loaded in a
+     sandboxed frame (an opaque origin: no cookies, no console access). It
+     renders one file and asks the console (its parent) for the files it
+     needs; the console reads them with the files API. -->
 <script type="importmap">
 {
   "imports": {
@@ -55,11 +56,32 @@ embed { width: 100%; height: 100vh; display: block; border: 0; }
 <body>
 <div id="root"></div>
 <script type="module">
-const q = new URLSearchParams(location.search);
-const type = q.get("type") || "html";
-const entry = (q.get("entry") || "index.html").replace(/^\/+/, "");
+const q = new URLSearchParams(location.hash.slice(1));
+const type = q.get("type") || "text";
+const entry = (q.get("entry") || "").replace(/^\/+/, "");
 const root = document.getElementById("root");
-const href = p => "/" + p.split("/").map(encodeURIComponent).join("/");
+
+// Files come from the console: {get: path} out, {id, ok, body: ArrayBuffer,
+// error} back. Nothing is fetched from an origin, since this frame has none.
+let seq = 0;
+const waiting = new Map();
+addEventListener("message", e => {
+  if (e.source !== parent) return;
+  const w = waiting.get(e.data?.id); if (!w) return;
+  waiting.delete(e.data.id);
+  e.data.ok ? w.ok(e.data.body) : w.fail(new Error(e.data.error || "not found"));
+});
+const files = new Map();
+function file(p) {
+  if (!files.has(p)) files.set(p, new Promise((ok, fail) => { const id = ++seq; waiting.set(id, { ok, fail }); parent.postMessage({ id, get: p }, "*"); }));
+  return files.get(p);
+}
+const MIME = { svg: "image/svg+xml", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+async function dataURL(p) {
+  const buf = new Uint8Array(await file(p));
+  let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  return `data:${MIME[p.split(".").pop().toLowerCase()] || "application/octet-stream"};base64,${btoa(bin)}`;
+}
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
 function problem(title, detail) {
@@ -68,9 +90,8 @@ function problem(title, detail) {
   root.replaceChildren(box);
 }
 async function text(p) {
-  const r = await fetch(href(p));
-  if (!r.ok) throw new Error(`${p}: ${r.status} ${r.statusText}`);
-  return r.text();
+  try { return new TextDecoder().decode(await file(p)); }
+  catch (e) { throw new Error(`${p}: ${e.message}`); }
 }
 const load = src => new Promise((ok, fail) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = () => fail(new Error("Couldn't load " + src)); document.head.append(s); });
 
@@ -138,12 +159,13 @@ function resolve(from, spec) {
 }
 async function findFile(p) {
   for (const ext of EXT) {
-    const r = await fetch(href(p + ext), { method: "HEAD" });
-    if (r.ok) return p + ext;
+    try { await file(p + ext); return p + ext; } catch {}
   }
   throw new Error(`Can't find ${p} (tried ${EXT.filter(Boolean).join(", ")})`);
 }
-const blobURL = code => URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+// Modules are data: URLs: blob: URLs of an opaque origin can't be imported
+// everywhere.
+const blobURL = code => "data:text/javascript;charset=utf-8," + encodeURIComponent(code);
 function compile(p) {
   if (!compiled.has(p)) compiled.set(p, (async () => {
     const src = await text(p);
@@ -180,27 +202,29 @@ async function renderReact() {
 
 async function main() {
   switch (type) {
-    case "html":
-      location.replace(href(entry)); return;
     case "image": case "svg": {
-      const box = el("div", "media"), img = el("img"); img.src = href(entry); img.alt = entry; box.append(img); root.replaceChildren(box); return;
-    }
-    case "pdf": {
-      const e = el("embed"); e.src = href(entry); e.type = "application/pdf"; root.replaceChildren(e); return;
+      const box = el("div", "media"), img = el("img"); img.src = await dataURL(entry); img.alt = entry; box.append(img); root.replaceChildren(box); return;
     }
     case "md": {
       const [src] = await Promise.all([text(entry), load("https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js")]);
-      const base = document.createElement("base"); base.href = href(entry.includes("/") ? entry.slice(0, entry.lastIndexOf("/") + 1) : ""); document.head.append(base);
-      const doc = el("article", "doc"); doc.innerHTML = marked.parse(src); root.replaceChildren(doc); return;
+      const doc = el("article", "doc"); doc.innerHTML = marked.parse(src); root.replaceChildren(doc);
+      // Relative images are files of the artifact, next to the entry.
+      for (const img of doc.querySelectorAll("img[src]")) {
+        const src = img.getAttribute("src");
+        if (/^([a-z]+:|\/\/|#)/i.test(src)) continue;
+        img.src = await dataURL(resolve(entry, src.split(/[?#]/)[0])).catch(() => "");
+      }
+      for (const a of doc.querySelectorAll("a[href]")) a.target = "_blank";
+      return;
     }
     case "csv": renderCSV(await text(entry)); return;
     case "json": renderJSON(await text(entry)); return;
     case "text": root.replaceChildren(el("pre", "raw", await text(entry))); return;
     case "react": await renderReact(); return;
-    default: problem(`No viewer for "${type}"`, "Views can be html, react, md, csv, json, text, image, svg or pdf.");
+    default: problem(`No preview for "${type}"`, "Previews show md, csv, json, text, images, svg and react files.");
   }
 }
-window.addEventListener("error", e => problem("The view stopped with an error", e.message));
+window.addEventListener("error", e => problem("The preview stopped with an error", e.message));
 main().catch(e => problem(`Couldn't show ${entry}`, e.message));
 </script>
 </body>

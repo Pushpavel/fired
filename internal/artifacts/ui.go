@@ -10,9 +10,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
-	"time"
+
+	pa "github.com/Pushpavel/fired/pkg/artifacts"
 )
 
 // The browser console (config `ui: true`), like fired's: a static page that
@@ -30,17 +32,16 @@ import (
 //     capability. {domain} is `preview_domain` (a wildcard DNS name), or
 //     else nip.io for the IP the console was reached on. A preview origin is
 //     cross-site from the console, so it can't use the console session.
-//   - Previews also serve /.fired/view, a page that renders md, csv, json,
-//     text and react views of the artifact's files (docs: "view rendering is
-//     the viewer's job"; this is the console's viewer).
+//   - A preview origin serves the artifact's view, as viewers get it.
+//   - The Files tab renders md, csv, json, images and react files with
+//     ui/view.html in a sandboxed frame (an opaque origin, no access to the
+//     console), which asks the console for files; the console reads them
+//     with the files API.
 
 //go:embed ui
 var uiFiles embed.FS
 
 const sessionCookie = "fired_artifacts_session"
-
-// viewPath is the console's view renderer on preview origins.
-const viewPath = "/.fired/view"
 
 func (s *Service) uiRoutes(mux *http.ServeMux) {
 	sub, _ := fs.Sub(uiFiles, "ui")
@@ -258,31 +259,49 @@ func (s *Service) previewTarget(hostport string) (id string, n int, ok bool) {
 	return id, n, true
 }
 
-var viewStarted = time.Now()
-
-// servePreview serves an artifact's files at "/" of its preview origin, plus
-// the view renderer at /.fired/view.
-func (s *Service) servePreview(w http.ResponseWriter, r *http.Request, id string, n int) {
+// serveView serves an artifact's view, on a preview origin or routed by
+// headers: "/" is the page from artifact.json, and other paths are files of
+// the page's folder by exact path (no index files, nothing outside it, not
+// artifact.json). Without a page there is nothing to serve.
+func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n int) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeErr(w, errf(http.StatusMethodNotAllowed, "method_not_allowed", "previews are read-only"))
+		writeErr(w, errf(http.StatusMethodNotAllowed, "method_not_allowed", "views are read-only"))
 		return
 	}
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	if r.URL.Path == viewPath {
-		b, err := uiFiles.ReadFile("ui/view.html")
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeContent(w, r, "", viewStarted, strings.NewReader(string(b)))
-		return
-	}
 	if !s.allowRead(id) {
 		w.Header().Set("Retry-After", "1")
 		writeErr(w, errf(http.StatusTooManyRequests, "rate_limited", "too many requests for this artifact"))
 		return
 	}
-	s.serveFile(w, r, id, n, strings.TrimPrefix(r.URL.Path, "/"))
+	v, err := s.Version(r.Context(), id, n, false)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	page := v.Spec.Page
+	if page == "" {
+		writeErr(w, errf(http.StatusNotFound, "no_page", "%s has no page in version %d: set \"page\" in %s", id, v.Version, pa.SpecFile))
+		return
+	}
+	p := strings.TrimPrefix(r.URL.Path, "/")
+	switch {
+	case p == "":
+		p = page
+	case strings.HasSuffix(p, "/"):
+		writeErr(w, errf(http.StatusNotFound, "not_found", "%s is a folder; link to a file in it", r.URL.Path))
+		return
+	default:
+		c, err := cleanPath(p)
+		if err != nil {
+			writeErr(w, badRequest("%v", err))
+			return
+		}
+		p = path.Join(path.Dir(page), c)
+		if p == pa.SpecFile {
+			writeErr(w, errf(http.StatusNotFound, "not_found", "%s isn't part of the view", pa.SpecFile))
+			return
+		}
+	}
+	s.serveFile(w, r, id, v.Version, p, n != 0)
 }

@@ -124,7 +124,8 @@ zip uploaded elsewhere couldn't be set up the same way.
   had no `artifact.json`; the zip gets one written from its spec) both
   include it.
 
-**One view per artifact** (2026-10-11). In the console, `about.html` (v4,
+**One view per artifact** (2026-10-11; since replaced by a page, see
+[03-the-page.md](03-the-page.md)). In the console, `about.html` (v4,
 v8) wasn't in the preview: the view is `index.html`, and v1's page has no
 link to it, so it was only reachable by typing `/about.html`. That raised
 what a list of views is for. A version is one tree served from `/`; the

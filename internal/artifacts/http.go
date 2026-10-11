@@ -62,7 +62,7 @@ func (s *Service) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		if id, n, ok := s.previewTarget(r.Host); ok {
-			s.servePreview(w, r, id, n)
+			s.serveView(w, r, id, n)
 			return
 		}
 		// Header-routed requests always need the token: "/" is otherwise
@@ -380,8 +380,8 @@ func (s *Service) noteRead(id string) {
 
 const memServeLimit = 8 << 20
 
-// handleFile serves one file of a version (?version=N, default current).
-// A path ending in "/" (or empty) serves its index.html.
+// handleFile serves one file of a version (?version=N, default current),
+// any file: this is the owner's raw access, not what viewers get.
 func (s *Service) handleFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.allowRead(id) {
@@ -394,16 +394,12 @@ func (s *Service) handleFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	s.serveFile(w, r, id, n, r.PathValue("path"))
+	s.serveFile(w, r, id, n, r.PathValue("path"), n != 0)
 }
 
-// serveFile serves path p of version n (0 = current). An empty path or one
-// ending in "/" serves its index.html.
-func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n int, p string) {
-	pinned := n != 0
-	if p == "" || strings.HasSuffix(p, "/") {
-		p += "index.html"
-	}
+// serveFile serves path p of version n (0 = current); pinned responses are
+// cacheable forever.
+func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n int, p string, pinned bool) {
 	p, err := cleanPath(p)
 	if err != nil {
 		writeErr(w, badRequest("%v", err))
@@ -475,15 +471,15 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 // it resolves the hostname to an artifact and forwards the request unchanged
 // (same path and query) with X-Artifact, optionally X-Artifact-Version
 // (a number, or "current" / absent to follow the current version), and the
-// API token. The path is a file of the artifact ("/" serves index.html), or
-// /.fired/view for the view renderer.
+// API token. It gets the artifact's view: "/" is the page, other paths are
+// files of the page's folder.
 func (s *Service) handleRouted(w http.ResponseWriter, r *http.Request, id string) {
 	n, err := versionParam(r.Header.Get("X-Artifact-Version"))
 	if err != nil {
 		writeErr(w, badRequest("X-Artifact-Version must be a version number or \"current\""))
 		return
 	}
-	s.servePreview(w, r, id, n)
+	s.serveView(w, r, id, n)
 }
 
 // handleExport streams a version as a zip of its files, artifact.json

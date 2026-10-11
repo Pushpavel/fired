@@ -13,11 +13,6 @@ import (
 	pa "github.com/Pushpavel/fired/pkg/artifacts"
 )
 
-var viewTypes = map[string]bool{
-	"html": true, "react": true, "md": true, "csv": true, "json": true,
-	"text": true, "image": true, "svg": true, "pdf": true,
-}
-
 var jobNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,47}$`)
 
 // cleanPath validates a tree path: relative, slash-separated, no "." or
@@ -76,17 +71,16 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 	if len(s.Description) > 2000 {
 		add("description is longer than 2000 bytes")
 	}
-	if v := s.View; v != nil {
-		if !viewTypes[v.Type] {
-			add("view: unknown type %q (want one of %s)", v.Type, strings.Join(sortedKeys(viewTypes), ", "))
-		}
-		if e, err := cleanPath(v.Entry); err != nil {
-			add("view.entry: %v", err)
+	if s.Page != "" {
+		if p, err := cleanPath(s.Page); err != nil {
+			add("page: %v", err)
 		} else {
-			if _, ok := tree[e]; !ok {
-				add("view.entry: %q is not a file in this version", v.Entry)
+			if ext := strings.ToLower(path.Ext(p)); ext != ".html" && ext != ".htm" {
+				add("page: %q must be an .html file", s.Page)
+			} else if _, ok := tree[p]; !ok {
+				add("page: %q is not a file in this version", s.Page)
 			}
-			v.Entry = e
+			s.Page = p
 		}
 	}
 	names := make([]string, 0, len(s.Jobs))
@@ -162,15 +156,6 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 		return fmt.Errorf("invalid %s: %s", pa.SpecFile, strings.Join(errs, "; "))
 	}
 	return nil
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // jobDefaults fills in the service defaults for unset job fields.

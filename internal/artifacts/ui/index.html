@@ -723,23 +723,25 @@ async function tabView(p) {
   if (!n) { p.append(emptyFirst()); return; }
   let v;
   try { v = await loadVersion(a.id, n); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
-  const vw = v.spec?.view;
-  if (!vw) {
-    p.append(h("div", { class: "empty" }, h("h3", {}, "Nothing to show in this version"),
-      h("p", { class: "note" }, "Set the view in artifact.json, for example { \"view\": { \"type\": \"html\", \"entry\": \"index.html\" } }."),
+  // The view is the page, served from its folder on the artifact's own
+  // origin, exactly as viewers get it.
+  const page = v.spec?.page;
+  if (!page) {
+    p.append(h("div", { class: "empty" }, h("h3", {}, "No page in this version"),
+      h("p", { class: "note" }, "The view is an HTML page: set \"page\" in artifact.json, for example { \"page\": \"index.html\" }. Files can still be previewed in the Files tab."),
       h("p", {}, h("button", { class: "btn", onclick: () => { S.tab = "files"; renderArtifact(); } }, "Open files"))));
     return;
   }
   let origin;
   try { origin = await previewOrigin(a.id, atCurrent() ? 0 : n); } catch (e) { p.append(h("p", { class: "err-text" }, e.message)); return; }
-  const src = `${origin}.fired/view?type=${enc(vw.type)}&entry=${enc(vw.entry)}`;
-  const frame = h("iframe", { class: "frame", id: "frame", title: `${vw.type} view of ${vw.entry}`, src: src + "&t=" + Date.now(),
+  const src = origin;
+  const frame = h("iframe", { class: "frame", id: "frame", title: `The page, ${page}`, src: src + "?t=" + Date.now(),
     sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads", referrerpolicy: "no-referrer" });
   p.append(h("div", { class: "viewbar" },
-    h("span", { class: "note" }, `${vw.type} view of `, h("code", {}, vw.entry)),
+    h("span", { class: "note" }, "Page ", h("code", {}, page)),
     h("span", { class: "spacer" }),
     h("span", { class: "note" }, atCurrent() ? "Follows the current version" : `Pinned to v${n}`),
-    h("button", { class: "btn small", onclick: () => { frame.src = src + "&t=" + Date.now(); } }, "Reload"),
+    h("button", { class: "btn small", onclick: () => { frame.src = src + "?t=" + Date.now(); } }, "Reload"),
     h("a", { class: "btn small", href: src, target: "_blank", rel: "noopener", style: "text-decoration:none;color:inherit" }, "Open in a new tab")),
     frame);
 }
@@ -750,7 +752,7 @@ function emptyFirst() {
 }
 // reload the live view after a new version, without rebuilding the tab
 function reloadFrame() {
-  const f = $("#frame"); if (f && atCurrent()) f.src = f.src.replace(/&t=\d+$/, "") + "&t=" + Date.now();
+  const f = $("#frame"); if (f && atCurrent()) f.src = f.src.replace(/\?t=\d+$/, "") + "?t=" + Date.now();
 }
 
 // ---------- Files tab: a working copy staged on top of the current version
@@ -820,17 +822,53 @@ async function tabFiles(p) {
   await fillEditor(editor, tree.get(S.fileSel), editable);
 }
 
+// Files the Files tab can preview, by extension, rendered by ui/view.html.
+const PREVIEW = { md: "md", markdown: "md", csv: "csv", json: "json", txt: "text", svg: "svg",
+  png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", jsx: "react", tsx: "react" };
+function previewType(p) {
+  const name = p.split("/").pop(), i = name.lastIndexOf(".");
+  return i > 0 ? PREVIEW[name.slice(i + 1).toLowerCase()] : undefined;
+}
+
+// The preview frame is sandboxed without an origin, so it asks for files by
+// message; they come from the working copy (staged edits) or the files API.
+addEventListener("message", async e => {
+  const frame = [...document.querySelectorAll("iframe.preview")].find(f => f.contentWindow === e.source);
+  if (!frame || typeof e.data?.get !== "string") return;
+  const ctx = { id: frame.dataset.artifact, n: +frame.dataset.version };
+  const reply = m => e.source.postMessage({ id: e.data.id, ...m }, "*", m.body ? [m.body] : []);
+  try {
+    const p = e.data.get, op = ctx.id === S.art?.id && atCurrent() ? S.stage.get(p) : null;
+    if (op?.delete) throw new Error("not found");
+    let body;
+    if (op?.text) body = new TextEncoder().encode(op.content).buffer;
+    else if (op?.blob) body = await op.blob.arrayBuffer();
+    else body = await (await api("GET", `/artifacts/${enc(ctx.id)}/files/${encPath(p)}?version=${ctx.n}`, undefined, { quiet: true, raw: true })).arrayBuffer();
+    reply({ ok: true, body });
+  } catch (err) { reply({ ok: false, error: err.message }); }
+});
+function previewFrame(path, type) {
+  return h("iframe", { class: "frame preview", title: `Preview of ${path}`, sandbox: "allow-scripts",
+    "data-artifact": S.art.id, "data-version": shownVersion(), src: `/ui/view.html#type=${enc(type)}&entry=${enc(path)}` });
+}
+
 async function fillEditor(box, f, editable) {
   if (!f) { box.append(h("p", { class: "note" }, "Pick a file on the left.")); return; }
   const a = S.art, n = shownVersion(), path = f.path;
+  const ptype = f.state !== "deleted" ? previewType(path) : null;
+  const previewing = ptype && S.preview;
   const head = h("div", { class: "editor-head" }, h("code", {}, path),
     f.state ? h("span", { class: "note" }, { added: "new, not published", changed: "changed, not published", deleted: "will be removed" }[f.state]) : null,
     h("span", { class: "spacer" }),
+    ptype ? h("div", { class: "seg", role: "group", "aria-label": "Show" },
+      h("button", { type: "button", "aria-pressed": String(!previewing), onclick: () => { S.preview = false; renderTab(); } }, "Source"),
+      h("button", { type: "button", "aria-pressed": String(!!previewing), onclick: () => { S.preview = true; renderTab(); } }, "Preview")) : null,
     f.hash ? h("a", { class: "btn small quiet", href: `/v1/artifacts/${enc(a.id)}/files/${encPath(path)}?version=${n}`, target: "_blank", rel: "noopener", style: "text-decoration:none" }, "Raw") : null,
     editable && f.state ? h("button", { class: "btn small quiet", onclick: () => { S.stage.delete(path); renderArtifact(); } }, "Undo") : null,
     editable && f.state !== "deleted" ? h("button", { class: "btn small danger", onclick: () => { stageDelete(path); renderArtifact(); } }, "Remove") : null);
   box.append(head);
   if (f.state === "deleted") { box.append(h("p", { class: "note" }, "Publish to remove this file, or undo.")); return; }
+  if (previewing) { box.append(previewFrame(path, ptype)); return; }
   const op = f.staged;
   if (op && op.blob && !op.text) { box.append(h("p", { class: "note" }, `Uploaded file, ${fmtBytes(op.size)}. It goes up as a blob when you publish.`)); return; }
   let content = op ? op.content : null;
@@ -851,7 +889,7 @@ async function fillEditor(box, f, editable) {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); publish(); }
   });
   box.append(ta);
-  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. The view is one entry file and a type: html, react, md, csv, json, text, image, svg or pdf; without it, there's nothing to show. Jobs take run, writes, state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
+  if (path === "artifact.json" && editable) box.append(h("p", { class: "note" }, "title and description name the artifact. page is the HTML file viewers open (its folder is what they can reach); without it, there's nothing to view. Jobs take run, writes, state, schedule, timezone, timeout, active_for, on_busy, queue and template. Unknown fields fail the publish."));
 }
 
 function stagePut(path, content) { S.stage.set(path, { content, size: new Blob([content]).size, text: true }); }
@@ -1228,7 +1266,7 @@ dlgNew.addEventListener("close", async () => {
     if (f.delete_after.value.trim()) req.delete_after = f.delete_after.value.trim();
     if (+f.retain_runs.value) req.retain_runs = +f.retain_runs.value;
     req.publish = { title, label: "first version", files: [{ path: "index.html", content: starterPage(title) }],
-      spec: { view: { type: "html", entry: "index.html" } } };
+      spec: { page: "index.html" } };
     const r = await guard(() => api("POST", "/artifacts", req), `Created ${title}`);
     await refreshList(); openArtifact(r.artifact.id, null, "view");
   } catch (e) { if (!e.shown) toast(e.message, "err"); }
@@ -1375,9 +1413,9 @@ function starterPage(title) {
 // ---------- examples
 KITS.push(
   { slug: "page", title: "A web page", tab: "view",
-    about: "index.html with a stylesheet and a script, shown by an html view of index.html. Relative paths work because files are served at the root of their own origin.",
+    about: "index.html with a stylesheet and a script; artifact.json makes it the page. Viewers get it at / and its folder's files next to it, so relative paths work.",
     files: {
-      "artifact.json": JSON.stringify({ view: { type: "html", entry: "index.html" } }, null, 2) + "\n",
+      "artifact.json": JSON.stringify({ page: "index.html" }, null, 2) + "\n",
       "index.html": `<!doctype html>
 <html lang="en">
 <head>
@@ -1405,10 +1443,9 @@ button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid
 document.getElementById("b").onclick = () => { document.getElementById("n").textContent = ++n; };
 `,
     } },
-  { slug: "notes", title: "A note with a diagram", tab: "view",
-    about: "A Markdown document that embeds an SVG by relative path. artifact.json sets the view to md of notes/README.md: one entry, and the other files are reached from it.",
+  { slug: "notes", title: "A note with a diagram", tab: "files",
+    about: "A Markdown document that embeds an SVG by relative path. It has no page yet, so there's nothing to view; preview the Markdown in the Files tab.",
     files: {
-      "artifact.json": JSON.stringify({ view: { type: "md", entry: "notes/README.md" } }, null, 2) + "\n",
       "notes/README.md": `# Release checklist
 
 A note kept as an artifact. Each edit is a version, so you can compare and restore.
@@ -1435,7 +1472,7 @@ A note kept as an artifact. Each edit is a version, so you can compare and resto
   { slug: "clock", title: "A page a job keeps fresh", tab: "runs", run_now: ["tick"],
     about: "A scheduled job (every 5 minutes) writes data/now.json, and keeps a run counter in its state directory. Each run that changes the data adds a job-run version; the page shows it.",
     files: {
-      "artifact.json": JSON.stringify({ view: { type: "html", entry: "index.html" },
+      "artifact.json": JSON.stringify({ page: "index.html",
         jobs: { tick: { run: "sh tick.sh", writes: ["data"], state: ".state", schedule: "*/5 * * * *", timeout: "2m" } } }, null, 2) + "\n",
       "tick.sh": { content: `#!/bin/sh
 set -e
@@ -1475,9 +1512,9 @@ fetch("data/now.json").then(r => r.json()).then(d => {
 `,
     } },
   { slug: "table", title: "A table a job rebuilds", tab: "runs", run_now: ["build"],
-    about: "An hourly job regenerates data/sales.csv with awk, shown as a csv view. README.md explains it in the files. The build folder is mirrored on every run.",
+    about: "An hourly job regenerates data/sales.csv with awk; preview it as a table in the Files tab. README.md explains it. The build folder is mirrored on every run.",
     files: {
-      "artifact.json": JSON.stringify({ view: { type: "csv", entry: "data/sales.csv" },
+      "artifact.json": JSON.stringify({
         jobs: { build: { run: "sh build.sh", writes: ["data"], schedule: "@hourly" } } }, null, 2) + "\n",
       "build.sh": `#!/bin/sh
 set -e
@@ -1495,7 +1532,7 @@ echo "wrote $(wc -l < data/sales.csv) lines to data/sales.csv"
   { slug: "inbox", title: "An inbox that queues triggers", tab: "jobs",
     about: "A job with no schedule and on_busy set to queue. Run it with a payload several times at once: every trigger waits its turn and appends to inbox.md.",
     files: {
-      "artifact.json": JSON.stringify({ view: { type: "md", entry: "inbox.md" },
+      "artifact.json": JSON.stringify({
         jobs: { handle: { run: "sh handle.sh", writes: ["inbox.md"], on_busy: "queue", queue: { max: 20, max_age: "1h" } } } }, null, 2) + "\n",
       "handle.sh": `#!/bin/sh
 set -e
@@ -1508,10 +1545,9 @@ sleep 2
 `,
       "inbox.md": "# Inbox\n\nEach run appends its trigger here.\n\n",
     } },
-  { slug: "react", title: "A React component", tab: "view",
-    about: "app/App.jsx imports a second component and a stylesheet by relative path. The console's viewer compiles them in the browser.",
+  { slug: "react", title: "A React component", tab: "files",
+    about: "app/App.jsx imports a second component and a stylesheet by relative path. It has no page yet; the Files tab's preview compiles them in the browser.",
     files: {
-      "artifact.json": JSON.stringify({ view: { type: "react", entry: "app/App.jsx" } }, null, 2) + "\n",
       "app/App.jsx": `import { useState } from "react";
 import Tally from "./Tally.jsx";
 import "./app.css";
@@ -1553,14 +1589,14 @@ export default function Tally({ marks }) {
   { slug: "approval", title: "A job that needs approval", tab: "jobs",
     about: "Asks for a 2h timeout and a 30-day schedule, more than the defaults allow. It's blocked until you approve it, which is what your backend does with a grant.",
     files: {
-      "artifact.json": JSON.stringify({ view: { type: "md", entry: "README.md" },
+      "artifact.json": JSON.stringify({
         jobs: { nightly: { run: "echo long job; sleep 3; echo done", schedule: "@daily", timeout: "2h", active_for: "720h" } } }, null, 2) + "\n",
       "README.md": "# Nightly\n\nThis job wants to run for up to 2 hours, every day for 30 days. Open the Jobs tab and approve it.\n",
     } },
   { slug: "failing", title: "A job that fails", tab: "runs", run_now: ["check"],
     about: "Prints to stdout and stderr, then exits with status 3. A failed run creates no version and keeps no state; its logs say why.",
     files: {
-      "artifact.json": JSON.stringify({ view: { type: "text", entry: "check.sh" },
+      "artifact.json": JSON.stringify({
         jobs: { check: { run: "sh check.sh", writes: ["report.txt"] } } }, null, 2) + "\n",
       "check.sh": `#!/bin/sh
 echo "checking the report inputs"

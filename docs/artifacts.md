@@ -24,7 +24,7 @@ agent ─ MCP tools ─▶ your backend ─────────────�
 | fired-artifacts | your backend |
 |---|---|
 | content-addressed blob store, versions, `artifact.json` validation | users, sharing, who may fork or edit |
-| serving files, zip export | preview domain, auth for viewers, rendering views |
+| serving each artifact's page and its folder, raw files, zip export | the domain viewers use, who may see what |
 | scheduler, `on_busy` queues, per-quota-key and global limits | approving grants (longer schedules, longer runs), quotas per plan |
 | runner sandboxes, run versions, state, logs, events | credentials for each run, MCP tools, notifications to sessions |
 | retention, `delete_after`, garbage collection | turning sandbox folders, MCP resources and tool outputs into files to publish |
@@ -61,7 +61,7 @@ durable storage. Runs happen on whichever fired host it points at.
 {
   "title": "Weekly sales",
   "description": "Refreshed every weekday morning",
-  "view": {"type": "react", "entry": "app/App.jsx"},
+  "page": "dist/index.html",
   "jobs": {
     "refresh": {
       "run": "python refresh.py",
@@ -87,19 +87,25 @@ instead of being ignored.
 bytes). They're versioned like everything else here: renaming makes a
 version, and a restore or fork brings the old name along. A zip of a
 version is therefore complete: published again elsewhere, it comes back
-with its name, view and jobs.
+with its name, page and jobs.
 
-**The view** tells your frontend how to present the artifact: one `entry`
-file, which must be in the version, and a `type`: `html`, `react`, `md`,
-`csv`, `json`, `text`, `image`, `svg` or `pdf`. An artifact has one view.
-Its other files are reached from the entry (links, imports, `fetch`) or
-listed as files, each at its own URL. The service serves raw files;
-rendering (compiling a JSX entry, showing a CSV as a table) is the viewer's
-job.
+**The page** is the artifact's view: an HTML file that viewers open, as
+with Claude's artifacts (a page plus supporting files). Viewers get the
+page at `/` and the other files of the page's folder at their paths:
+other pages (`about.html`, `docs/setup.html`), scripts, styles, data a job
+writes. Nothing outside that folder is reachable by viewers, so a build in
+`dist/` can sit next to its sources; there are no index files (link to
+`docs/index.html`, not `docs/`), and `artifact.json` isn't served.
 
-The view is only what `artifact.json` says: without `"view"`, there is no
-view, even with an `index.html` (it's still served as a file). Files coming
-and going never change it; an entry that goes away fails the publish.
+Whatever is shown is built by the page itself: a report renders its
+Markdown, a dashboard fetches its CSV, a React app loads React. The agent
+writes all of it and sees exactly what viewers see; the service renders
+nothing.
+
+The page is only what `artifact.json` says: without `"page"`, there is
+nothing to view, even with an `index.html`. It must be an `.html` file in
+the version; files coming and going never change it, and a page that goes
+away fails the publish.
 
 **Jobs**:
 
@@ -151,7 +157,7 @@ one file changed copies one file.
     {"path": "run.sh", "content": "#!/bin/sh\n…", "mode": 493},
     {"path": "old.css", "delete": true}
   ],
-  "spec": {"view": {"type": "html", "entry": "app/index.html"}},
+  "spec": {"page": "app/index.html"},
   "label": "add weekly chart",
   "run_now": ["refresh"],
   "notify": "session-8f2c"
@@ -182,11 +188,11 @@ one file changed copies one file.
 - **`spec` writes `artifact.json`,** replacing it. Passing both `spec` and an
   `artifact.json` file is an error. Without either, the previous
   `artifact.json` carries over and is validated again against the new files
-  (a view whose entry was deleted fails the publish).
+  (a page that was deleted fails the publish).
 - **`title` and `description` change just those fields** of `artifact.json`
   and keep the rest; they win over `spec` and over an `artifact.json` in the
   files. An agent publishing an unzipped export sets `title` to name its
-  copy and keeps the zip's view and jobs. A publish with only `title` is a
+  copy and keeps the zip's page and jobs. A publish with only `title` is a
   rename.
 - **All or nothing:** any invalid path, missing blob, invalid spec or limit
   breach means no version is created.
@@ -244,17 +250,17 @@ Runs).
   domain artifacts are viewed on and decides who may see what. It forwards
   a viewer's request unchanged (same path and query) with the API token
   and `X-Artifact: <id>`, plus optionally `X-Artifact-Version: <n>` (absent
-  or `current` follows the current version). The path is a file of the
-  artifact (`/` serves `index.html`), or `/.fired/view?type=…&entry=…` for
-  the view renderer (md, csv, json, text, react). Responses are the same as
-  the file API (ETag, `X-Artifact-Version`, cache headers); only GET and
-  HEAD are allowed. Strip these headers from what the viewer's browser
+  or `current` follows the current version). It gets the artifact's view:
+  `/` is the page, other paths are files of the page's folder, anything else
+  is a 404 (`no_page` when there's no page). Frame `/` and you're done.
+  Responses are the same as the file API (ETag, `X-Artifact-Version`,
+  cache headers); only GET and HEAD are allowed. Strip these headers from what the viewer's browser
   sends, and set your own security headers (such as `frame-ancestors`) at
   your edge.
 
-- **Files:** `GET /v1/artifacts/{id}/files/{path}?version=N` serves one file,
-  current version by default. A path that is empty or ends in `/` serves its
-  `index.html`. Responses carry `ETag` (the blob hash) and
+- **Files:** `GET /v1/artifacts/{id}/files/{path}?version=N` serves any one
+  file, current version by default: the owner's raw access, not the view.
+  There are no index files. Responses carry `ETag` (the blob hash) and
   `X-Artifact-Version`. With `?version=` they are cacheable forever; without
   it, `no-cache`. Reads are rate limited per artifact (`limits.serve_rps`).
   Serve artifact files to viewers from a separate registrable domain, since
@@ -270,7 +276,7 @@ Runs).
   until the new owner publishes or a grant turns them on. Run state is not
   copied.
 - **Export:** `GET /v1/artifacts/{id}/versions/{v}/export` is a zip of the
-  version's files, `artifact.json` (title, description, view, jobs)
+  version's files, `artifact.json` (title, description, page, jobs)
   included. Published again, it's the same artifact; `meta`, labels and
   the quota key aren't in it, since they belong to whoever owns it.
 - **Compare:** there's no compare endpoint; `GET …/versions/{n}` lists
@@ -463,22 +469,25 @@ make dev-artifacts  # fired-artifacts on :8444, token "dev", in another
 `make dev-artifacts` turns on the console (`ui: true` or
 `FIRED_ARTIFACTS_UI=1`) at http://127.0.0.1:8444/ui/. Sign in with the token.
 It lists artifacts with their version history, edits and uploads files and
-publishes them, shows each artifact's view, compares and restores versions, forks, runs jobs
+publishes them, shows each artifact's page, previews files, compares and restores versions, forks, runs jobs
 (with payloads), approves grants, shows runs with their logs, edits quotas, and
 follows `/v1/events` live. The home page has examples that cover each
-feature: view types, scheduled jobs with state, a queue, approval and a failing job.
+feature: a page, scheduled jobs with state, a queue, approval and a failing job.
 
-The console shows artifact files on their own origin (for the console only;
-in production your backend serves them with header routing, above),
+The console shows an artifact's view on its own origin (for the console
+only; in production your backend serves it with header routing, above),
 `<id>-<version>-<sig>.<preview_domain>` (version 0 follows the current
-version), so pages run at `/` with working relative paths and can't reach the
-console's session. Without `preview_domain` (`FIRED_ARTIFACTS_PREVIEW_DOMAIN`)
-it uses nip.io for the IP you opened it on, as fired's console does. Preview
-origins also serve `/.fired/view`, a reference viewer that renders `md`,
-`csv`, `json`, `text` and `react` views in the browser. A `react` entry and
-the files it imports by relative path are compiled with Babel, and
-packages come from esm.sh. Your own viewer can do the same or something
-better.
+version), exactly as viewers get it: the page at `/`, its folder's files
+next to it, and no way to reach the console's session. Without
+`preview_domain` (`FIRED_ARTIFACTS_PREVIEW_DOMAIN`) it uses nip.io for the
+IP you opened it on, as fired's console does.
+
+The Files tab previews single files for owners: `md`, `csv`, `json`, text,
+images, `svg`, and `jsx`/`tsx` (compiled with Babel, relative imports
+included, packages from esm.sh). The renderer runs in a sandboxed frame
+with no origin and gets files from the console, which reads them with the
+files API, so previews also show unpublished edits. This is console
+tooling, not part of what viewers see.
 
 The production image contains the binary too:
 `docker run --entrypoint fired-artifacts fired:latest serve`. Configure it
@@ -491,8 +500,6 @@ endpoint.
 
 These were discussed but are not settled enough to build:
 
-- **View rendering in the service:** views are metadata, and the API serves
-  files raw. Only the console's reference viewer renders them (see above).
 - **Webhook triggers:** need a decision on how incoming requests are
   authenticated (a signing secret per job, and where it lives). The `queue`
   policy and trigger payloads are already in place for them.

@@ -75,10 +75,10 @@ func TestUI(t *testing.T) {
 		t.Fatalf("info without session: %d", r.StatusCode)
 	}
 
-	// Preview links: one origin per artifact and version, files at "/".
+	// Preview links: one origin per artifact and version, serving its view.
 	res := must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u1", Publish: &pa.PublishRequest{Files: []pa.FileOp{
 		pa.Text("index.html", "<h1>one</h1>"), pa.Text("app/x.js", "1"),
-	}}}))(t)
+	}, Spec: &pa.Spec{Page: "index.html"}}}))(t)
 	id := res.Artifact.ID
 	must(h.c.Publish(ctx, id, pa.PublishRequest{BaseVersion: 1, Files: []pa.FileOp{pa.Text("index.html", "<h1>two</h1>")}}))(t)
 
@@ -105,8 +105,10 @@ func TestUI(t *testing.T) {
 	if r := do("GET", "/app/x.js", "", map[string]string{"Host": v1}); read(r) != "1" {
 		t.Fatalf("preview subpath: %d", r.StatusCode)
 	}
-	if r := do("GET", viewPath+"?type=md&entry=README.md", "", map[string]string{"Host": v1}); r.StatusCode != 200 || !strings.Contains(read(r), "importmap") {
-		t.Fatalf("view renderer: %d", r.StatusCode)
+	for _, p := range []string{"/app/", "/artifact.json", "/.fired/view"} {
+		if r := do("GET", p, "", map[string]string{"Host": v1}); r.StatusCode != 404 {
+			t.Fatalf("%s on preview: %d", p, r.StatusCode)
+		}
 	}
 	// A preview origin is read-only and can't reach the API, even with the token.
 	if r := do("POST", "/v1/artifacts", `{}`, map[string]string{"Host": v1, "X-Fired-Token": testToken}); r.StatusCode != 405 {

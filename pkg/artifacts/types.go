@@ -25,19 +25,12 @@ const SpecFile = "artifact.json"
 type Spec struct {
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
-	// View is how the artifact is shown: one entry file and how to render
-	// it. Other files are reached from it (links, imports) or listed as
-	// files. It is only what's set here: without it, there is no view.
-	View *View          `json:"view,omitempty"`
+	// Page is the HTML file viewers open, the artifact's view. Viewers get
+	// it at "/" and the other files of its folder at their paths (other
+	// pages, scripts, styles, data), nothing outside it. Without a page,
+	// there is nothing to view.
+	Page string         `json:"page,omitempty"`
 	Jobs map[string]Job `json:"jobs,omitempty"`
-}
-
-// View says how the artifact's entry file is presented. The service serves
-// raw files; the view tells the viewer (your frontend) how to render it.
-type View struct {
-	// Type is one of: html, react, md, csv, json, text, image, svg, pdf.
-	Type  string `json:"type"`
-	Entry string `json:"entry"`
 }
 
 // Job is a command run against the artifact's files on a schedule or on
