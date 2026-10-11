@@ -19,8 +19,9 @@
 
 - Is there a way to trigger GC by hand (for tests, or after a big delete)?
   The service has `GC()`, but no endpoint calls it.
-- Does a deleted artifact's storage stop counting against its quota key
-  immediately, even while its blobs wait for GC? (Check in 13.)
+- ~~Does a deleted artifact's storage stop counting against its quota key
+  immediately, even while its blobs wait for GC?~~ Yes (13): the key's
+  `storage_used` dropped to 0 at the delete.
 
 ## Could change
 

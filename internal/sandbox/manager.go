@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Pushpavel/fired/internal/config"
@@ -522,6 +524,22 @@ func (m *Manager) reserveMem(ctx context.Context, self *entry, mb int) error {
 	return ErrCapacity
 }
 
+// hotFull explains a failed start by the hot storage being too full for
+// e (its memory snapshot plus some room for its disk), as a retryable
+// capacity error, or returns nil. A sandbox's own disk being full is the
+// sandbox's problem, not capacity, so only the host's free space counts.
+func (m *Manager) hotFull(e *entry) error {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(m.cfg.Data.HotDir, &st); err != nil {
+		return nil
+	}
+	freeMB := int64(st.Bavail) * int64(st.Bsize) >> 20
+	if need := int64(e.snapshot().MemoryMB) + 256; freeMB < need {
+		return errf(http.StatusServiceUnavailable, "no_space", "the host's hot storage is full (%d MB free, this sandbox needs about %d MB); try again later", freeMB, need)
+	}
+	return nil
+}
+
 func idOf(e *entry) string {
 	if e == nil {
 		return ""
@@ -691,6 +709,9 @@ func (m *Manager) startLocked(ctx context.Context, e *entry, mode vmm.Mode, t *a
 	err := m.startOnce(ctx, e, mode, t, false)
 	if err == nil {
 		return nil
+	}
+	if full := m.hotFull(e); full != nil {
+		return full
 	}
 	// Snapshots don't survive every change (e.g. a Firecracker upgrade).
 	// Fall back to a cold boot rather than leaving the sandbox unusable.
@@ -899,6 +920,9 @@ func (m *Manager) resumeLocked(ctx context.Context, e *entry) error {
 		if err := fsutil.Unpack(m.archivePath(e.id), m.drv.Workdir(e.id)); err != nil {
 			_ = m.drv.Remove(e.id)
 			m.setState(e, api.StateArchived, "restore from archive failed: "+err.Error())
+			if full := m.hotFull(e); full != nil {
+				return full
+			}
 			return fmt.Errorf("unarchive: %w", err)
 		}
 		m.log.Info("unarchived", "sandbox", e.id, "took", time.Since(start).Round(time.Millisecond))

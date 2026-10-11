@@ -21,6 +21,19 @@ func (s *Service) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	// Learn the tiers of keys with schedules first, so a restart doesn't
+	// give their next slots the default tier's interval.
+	// (At most 10s: with fired unreachable, the scheduler starts anyway.)
+	if keys, err := scheduledKeys(ctx, s.st.db); err == nil {
+		wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		for _, k := range keys {
+			if wctx.Err() != nil {
+				break
+			}
+			s.tierOf(wctx, k)
+		}
+		cancel()
+	}
 	s.bgWG.Add(2)
 	go s.loop(time.Duration(s.cfg.SchedulerInterval), true, s.tick)
 	go s.loop(time.Duration(s.cfg.GCInterval), false, s.GC)
@@ -108,6 +121,24 @@ func (s *Service) expireQueued(ctx context.Context) error {
 	return nil
 }
 
+// scheduledKeys returns the quota keys of artifacts with a schedule.
+func scheduledKeys(ctx context.Context, q querier) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT DISTINCT a.quota_key FROM jobs j JOIN artifacts a ON a.id=j.artifact WHERE j.sched_key<>''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
 // dueJobs returns the artifacts whose job's schedule is due.
 func dueJobs(ctx context.Context, q querier, now time.Time) ([]string, error) {
 	rows, err := q.QueryContext(ctx, `SELECT artifact FROM jobs WHERE sched_key<>'' AND next_at>0 AND next_at<=?`, ms(now))
@@ -170,6 +201,11 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 		return err
 	}
 	for _, id := range due {
+		// The key's tier sets its minimum interval: know it before the
+		// next slot is computed (and stored), not after.
+		if a, err := getArtifact(ctx, s.st.db, id); err == nil {
+			s.tierOf(ctx, a.QuotaKey)
+		}
 		var events []pa.Event
 		err := s.st.tx(ctx, func(q querier) error {
 			r, err := getJob(ctx, q, id)
