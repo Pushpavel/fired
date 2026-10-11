@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -786,16 +787,61 @@ func (s *Service) handleDeleteTier(w http.ResponseWriter, r *http.Request) {
 // ---- events
 
 // handleEvents streams events as SSE. ?artifact=ID filters to one artifact.
+// Each event carries its id; a client resuming with Last-Event-ID (or
+// ?after=N) first gets what it missed, from the events kept
+// (limits.event_retention), and a "gap" event if some are gone already.
 func (s *Service) handleEvents(w http.ResponseWriter, r *http.Request) {
+	filter := r.URL.Query().Get("artifact")
+	after := r.Header.Get("Last-Event-ID")
+	if v := r.URL.Query().Get("after"); v != "" {
+		after = v
+	}
+	var since int64
+	if after != "" {
+		n, err := strconv.ParseInt(after, 10, 64)
+		if err != nil || n < 0 {
+			writeErr(w, badRequest("after / Last-Event-ID must be an event id"))
+			return
+		}
+		since = n
+	}
+	// Subscribe before reading what was missed, so nothing falls between.
+	ch, cancel := s.bus.subscribe()
+	defer cancel()
 	rc := http.NewResponseController(w)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(200)
 	_ = rc.Flush()
-	filter := r.URL.Query().Get("artifact")
-	ch, cancel := s.bus.subscribe()
-	defer cancel()
+	send := func(ev pa.Event) bool {
+		if len(ev.Paths) > pa.MaxEventPaths {
+			ev.PathsTotal, ev.Paths = len(ev.Paths), ev.Paths[:pa.MaxEventPaths]
+		}
+		b, _ := json.Marshal(ev)
+		if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.ID, ev.Type, b); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
+	last := since
+	if since > 0 {
+		missed, earliest, err := s.eventsAfter(r.Context(), since, filter)
+		if err != nil {
+			s.log.Error("replay events", "err", err)
+		}
+		if earliest > since+1 {
+			// Some of what the client missed is gone: it should re-read the
+			// state it cares about (artifacts, runs) from the API.
+			fmt.Fprintf(w, "event: gap\ndata: {\"after\":%d,\"earliest\":%d}\n\n", since, earliest)
+		}
+		for _, ev := range missed {
+			if !send(ev) {
+				return
+			}
+			last = ev.ID
+		}
+	}
 	tick := time.NewTicker(15 * time.Second)
 	defer tick.Stop()
 	for {
@@ -813,17 +859,47 @@ func (s *Service) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if filter != "" && ev.Artifact != filter {
+			if filter != "" && ev.Artifact != filter || ev.ID != 0 && ev.ID <= last {
 				continue
 			}
-			if len(ev.Paths) > pa.MaxEventPaths {
-				ev.PathsTotal, ev.Paths = len(ev.Paths), ev.Paths[:pa.MaxEventPaths]
-			}
-			b, _ := json.Marshal(ev)
-			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b); err != nil {
+			if !send(ev) {
 				return
 			}
-			_ = rc.Flush()
+			if ev.ID != 0 {
+				last = ev.ID
+			}
 		}
 	}
+}
+
+// eventsAfter returns the kept events after id (of one artifact, if
+// filter is set), oldest first, and the earliest id kept (0: none).
+func (s *Service) eventsAfter(ctx context.Context, id int64, filter string) ([]pa.Event, int64, error) {
+	var earliest sql.NullInt64
+	if err := s.st.db.QueryRowContext(ctx, `SELECT MIN(id) FROM events`).Scan(&earliest); err != nil {
+		return nil, 0, err
+	}
+	query, args := `SELECT id, data FROM events WHERE id>?`, []any{id}
+	if filter != "" {
+		query += ` AND artifact=?`
+		args = append(args, filter)
+	}
+	rows, err := s.st.db.QueryContext(ctx, query+` ORDER BY id LIMIT 10000`, args...)
+	if err != nil {
+		return nil, earliest.Int64, err
+	}
+	defer rows.Close()
+	var out []pa.Event
+	for rows.Next() {
+		var ev pa.Event
+		var data string
+		if err := rows.Scan(&ev.ID, &data); err != nil {
+			return nil, earliest.Int64, err
+		}
+		n := ev.ID
+		_ = json.Unmarshal([]byte(data), &ev)
+		ev.ID = n
+		out = append(out, ev)
+	}
+	return out, earliest.Int64, rows.Err()
 }

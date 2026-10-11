@@ -375,6 +375,39 @@ func (s *Service) treeArchive(tree map[string]pa.File) io.Reader {
 	return pr
 }
 
+// waitKind says what a run sent back to pending waits for.
+func waitKind(out *outcome) string {
+	switch {
+	case out.overQuota:
+		return "quota_exceeded"
+	case out.keyWait:
+		return "broker_unavailable"
+	}
+	if code, ok := strings.CutPrefix(out.reason, "fired: "); ok {
+		// "fired: 503 no_space: …"
+		if f := strings.Fields(code); len(f) > 1 && f[0] >= "500" {
+			return strings.TrimSuffix(f[1], ":")
+		}
+	}
+	return "fired_unavailable"
+}
+
+// logTail is the end of a run's output, from its last whole lines: stderr,
+// or stdout when stderr is empty.
+func logTail(l pa.RunLogs, max int) string {
+	t := strings.TrimRight(l.Stderr, "\n")
+	if strings.TrimSpace(t) == "" {
+		t = strings.TrimRight(l.Stdout, "\n")
+	}
+	if len(t) > max {
+		t = t[len(t)-max:]
+		if i := strings.IndexByte(t, '\n'); i >= 0 && i < len(t)-1 {
+			t = t[i+1:]
+		}
+	}
+	return t
+}
+
 // finishRun records a run's outcome, its logs and events.
 func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 	ctx := context.Background()
@@ -389,6 +422,14 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 			s.downWait = s.now().Add(downBackoff)
 		}
 		s.mu.Unlock()
+		kind := waitKind(out)
+		s.mu.Lock()
+		changed := s.waiting[r.ID] != kind
+		s.waiting[r.ID] = kind
+		s.mu.Unlock()
+		if changed {
+			s.emit(pa.Event{Type: "run.waiting", Artifact: a.ID, RunID: r.ID, Status: pa.RunPending, Waiting: kind, Reason: out.reason})
+		}
 		s.log.Info("run waits", "run", r.ID, "quota_key", a.QuotaKey, "over_quota", out.overQuota, "reason", out.reason)
 		r.Status, r.StartedAt, r.Version, r.Reason = pa.RunPending, nil, 0, "waiting: "+out.reason
 		return putRun(ctx, s.st.db, r)
@@ -421,7 +462,14 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 	if err != nil {
 		return err
 	}
-	s.emit(pa.Event{Type: "run.finished", Artifact: a.ID, Version: r.Version, RunID: r.ID, Status: r.Status, Reason: r.Reason, Notify: notify})
+	s.mu.Lock()
+	delete(s.waiting, r.ID)
+	s.mu.Unlock()
+	var tail string
+	if r.Status != pa.RunSucceeded {
+		tail = logTail(out.logs, 1024)
+	}
+	s.emit(pa.Event{Type: "run.finished", Artifact: a.ID, Version: r.Version, RunID: r.ID, LogTail: tail, Status: r.Status, Reason: r.Reason, Notify: notify})
 	return nil
 }
 

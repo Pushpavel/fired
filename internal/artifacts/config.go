@@ -97,6 +97,9 @@ type LimitsConfig struct {
 	// DeleteAfter deletes artifacts with no reads, publishes or runs for
 	// this long. 0 disables it.
 	DeleteAfter api.Duration `yaml:"delete_after"`
+	// EventRetention is how long events are kept for clients resuming the
+	// stream (Last-Event-ID).
+	EventRetention api.Duration `yaml:"event_retention"`
 	// QueueMax / QueueMaxAge are defaults for on_busy "queue" jobs.
 	QueueMax    int          `yaml:"queue_max"`
 	QueueMaxAge api.Duration `yaml:"queue_max_age"`
@@ -152,6 +155,7 @@ func DefaultConfig() Config {
 			ServeBurst:         100,
 			ServeArtifactRPS:   1000,
 			ServeArtifactBurst: 2000,
+			EventRetention:     api.Duration(24 * time.Hour),
 			MaxDocBytes:        1 << 20,
 			MaxDocs:            10000,
 			MaxBatchWrites:     500,
@@ -242,6 +246,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("runner.db_url: sandboxes reach loopback addresses inside the VM, not this service; use a name or address fired's egress proxy can reach")
 		}
 		c.Runner.DBURL = strings.TrimRight(c.Runner.DBURL, "/")
+	}
+	if c.Limits.EventRetention <= 0 {
+		c.Limits.EventRetention = api.Duration(24 * time.Hour)
 	}
 	if c.Limits.MaxDocBytes <= 0 {
 		c.Limits.MaxDocBytes = 1 << 20

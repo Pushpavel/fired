@@ -41,6 +41,9 @@ func (s *Service) GC(ctx context.Context) {
 			s.log.Error("gc: delete artifact", "artifact", a.ID, "err", err)
 		}
 	}
+	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM events WHERE at<?`, ms(now.Add(-time.Duration(s.cfg.Limits.EventRetention)))); err != nil {
+		s.log.Error("gc: prune events", "err", err)
+	}
 	if _, err := s.st.db.ExecContext(ctx, `DELETE FROM runs WHERE finished_at>0 AND finished_at<? AND status NOT IN ('pending','running')`,
 		ms(now.Add(-runHistory))); err != nil {
 		s.log.Error("gc: prune runs", "err", err)

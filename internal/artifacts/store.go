@@ -197,6 +197,15 @@ CREATE TABLE chunks (
 	PRIMARY KEY (file, idx)
 );
 CREATE INDEX chunks_chunk ON chunks(chunk);
+`, `
+-- Events, kept a while so a client can resume the stream (Last-Event-ID).
+CREATE TABLE events (
+	id       BIGSERIAL PRIMARY KEY,
+	artifact TEXT NOT NULL,
+	at       BIGINT NOT NULL,
+	data     TEXT NOT NULL
+);
+CREATE INDEX events_at ON events(at);
 `}
 
 // lockKey is the advisory lock for migrations and write transactions

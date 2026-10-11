@@ -34,7 +34,11 @@ type Service struct {
 	now    func() time.Time
 
 	mu      sync.Mutex
-	running map[string]string   // artifact → run id
+	running map[string]string // artifact → run id
+	emitMu  sync.Mutex
+	// waiting is what each waiting run last waited for (run.waiting is
+	// sent when that changes, not on every retry).
+	waiting map[string]string
 	live    map[string]*liveRun // run id → what a running job's requests need
 	buckets map[string]*bucket  // read limits: artifact, and artifact+viewer
 	// bucketsPruned is when idle buckets were last dropped.
@@ -74,7 +78,7 @@ func New(cfg Config, log *slog.Logger) (*Service, error) {
 		fired:   client.New(cfg.Fired.URL, cfg.Fired.Token),
 		broker:  newBroker(cfg.Broker),
 		now:     func() time.Time { return time.Now().UTC() },
-		running: map[string]string{}, live: map[string]*liveRun{}, buckets: map[string]*bucket{}, touched: map[string]time.Time{},
+		running: map[string]string{}, waiting: map[string]string{}, live: map[string]*liveRun{}, buckets: map[string]*bucket{}, touched: map[string]time.Time{},
 		quotaWait: map[string]time.Time{}, tiers: map[string]tierEntry{},
 		wake: make(chan struct{}, 1), stop: make(chan struct{}),
 	}
@@ -89,9 +93,22 @@ func (s *Service) Close() error {
 	return s.st.close()
 }
 
+// emit records an event (so a client can resume the stream) and
+// publishes it. It's serialized, so events are published in ID order.
 func (s *Service) emit(e pa.Event) {
 	if e.At.IsZero() {
 		e.At = s.now()
+	}
+	s.emitMu.Lock()
+	defer s.emitMu.Unlock()
+	stored := e
+	if len(stored.Paths) > pa.MaxEventPaths {
+		stored.PathsTotal, stored.Paths = len(stored.Paths), stored.Paths[:pa.MaxEventPaths]
+	}
+	b, _ := json.Marshal(stored)
+	if err := s.st.db.QueryRowContext(context.Background(), `INSERT INTO events(artifact, at, data) VALUES(?,?,?) RETURNING id`,
+		e.Artifact, ms(e.At), string(b)).Scan(&e.ID); err != nil {
+		s.log.Error("record event", "type", e.Type, "err", err)
 	}
 	s.bus.publish(e)
 }

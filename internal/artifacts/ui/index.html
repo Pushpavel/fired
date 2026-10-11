@@ -1504,6 +1504,7 @@ function describe(e) {
     case "artifact.version": return `v${e.version}, ${ORIGIN[e.origin]?.toLowerCase() || e.origin}`;
     case "db.changed": return `db: ${e.paths.length > 3 ? `${e.paths.length} documents` : e.paths.join(", ")}`;
     case "run.started": return "run started";
+    case "run.waiting": return `run waiting: ${e.waiting}`;
     case "run.finished": return `run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.reason ? ": " + e.reason : ""}${e.notify ? `, notify ${e.notify}` : ""}`;
     case "run.dropped": return `run dropped: ${e.reason}`;
     default: return "";
@@ -1526,13 +1527,13 @@ function connectEvents() {
   es = new EventSource("/v1/events");
   es.onopen = () => { S.live = true; renderStatus(); };
   es.onerror = () => { S.live = false; renderStatus(); };
-  for (const t of ["artifact.created", "artifact.deleted", "artifact.version", "db.changed", "run.started", "run.finished", "run.dropped"]) {
+  for (const t of ["artifact.created", "artifact.deleted", "artifact.version", "db.changed", "run.started", "run.waiting", "run.finished", "run.dropped"]) {
     es.addEventListener(t, m => {
       let e; try { e = JSON.parse(m.data); } catch { return; }
       e.clock = clock(); events.push(e); if (events.length > 500) events.shift();
       drawerUpdate("events");
       if (t === "artifact.version") S.fresh.add(vkey(e.artifact, e.version));
-      if (t === "run.finished" && e.artifact === S.sel) toast(`The job's run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.reason ? ": " + e.reason : ""}`, e.status === "succeeded" ? "ok" : "err");
+      if (t === "run.finished" && e.artifact === S.sel) toast(`The job's run ${RUNLABEL[e.status]?.toLowerCase() || e.status}${e.log_tail ? `: ${e.log_tail.trim().split("\n").pop()}` : e.reason ? ": " + e.reason : ""}`, e.status === "succeeded" ? "ok" : "err");
       clearTimeout(evTimer);
       evTimer = setTimeout(() => onChange(e), 250);
     });

@@ -409,9 +409,13 @@ func (c *Client) SetQuota(ctx context.Context, key string, q Quota) (*QuotaStatu
 
 // ---- events
 
-// Events streams events until ctx is done. artifact filters to one artifact
-// ("" = all).
-func (c *Client) Events(ctx context.Context, artifact string, fn func(Event)) error {
+// Events streams events until ctx is done or the stream ends (the service
+// restarting). artifact filters to one artifact ("" = all). after resumes
+// after that event's ID (0: from now): reconnect with the last ID fn saw,
+// and the service replays what was missed. A "gap" (the events kept don't
+// reach back that far) is delivered as an Event of Type "gap": re-read the
+// state you care about from the API.
+func (c *Client) Events(ctx context.Context, artifact string, after int64, fn func(Event)) error {
 	p := "/v1/events"
 	if artifact != "" {
 		p += "?artifact=" + url.QueryEscape(artifact)
@@ -419,6 +423,9 @@ func (c *Client) Events(ctx context.Context, artifact string, fn func(Event)) er
 	r, err := c.req(ctx, "GET", p, nil)
 	if err != nil {
 		return err
+	}
+	if after > 0 {
+		r.Header.Set("Last-Event-ID", strconv.FormatInt(after, 10))
 	}
 	resp, err := c.HTTP.Do(r)
 	if err != nil {
@@ -430,12 +437,19 @@ func (c *Client) Events(ctx context.Context, artifact string, fn func(Event)) er
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	typ := ""
 	for sc.Scan() {
 		line := sc.Text()
+		if t, ok := strings.CutPrefix(line, "event: "); ok {
+			typ = t
+		}
 		if data, ok := strings.CutPrefix(line, "data: "); ok {
 			var e Event
 			if err := json.Unmarshal([]byte(data), &e); err != nil {
 				return fmt.Errorf("decode event: %v", err)
+			}
+			if typ == "gap" {
+				e.Type = "gap"
 			}
 			fn(e)
 		}

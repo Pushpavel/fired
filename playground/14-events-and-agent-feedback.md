@@ -55,16 +55,24 @@ artifact.deleted  u14-fork, u14-app
   when there were more (watches inside the service still see them all).
   Checked: the 300-document batch arrives as 100 paths, `paths_total: 300`.
 
-## Questions
+## Built after 14
 
-- **Durable events:** keep events in Postgres with increasing IDs for a
-  while (a day), send `id:` on the stream, and replay from
-  `Last-Event-ID` (or `?after=`) on reconnect, so a backend can't miss a
-  `run.finished` across restarts and deploys.
-- **A failed run's last lines in `run.finished`:** say the last 1 KB of
-  stderr (redacted, as the logs are), so an agent hears why it failed
-  without another request.
-- **`run.waiting`:** an event when a run goes back to pending, with the
-  reason (fired unavailable, over the key's limits, broker unavailable,
-  hot storage full), so an agent can say "waiting for capacity" instead of
-  nothing.
+- **Durable events:** every event is stored (Postgres, `events`) with an
+  increasing `id`, kept for `limits.event_retention` (24h). The stream
+  sends `id:`; a client reconnecting with `Last-Event-ID` (or `?after=`)
+  gets what it missed, then live events, each once; if some are gone, a
+  `gap` event first. The Go client's `Events` takes the last id.
+- **`log_tail` on `run.finished`** when a run didn't succeed: the end of
+  its output (about 1 KB, redacted like the logs).
+- **`run.waiting`** when a run goes back to pending, with `waiting`
+  (`quota_exceeded`, `broker_unavailable`, `fired_unavailable`, fired's
+  `capacity` / `no_space`) and the reason; only when that changes. The
+  console shows it, and the failed run's last line in its toast.
+
+Tried with real VMs and a monitor that resumes after its last id: a
+failing job's `run.finished` said "FileNotFoundError: … 'missing.json'";
+fired-artifacts restarted and a run was triggered the moment it was back,
+and the monitor, resuming after 4, got 5 and 6 (nothing missed, nothing
+twice); with fired stopped, `run.waiting` (`fired_unavailable`), then the
+run once fired was back. Tests cover replay, a filtered resume, the gap,
+the log tail and `run.waiting` for an unavailable broker.

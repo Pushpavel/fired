@@ -440,8 +440,13 @@ type CredentialsResponse struct {
 const MaxEventPaths = 100
 
 type Event struct {
+	// ID increases with every event; the stream sends it as the SSE id, and
+	// a reconnect with Last-Event-ID (or ?after=) replays what came after
+	// it, for limits.event_retention.
+	ID int64 `json:"id,omitempty"`
 	// Type: artifact.created, artifact.version, artifact.deleted,
 	// db.changed (Paths: the documents written or deleted), run.started,
+	// run.waiting (a run went back to pending: Waiting, Reason),
 	// run.finished, run.dropped.
 	Type     string   `json:"type"`
 	Artifact string   `json:"artifact"`
@@ -454,6 +459,13 @@ type Event struct {
 	RunID      string `json:"run_id,omitempty"`
 	Status     string `json:"status,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	// Waiting, on run.waiting, is what the run waits for: quota_exceeded
+	// (the key's limits in fired), broker_unavailable, fired_unavailable,
+	// or fired's error code (capacity, no_space).
+	Waiting string `json:"waiting,omitempty"`
+	// LogTail, on a run.finished that didn't succeed, is the end of its
+	// output (stderr, else stdout), redacted like its logs: usually why.
+	LogTail string `json:"log_tail,omitempty"`
 	// Notify is copied from the publish that asked to hear about this
 	// version's first run.
 	Notify string    `json:"notify,omitempty"`

@@ -1264,3 +1264,46 @@ func TestReadLimits(t *testing.T) {
 		t.Fatalf("codes %v, want %v", codes, want)
 	}
 }
+
+// Events are kept: a client resuming after an id gets what it missed,
+// once, and a gap when some of it is gone.
+func TestEventReplay(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	for _, id := range []string{"ev-a", "ev-b"} {
+		must(h.c.Create(ctx, pa.CreateArtifactRequest{ID: id, QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", "a")}}}))(t)
+	}
+	read := func(artifact string, after int64, n int) []pa.Event {
+		t.Helper()
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		var got []pa.Event
+		_ = h.c.Events(cctx, artifact, after, func(e pa.Event) {
+			got = append(got, e)
+			if len(got) == n {
+				cancel()
+			}
+		})
+		return got
+	}
+	// 1, 2: ev-a created and its version; 3, 4: ev-b's.
+	all := read("", 1, 3)
+	if len(all) != 3 || all[0].ID != 2 || all[1].Type != "artifact.created" || all[1].Artifact != "ev-b" || all[2].ID != 4 {
+		t.Fatalf("replay after 1: %+v", all)
+	}
+	// Live events continue after the replay, without repeats.
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		must(h.c.UpdateDoc(ctx, "ev-a", "x/y", map[string]any{"n": 1}))(t)
+	}()
+	got := read("ev-a", 2, 1) // nothing missed for ev-a, then the live write
+	if len(got) != 1 || got[0].Type != "db.changed" || got[0].ID != 5 {
+		t.Fatalf("filtered resume then live: %+v", got)
+	}
+	// Events older than what's kept: the client hears about the gap.
+	must(h.svc.st.db.ExecContext(ctx, `DELETE FROM events WHERE id<4`))(t)
+	g := read("", 1, 3)
+	if len(g) != 3 || g[0].Type != "gap" || g[1].ID != 4 || g[2].ID != 5 {
+		t.Fatalf("after a gap: %+v", g)
+	}
+}

@@ -217,7 +217,7 @@ func TestRunsInFired(t *testing.T) {
 	var evMu sync.Mutex
 	var evs []pa.Event
 	go func() {
-		_ = c.Events(ctx, "", func(e pa.Event) {
+		_ = c.Events(ctx, "", 0, func(e pa.Event) {
 			evMu.Lock()
 			evs = append(evs, e)
 			evMu.Unlock()
@@ -418,7 +418,7 @@ func TestRunsInFired(t *testing.T) {
 	t.Run("events", func(t *testing.T) {
 		evMu.Lock()
 		defer evMu.Unlock()
-		var notified, started, data bool
+		var notified, started, data, tail, waiting bool
 		for _, e := range evs {
 			if e.Type == "run.finished" && e.Notify == "session-1" && e.Status == pa.RunSucceeded {
 				notified = true
@@ -427,10 +427,12 @@ func TestRunsInFired(t *testing.T) {
 				t.Errorf("notify on a later run: %+v", e)
 			}
 			started = started || e.Type == "run.started"
+			tail = tail || (e.Type == "run.finished" && e.Status == pa.RunFailed && strings.Contains(e.LogTail, "boom"))
+			waiting = waiting || (e.Type == "run.waiting" && e.Waiting == "broker_unavailable" && strings.Contains(e.Reason, "503"))
 			data = data || (e.Type == "db.changed" && e.Artifact == id && len(e.Paths) == 1)
 		}
-		if !notified || !started || !data {
-			t.Fatalf("events (notified %v started %v data %v): %+v", notified, started, data, evs)
+		if !notified || !started || !data || !tail || !waiting {
+			t.Fatalf("events (notified %v started %v data %v log tail %v waiting %v): %+v", notified, started, data, tail, waiting, evs)
 		}
 	})
 

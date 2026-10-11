@@ -545,11 +545,22 @@ redacted).
 | `artifact.version` | Every new version, with `origin`. Not sent for an unchanged publish or restore. |
 | `db.changed` | Documents were written or deleted (`paths`: at most 100, with `paths_total` when there were more). |
 | `run.started` | A run left `pending`. |
-| `run.finished` | With `status`, `reason`, and `notify` if the publish asked for it. |
+| `run.waiting` | A run went back to `pending` before its job started, with `waiting` (`quota_exceeded`, `broker_unavailable`, `fired_unavailable`, or fired's code: `capacity`, `no_space`) and `reason`. Sent when what it waits for changes, not on every retry. |
+| `run.finished` | With `status`, `reason`, `notify` if the publish asked for it, and, unless it succeeded, `log_tail`: the end of its output (stderr, else stdout; about 1 KB, redacted like the logs), usually why. |
 | `run.dropped` | With `reason`: `queue_full`, `expired`, `job_removed`, `needs_approval`. |
 
+**Events are kept** for `limits.event_retention` (24h) and numbered: each
+carries its `id`, also the SSE `id:`. A client that reconnects with
+`Last-Event-ID: <id>` (browsers' `EventSource` does) or `?after=<id>`
+first gets the events it missed, then the live ones, each once. If some
+of them are already gone, it gets a `gap` event (`{"after", "earliest"}`)
+first: re-read the state you care about (runs, versions) from the API.
+The Go client's `Events(ctx, artifact, after, fn)` takes the last ID seen.
+
 Monitors in your backend subscribe to an artifact's events and forward
-what matters to sessions.
+what matters to sessions; keep the last `id` you handled, so a deploy or
+a dropped connection doesn't lose a `run.finished` an agent is waiting
+for.
 
 ## The db
 

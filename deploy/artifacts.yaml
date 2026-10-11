@@ -48,6 +48,7 @@ limits:
   max_doc_bytes: 1048576        # one db document
   max_docs: 10000               # documents per artifact
   max_batch_writes: 500
+  event_retention: 24h          # events kept for clients resuming the stream
   delete_after: 0s              # delete artifacts inactive this long (0 = never)
   queue_max: 100                # defaults for on_busy: queue
   queue_max_age: 24h
