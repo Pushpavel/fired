@@ -603,7 +603,7 @@ function renderHome() {
     legend(),
     h("section", { class: "kits" },
       h("h2", {}, "Start from an example"),
-      h("p", {}, `Each creates an artifact for the quota key “${quotaKey()}”. Together they cover view types, jobs, state, queues, approvals and failures.`),
+      h("p", {}, `Each creates an artifact for the quota key “${quotaKey()}”. Together they cover pages, jobs, state, queues, approvals and failures.`),
       KITS.map(k => h("div", { class: "kit" }, h("h3", {}, k.title), h("p", {}, k.about),
         h("button", { class: "btn", onclick: e => createKit(k, e.currentTarget) }, "Create"))))));
   S.fresh.clear();
@@ -1443,9 +1443,32 @@ button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid
 document.getElementById("b").onclick = () => { document.getElementById("n").textContent = ++n; };
 `,
     } },
-  { slug: "notes", title: "A note with a diagram", tab: "files",
-    about: "A Markdown document that embeds an SVG by relative path. It has no page yet, so there's nothing to view; preview the Markdown in the Files tab.",
+  { slug: "notes", title: "A note with a diagram", tab: "view",
+    about: "A Markdown document that embeds an SVG. The page, notes/index.html, renders README.md itself with marked; its folder, notes/, is what viewers can reach.",
     files: {
+      "artifact.json": JSON.stringify({ page: "notes/index.html" }, null, 2) + "\n",
+      "notes/index.html": `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Release checklist</title>
+<style>
+  body { font: 16px/1.6 system-ui, sans-serif; max-width: 72ch; margin: 40px auto; padding: 0 20px; color: #1f2328; }
+  img { max-width: 100%; }
+  table { border-collapse: collapse; } th, td { border: 1px solid #d8dee4; padding: 4px 10px; }
+</style>
+</head>
+<body>
+<article id="doc">Loading…</article>
+<script type="module">
+import { marked } from "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
+const md = await (await fetch("README.md", { cache: "no-cache" })).text();
+document.getElementById("doc").innerHTML = marked.parse(md);
+<\/script>
+</body>
+</html>
+`,
       "notes/README.md": `# Release checklist
 
 A note kept as an artifact. Each edit is a version, so you can compare and restore.
@@ -1512,10 +1535,39 @@ fetch("data/now.json").then(r => r.json()).then(d => {
 `,
     } },
   { slug: "table", title: "A table a job rebuilds", tab: "runs", run_now: ["build"],
-    about: "An hourly job regenerates data/sales.csv with awk; preview it as a table in the Files tab. README.md explains it. The build folder is mirrored on every run.",
+    about: "An hourly job regenerates data/sales.csv with awk; the page fetches it and draws the table, so each run's data shows without changing the page. The build folder is mirrored on every run.",
     files: {
-      "artifact.json": JSON.stringify({
+      "artifact.json": JSON.stringify({ page: "index.html",
         jobs: { build: { run: "sh build.sh", writes: ["data"], schedule: "@hourly" } } }, null, 2) + "\n",
+      "index.html": `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; color: #1f2328; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 12px; border-bottom: 1px solid #d8dee4; text-align: left; }
+  td.n, th.n { text-align: right; }
+  .note { color: #59636e; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Sales by region</h1>
+<table id="t"></table>
+<p class="note" id="note">Loading data/sales.csv…</p>
+<script type="module">
+const csv = await (await fetch("data/sales.csv", { cache: "no-cache" })).text();
+const [head, ...rows] = csv.trim().split("\\n").map(l => l.split(","));
+const t = document.getElementById("t"), num = i => i > 0;
+t.innerHTML = "<tr>" + head.map((h, i) => \`<th class="\${num(i) ? "n" : ""}">\${h}</th>\`).join("") + "</tr>" +
+  rows.map(r => "<tr>" + r.map((c, i) => \`<td class="\${num(i) ? "n" : ""}">\${c}</td>\`).join("") + "</tr>").join("");
+document.getElementById("note").textContent = rows.length ? \`\${rows.length} regions, from data/sales.csv\` : "No data yet: run the build job from the Jobs tab.";
+<\/script>
+</body>
+</html>
+`,
       "build.sh": `#!/bin/sh
 set -e
 mkdir -p data
@@ -1545,38 +1597,70 @@ sleep 2
 `,
       "inbox.md": "# Inbox\n\nEach run appends its trigger here.\n\n",
     } },
-  { slug: "react", title: "A React component", tab: "files",
-    about: "app/App.jsx imports a second component and a stylesheet by relative path. It has no page yet; the Files tab's preview compiles them in the browser.",
+  { slug: "react", title: "A React app without a build", tab: "view",
+    about: "React with htm instead of JSX, so app/App.js and app/Tally.js are plain ES modules: the browser follows their relative imports and an import map supplies react. No build step; JSX would need one (esbuild in a sandbox).",
     files: {
-      "app/App.jsx": `import { useState } from "react";
-import Tally from "./Tally.jsx";
-import "./app.css";
+      "artifact.json": JSON.stringify({ page: "index.html" }, null, 2) + "\n",
+      "index.html": `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tally</title>
+<link rel="stylesheet" href="app/app.css">
+<script type="importmap">
+{ "imports": {
+  "react": "https://esm.sh/react@18.3.1",
+  "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+  "htm": "https://esm.sh/htm@3.1.1"
+} }
+<\/script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import { createRoot } from "react-dom/client";
+import { html } from "./app/html.js";
+import App from "./app/App.js";
+createRoot(document.getElementById("root")).render(html\`<\${App} />\`);
+<\/script>
+</body>
+</html>
+`,
+      "app/html.js": `import { createElement } from "react";
+import htm from "htm";
+
+// JSX-like templates without a compiler: html\`<div class=\${x}>…</div>\`.
+export const html = htm.bind(createElement);
+`,
+      "app/App.js": `import { useState } from "react";
+import { html } from "./html.js";
+import Tally from "./Tally.js";
 
 export default function App() {
   const [marks, setMarks] = useState(["edit", "run", "run"]);
-  return (
+  return html\`
     <main>
       <h1>Tally</h1>
-      <p>Each button adds a mark. Edit this file and publish to change the component.</p>
-      <div className="buttons">
-        {["edit", "run", "restore", "fork"].map(k => (
-          <button key={k} onClick={() => setMarks([...marks, k])}>{k}</button>
-        ))}
+      <p>Each button adds a mark. Edit app/App.js and publish to change it.</p>
+      <div class="buttons">
+        \${["edit", "run", "restore", "fork"].map(k => html\`
+          <button key=\${k} onClick=\${() => setMarks([...marks, k])}>\${k}</button>\`)}
       </div>
-      <Tally marks={marks} />
-    </main>
-  );
+      <\${Tally} marks=\${marks} />
+    </main>\`;
 }
 `,
-      "app/Tally.jsx": `const COLORS = { edit: "#2D49D2", run: "#0F7C66", restore: "#A87A0C", fork: "#93379A" };
+      "app/Tally.js": `import { html } from "./html.js";
+
+const COLORS = { edit: "#2D49D2", run: "#0F7C66", restore: "#A87A0C", fork: "#93379A" };
 const HEIGHT = { edit: 64, run: 26, restore: 44, fork: 64 };
 
 export default function Tally({ marks }) {
-  return (
-    <div className="tally">
-      {marks.map((m, i) => <span key={i} title={m} style={{ background: COLORS[m], height: HEIGHT[m] }} />)}
-    </div>
-  );
+  return html\`
+    <div class="tally">
+      \${marks.map((m, i) => html\`<span key=\${i} title=\${m} style=\${{ background: COLORS[m], height: HEIGHT[m] }} />\`)}
+    </div>\`;
 }
 `,
       "app/app.css": `main { max-width: 640px; margin: 48px auto; padding: 0 20px; font-family: system-ui, sans-serif; }

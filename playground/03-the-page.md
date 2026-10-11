@@ -44,5 +44,61 @@ rendered the Markdown (with its image), the table and the React component
 
 ## Tried
 
-(Use case not started: artifact.json validation, a page that goes away,
-pages for the Markdown / CSV / React examples.)
+1. **Validation** (curl, `page-test`): `page` set to a non-`.html` file,
+   a file that isn't there, `../index.html`, `/index.html`; `"pages"` (a
+   typo) in an `artifact.json` file; an uppercase `INDEX.HTML`; then
+   deleting the page, mirroring its folder without it, renaming it
+   (delete + add + new `page` in one publish), and `spec: {}`.
+2. **Pages for the examples without one**, written as an agent would:
+   the Markdown note, the CSV table and the React component. Created from
+   the console and checked in headless Chromium.
+3. **Folder rules as a viewer** (`dist-test`: `src/build.py` next to a
+   page in `dist/`, with `about.html` and `docs/index.html`): clicked
+   links to `about.html`, `docs/`, `../src/build.py`, and `/` from the
+   about page.
+
+## Saw
+
+- **Validation is clear and all-or-nothing:** "page: "README.md" must be
+  an .html file", "is not a file in this version", unknown field
+  "pages", relative-path errors. Uppercase `.HTML` is accepted and served
+  as `text/html`. Deleting the page or mirroring its folder without it is
+  a 400; renaming it in one publish works; `spec: {}` leaves no page and
+  viewers get `404 no_page`. (`spec` replaces `artifact.json`, so it also
+  dropped the title, as documented.)
+- **Markdown note:** `notes/index.html` (page) imports marked and renders
+  `README.md`; the SVG in it resolves next to the page. ~20 lines.
+- **CSV table:** the page fetches `data/sales.csv` (`cache: "no-cache"`)
+  and draws the table. The `build` job ran in a Firecracker VM on create
+  (`run_now`), its run made v2, and the page showed its 5 regions without
+  being changed: page + data written by a job is the natural split.
+- **React is where "the page renders itself" costs something.** A
+  multi-file JSX app can't run in a browser without compiling: the old
+  renderer hid that with an in-browser bundler. Without a build, the clean
+  way is htm (JSX-like tagged templates): `App.js`/`Tally.js` are plain ES
+  modules, the browser follows their relative imports, an import map
+  supplies `react`. Works, no tooling. JSX proper needs a build (esbuild in
+  the agent's sandbox), and fired's `base` template is Python-only.
+- **Folders as a viewer:** `about.html` and back to `/` work; `docs/` is
+  a 404 ("is a folder; link to a file in it"); `../src/build.py` can't
+  leave the page's folder (the browser resolves it to `/src/build.py`,
+  which is `dist/src/build.py`): 404.
+
+## Fixed
+
+- **View 404s leaked the tree:** "no file "dist/src/build.py"" told a
+  viewer where the page lives. View errors now name only the URL path
+  ("no /src/build.py here"); the files API still names tree paths.
+- **The page-went-away error** now says what to do: "(publish it, or set
+  "page" to the file to open)".
+- Examples: the note, table and React app have pages; the React one is
+  now "A React app without a build" (htm).
+
+## Questions
+
+- Viewers get JSON error bodies (`{"error": …}`) for a broken link. Fine
+  behind a backend that styles its own error pages; worth a plain page if
+  the service's view is ever shown directly.
+- JSX: offer a template with Node (so an agent can run esbuild in its
+  sandbox), or document htm as the no-build way? Probably both, when an
+  agent use case needs it.

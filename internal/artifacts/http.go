@@ -394,12 +394,13 @@ func (s *Service) handleFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	s.serveFile(w, r, id, n, r.PathValue("path"), n != 0)
+	s.serveFile(w, r, id, n, r.PathValue("path"), "", n != 0)
 }
 
 // serveFile serves path p of version n (0 = current); pinned responses are
-// cacheable forever.
-func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n int, p string, pinned bool) {
+// cacheable forever. shown, when set, is what a not-found names instead of
+// p (a view names the URL path, not where the file is in the tree).
+func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n int, p, shown string, pinned bool) {
 	p, err := cleanPath(p)
 	if err != nil {
 		writeErr(w, badRequest("%v", err))
@@ -416,6 +417,10 @@ func (s *Service) serveFile(w http.ResponseWriter, r *http.Request, id string, n
 	f, err := getFile(r.Context(), s.st.db, id, n, p)
 	if err != nil {
 		if err == errNotFound {
+			if shown != "" {
+				writeErr(w, errf(http.StatusNotFound, "not_found", "no %s here", shown))
+				return
+			}
 			writeErr(w, errf(http.StatusNotFound, "not_found", "%s has no file %q in version %d", id, p, n))
 			return
 		}

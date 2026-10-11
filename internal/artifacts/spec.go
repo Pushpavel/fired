@@ -78,7 +78,7 @@ func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 			if ext := strings.ToLower(path.Ext(p)); ext != ".html" && ext != ".htm" {
 				add("page: %q must be an .html file", s.Page)
 			} else if _, ok := tree[p]; !ok {
-				add("page: %q is not a file in this version", s.Page)
+				add("page: %q is not a file in this version (publish it, or set \"page\" to the file to open)", s.Page)
 			}
 			s.Page = p
 		}

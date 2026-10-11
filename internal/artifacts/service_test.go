@@ -698,8 +698,8 @@ func TestServeView(t *testing.T) {
 		}
 	}
 	for _, p := range []string{"/docs/", "/../src/build.py", "/src/build.py", "/artifact.json", "/home"} {
-		if code, _ := get(p); code != 404 && code != 400 {
-			t.Fatalf("%s reachable: %d", p, code)
+		if code, body := get(p); (code != 404 && code != 400) || strings.Contains(body, "dist") {
+			t.Fatalf("%s: %d %s", p, code, body)
 		}
 	}
 }

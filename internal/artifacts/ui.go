@@ -303,5 +303,5 @@ func (s *Service) serveView(w http.ResponseWriter, r *http.Request, id string, n
 			return
 		}
 	}
-	s.serveFile(w, r, id, v.Version, p, n != 0)
+	s.serveFile(w, r, id, v.Version, p, r.URL.Path, n != 0)
 }
