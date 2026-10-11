@@ -301,6 +301,9 @@ func (a *Agent) startBackground(w http.ResponseWriter, p *prepared, req *api.Exe
 	if req.Stdin != "" {
 		p.cmd.Stdin = strings.NewReader(req.Stdin)
 	}
+	// The process is done when it exits, not when the children that
+	// inherited its output (a daemon it started) close it.
+	p.cmd.WaitDelay = 2 * time.Second
 	if err := p.cmd.Start(); err != nil {
 		writeErr(w, http.StatusBadRequest, "exec_failed", err)
 		return
@@ -309,7 +312,11 @@ func (a *Agent) startBackground(w http.ResponseWriter, p *prepared, req *api.Exe
 	a.procs.add(pr)
 	go func() {
 		err := p.cmd.Wait()
-		pr.finish(exitCode(err))
+		code := exitCode(err)
+		if errors.Is(err, exec.ErrWaitDelay) {
+			code = p.cmd.ProcessState.ExitCode()
+		}
+		pr.finish(code)
 		a.procs.exited(pr)
 	}()
 	writeJSON(w, http.StatusOK, api.ExecResult{PID: pr.pid, ExitCode: 0})
@@ -457,9 +464,9 @@ func (a *Agent) handleKillProc(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", fmt.Errorf("process %d not found", pid))
 		return
 	}
-	if p.info().Running {
-		killGroup(pid, sig)
-	}
+	// The group, even after its leader exited: children it left behind
+	// (in its process group) are stopped too.
+	killGroup(pid, sig)
 	writeJSON(w, http.StatusOK, p.info())
 }
 

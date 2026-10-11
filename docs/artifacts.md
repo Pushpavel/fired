@@ -466,8 +466,10 @@ Run statuses:
 - `succeeded`, `failed` (with `reason`, e.g. `exit status 3`), `timed_out`;
 - `dropped`, `superseded`.
 
-If fired is out of capacity (`503`), the run goes back to pending and is
-retried. `GET /v1/artifacts/{id}/runs/{run}/logs` returns the tail of
+If fired can't be reached or is out of capacity (a connection error, `502`,
+`503`, `504`) before the job starts, the run goes back to pending with
+`reason: "waiting: …"`, and runs wait 15s before trying again. When a run
+ends, whatever its job left in its process group is killed. `GET /v1/artifacts/{id}/runs/{run}/logs` returns the tail of
 stdout and stderr (`runner.log_bytes` each, with credential values
 redacted).
 

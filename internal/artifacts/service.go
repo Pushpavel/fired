@@ -41,6 +41,8 @@ type Service struct {
 	// quotaWait: until when a quota key's runs wait, after fired refused
 	// one for that key's limits.
 	quotaWait map[string]time.Time
+	// firedWait: until when runs wait after fired was unavailable.
+	firedWait time.Time
 	// tiers caches fired's quota key → tier mapping.
 	tiers    map[string]tierEntry
 	wake     chan struct{}

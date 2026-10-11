@@ -784,6 +784,8 @@ const DB_PY = `# The artifact's db, for its job: JSON documents at paths like
 # the owner's and the job's.
 import json, os, time, urllib.error, urllib.parse, urllib.request
 
+if "FIRED_DB_URL" not in os.environ:
+    raise SystemExit("db.py: no $FIRED_DB_URL: this fired-artifacts has no runner.db_url, so jobs have no db")
 URL, TOKEN = os.environ["FIRED_DB_URL"], os.environ["FIRED_DB_TOKEN"]
 
 

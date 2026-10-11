@@ -1154,3 +1154,21 @@ func TestDB(t *testing.T) {
 		}
 	})
 }
+
+// A run waits, rather than failing, while fired can't be reached.
+func TestRunWaitsForFired(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.SchedulerInterval = pa.Duration(50 * time.Millisecond) }) // fired at 127.0.0.1:1
+	h.svc.now = func() time.Time { return time.Now().UTC() }
+	ctx := context.Background()
+	if err := h.svc.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	must(h.c.Create(ctx, pa.CreateArtifactRequest{ID: "waits", QuotaKey: "u", Publish: &pa.PublishRequest{
+		Files: []pa.FileOp{pa.Text("a.txt", "a")}, Spec: &pa.Spec{Job: &pa.Job{Run: "true"}}}}))(t)
+	run := must(h.c.Trigger(ctx, "waits", nil))(t)
+	time.Sleep(500 * time.Millisecond)
+	r := must(h.c.Run(ctx, "waits", run.ID))(t)
+	if r.Status != pa.RunPending || !strings.HasPrefix(r.Reason, "waiting: ") {
+		t.Fatalf("with fired down: %+v", r)
+	}
+}

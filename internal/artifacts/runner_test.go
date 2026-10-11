@@ -151,6 +151,7 @@ fail) echo boom >&2; exit 3 ;;
 slow) sleep 30 ;;
 same) exit 0 ;;
 leak) echo "$API_TOKEN"; db -X PUT -d "{\"v\":\"$API_TOKEN\"}" "$FIRED_DB_URL/leak/x"; exit 0 ;;
+orphan) (sleep 3; db -X PUT -d '{}' "$FIRED_DB_URL/orphan/late") & exit 0 ;;
 esac
 echo edited > README.md
 n=$(db "$FIRED_DB_URL/_private/state" 2>/dev/null | sed -n 's/.*"n": *\([0-9]*\).*/\1/p')
@@ -283,6 +284,16 @@ func TestRunsInFired(t *testing.T) {
 		if r := trigger("same"); r.Status != pa.RunSucceeded || r.DBWrites != 0 {
 			t.Fatalf("run without writes: %+v", r)
 		}
+	})
+
+	t.Run("a run ends with its process, and takes its children along", func(t *testing.T) {
+		r := trigger("orphan")
+		if r.Status != pa.RunSucceeded || r.DurationMS > 2900 {
+			t.Fatalf("a run that left a child running: %+v", r)
+		}
+		time.Sleep(4 * time.Second)
+		_, err := c.GetDoc(ctx, id, "orphan/late")
+		wantCode(t, err, 404, "no_document")
 	})
 
 	t.Run("edits don't conflict with runs", func(t *testing.T) {

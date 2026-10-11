@@ -51,6 +51,8 @@ dev: build db
 # tmpfs, so sandboxes are archived when it stops. Detached: `docker logs -f
 # fired-dev`, `docker stop fired-dev`.
 dev-vm: docker db
+	# stop (not rm -f): fired archives its sandboxes on the way down.
+	docker stop fired-dev >/dev/null 2>&1 || true
 	docker rm -f fired-dev >/dev/null 2>&1 || true
 	docker run -d --name fired-dev --privileged --cgroupns=private --network host \
 	  --add-host fired-artifacts.internal:127.0.0.1 \

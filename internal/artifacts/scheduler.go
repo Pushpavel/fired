@@ -241,9 +241,16 @@ func (s *Service) fireSchedules(ctx context.Context) error {
 // dispatch starts pending runs while limits allow: one run at a time per
 // artifact and the service-wide cap. Per-user compute limits are fired's
 // (runner sandboxes carry the quota key): a run fired refuses goes back to
-// pending, and that key's runs wait (quotaBackoff) before trying again.
+// pending, and that key's runs wait (quotaBackoff) before trying again;
+// when fired is unavailable, every run waits firedBackoff.
 // Runs that can't start yet stay pending.
 func (s *Service) dispatch(ctx context.Context) error {
+	s.mu.Lock()
+	wait := s.now().Before(s.firedWait)
+	s.mu.Unlock()
+	if wait {
+		return nil
+	}
 	pending, err := queryRuns(ctx, s.st.db, `status='pending' ORDER BY created_at`)
 	if err != nil {
 		return err

@@ -87,10 +87,20 @@ func (s *Service) execute(si *startInfo) {
 	}
 }
 
+// unavailable reports fired being out of capacity or unreachable (down,
+// restarting, a network blip): the run waits instead of failing.
 func unavailable(err error) bool {
 	var he *client.HTTPError
-	return errors.As(err, &he) && he.Status == http.StatusServiceUnavailable
+	if errors.As(err, &he) {
+		return he.Status == http.StatusServiceUnavailable || he.Status == http.StatusBadGateway || he.Status == http.StatusGatewayTimeout
+	}
+	var ne net.Error
+	var oe *net.OpError
+	return errors.As(err, &oe) || errors.As(err, &ne) && ne.Timeout()
 }
+
+// firedBackoff is how long runs wait after fired was unavailable.
+const firedBackoff = 15 * time.Second
 
 // overQuota reports fired refusing a start for the quota key's limits.
 func overQuota(err error) bool {
@@ -98,7 +108,9 @@ func overQuota(err error) bool {
 	return errors.As(err, &he) && he.Status == http.StatusTooManyRequests && he.Code() == "quota_exceeded"
 }
 
-// waitable turns fired refusing to start the runner into a retry.
+// waitable turns fired refusing or failing to start the runner into a
+// retry. Only steps before the job starts are retried, so a job never runs
+// twice for one trigger.
 func waitable(err error) *outcome {
 	switch {
 	case overQuota(err):
@@ -120,6 +132,14 @@ func (s *Service) quotaWaiting(key string, now time.Time) bool {
 		return false
 	}
 	return ok
+}
+
+// waitOr is a retry if err is fired being unavailable, else fail.
+func waitOr(fail *outcome, err error) *outcome {
+	if o := waitable(err); o != nil {
+		return o
+	}
+	return fail
 }
 
 func failed(reason string, err error) *outcome {
@@ -152,21 +172,18 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, lr *liveRun, timeou
 	// so paths are always interpreted as sandbox paths.
 	w := s.cfg.Runner.Workdir
 	if err := s.fired.DeleteFile(ctx, sb, w, true); err != nil && !client.IsNotFound(err) {
-		if unavailable(err) {
-			return &outcome{retry: true, reason: err.Error()}
-		}
-		return failed("prepare", err)
+		return waitOr(failed("prepare", err), err)
 	}
 	if err := s.fired.Mkdir(ctx, sb, w); err != nil {
-		return failed("prepare", err)
+		return waitOr(failed("prepare", err), err)
 	}
 	if err := s.fired.UploadArchive(ctx, sb, w, s.treeArchive(si.tree)); err != nil {
-		return failed("upload files", err)
+		return waitOr(failed("upload files", err), err)
 	}
 	trig, _ := json.Marshal(map[string]any{"type": r.Trigger, "run_id": r.ID, "at": r.CreatedAt, "payload": json.RawMessage(orNull(r.Payload))})
 	triggerFile := path.Join(triggerDir, "trigger.json")
 	if _, err := s.fired.WriteFile(ctx, sb, triggerFile, strings.NewReader(string(trig)), 0o644); err != nil {
-		return failed("write trigger", err)
+		return waitOr(failed("write trigger", err), err)
 	}
 	env := map[string]string{
 		"ARTIFACT_ID": a.ID, "ARTIFACT_VERSION": fmt.Sprint(r.Version),
@@ -198,6 +215,9 @@ func (s *Service) runJob(ctx context.Context, si *startInfo, lr *liveRun, timeou
 	}
 	out := &outcome{}
 	s.follow(ctx, sb, started.PID, timeout, out)
+	// Whatever the job left running in its process group ends with the
+	// run: the next run starts clean, and nothing outlives its db token.
+	_, _ = s.fired.Kill(ctx, sb, started.PID, "KILL")
 	out.logs.Stdout = string(secrets.Bytes([]byte(out.logs.Stdout)))
 	out.logs.Stderr = string(secrets.Bytes([]byte(out.logs.Stderr)))
 	return out
@@ -320,13 +340,15 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 	ctx := context.Background()
 	r, a := si.run, si.artifact
 	if out.retry {
+		s.mu.Lock()
 		if out.overQuota {
-			s.mu.Lock()
 			s.quotaWait[a.QuotaKey] = s.now().Add(time.Duration(s.cfg.Runner.QuotaBackoff))
-			s.mu.Unlock()
+		} else {
+			s.firedWait = s.now().Add(firedBackoff)
 		}
-		s.log.Info("run waits for capacity", "run", r.ID, "quota_key", a.QuotaKey, "over_quota", out.overQuota, "reason", out.reason)
-		r.Status, r.StartedAt, r.Version = pa.RunPending, nil, 0
+		s.mu.Unlock()
+		s.log.Info("run waits for fired", "run", r.ID, "quota_key", a.QuotaKey, "over_quota", out.overQuota, "reason", out.reason)
+		r.Status, r.StartedAt, r.Version, r.Reason = pa.RunPending, nil, 0, "waiting: "+out.reason
 		return putRun(ctx, s.st.db, r)
 	}
 	now := s.now()
@@ -363,9 +385,14 @@ func (s *Service) finishRun(si *startInfo, lr *liveRun, out *outcome) error {
 
 // ensureRunner returns the artifact's runner sandbox, creating it if it's
 // missing, broken, on a down host, or made for a different template, quota
-// key, pool or allowlist (runner.egress, runner.db_url).
+// key, pool or allowlist (runner.egress, runner.db_url), or from an older
+// build of its template (rebuilt under the same name).
 func (s *Service) ensureRunner(ctx context.Context, a pa.Artifact, template string) (string, error) {
 	id, pool := a.ID, s.cfg.Runner.Pool
+	tpl, err := s.fired.GetTemplate(ctx, template)
+	if err != nil {
+		return "", err
+	}
 	list, err := s.fired.ListSandboxes(ctx, map[string]string{labelArtifact: id}, "")
 	if err != nil {
 		return "", err
@@ -373,7 +400,7 @@ func (s *Service) ensureRunner(ctx context.Context, a pa.Artifact, template stri
 	allow := s.runnerEgress()
 	for _, sb := range list {
 		if sb.State != api.StateError && sb.State != api.StateDeleting && !sb.HostDown &&
-			sb.Labels[labelTemplate] == template && sb.QuotaKey == a.QuotaKey && sb.Pool == pool && slices.Equal(sb.Egress.Allow, allow) {
+			sb.Labels[labelTemplate] == template && sb.TemplateID == tpl.ID && sb.QuotaKey == a.QuotaKey && sb.Pool == pool && slices.Equal(sb.Egress.Allow, allow) {
 			return sb.ID, nil
 		}
 		_ = s.fired.DeleteSandbox(ctx, sb.ID)
