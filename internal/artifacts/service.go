@@ -411,7 +411,7 @@ func (s *Service) resolveOps(ctx context.Context, req pa.PublishRequest) ([]reso
 			if !validHash(op.Hash) {
 				return nil, badRequest("files[%d] (%s): %v", i, p, errBadHash)
 			}
-			if !s.blobs.Has(op.Hash) {
+			if !s.blobs.Touch(op.Hash, s.now()) {
 				return nil, errf(http.StatusUnprocessableEntity, "missing_blob", "files[%d] (%s): blob %s has not been uploaded", i, p, op.Hash)
 			}
 			size, err := s.blobSize(op.Hash)
@@ -529,8 +529,13 @@ func setCurrent(a *pa.Artifact, v *pa.Version) {
 
 // checkTree enforces per-version limits and the quota key's storage limit.
 func (s *Service) checkTree(ctx context.Context, q querier, key string, tree map[string]pa.File) (int64, error) {
-	if len(tree) > s.cfg.Limits.MaxFilesPerVersion {
-		return 0, errf(http.StatusRequestEntityTooLarge, "too_many_files", "a version can have at most %d files (got %d)", s.cfg.Limits.MaxFilesPerVersion, len(tree))
+	// artifact.json is the service's to write, so it isn't counted.
+	n := len(tree)
+	if _, ok := tree[pa.SpecFile]; ok {
+		n--
+	}
+	if n > s.cfg.Limits.MaxFilesPerVersion {
+		return 0, errf(http.StatusRequestEntityTooLarge, "too_many_files", "a version can have at most %d files besides %s (got %d)", s.cfg.Limits.MaxFilesPerVersion, pa.SpecFile, n)
 	}
 	var total int64
 	hashes := map[string]int64{}
@@ -616,6 +621,9 @@ func (s *Service) preparePublish(ctx context.Context, req pa.PublishRequest) (*p
 		p.specSize = int64(len(data))
 	}
 	for i, d := range req.ReplaceDirs {
+		if d == "" || d == "." || d == "/" {
+			return nil, badRequest("replace_dirs[%d]: %q is the whole tree; use \"replace\": true for that", i, d)
+		}
 		c, err := cleanPath(d)
 		if err != nil {
 			return nil, badRequest("replace_dirs[%d]: %v", i, err)
@@ -971,7 +979,7 @@ func (s *Service) MissingBlobs(hashes []string) ([]string, error) {
 		if !validHash(h) {
 			return nil, badRequest("%q: %v", h, errBadHash)
 		}
-		if !s.blobs.Has(h) {
+		if !s.blobs.Touch(h, s.now()) { // present: kept through GC until the publish
 			out = append(out, h)
 		}
 	}

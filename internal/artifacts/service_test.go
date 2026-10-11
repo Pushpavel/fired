@@ -536,6 +536,17 @@ func TestGC(t *testing.T) {
 	if !h.svc.blobs.Has(pa.HashBytes([]byte("keep"))) {
 		t.Fatal("referenced blob removed")
 	}
+
+	// An old unreferenced blob that /blobs/missing reports as present is
+	// about to be referenced: GC gives it the grace period again, so the
+	// publish that follows finds it.
+	orphan := must(h.svc.blobs.PutBytes([]byte("orphan")))(t)
+	_ = os.Chtimes(h.svc.blobs.path(orphan), old, old)
+	if m := must(h.c.MissingBlobs(ctx, []string{orphan}))(t); len(m) != 0 {
+		t.Fatalf("missing: %v", m)
+	}
+	h.svc.GC(ctx)
+	must(h.c.Create(ctx, pa.CreateArtifactRequest{QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{{Path: "a", Hash: orphan}}}}))(t)
 }
 
 func TestCreateNeedsFirstVersion(t *testing.T) {
@@ -743,4 +754,16 @@ func TestSingleFileView(t *testing.T) {
 		wantCode(t, err, 400, "invalid_request")
 	}
 	must(h.c.Publish(ctx, "notes", pa.PublishRequest{BaseVersion: 1, Spec: &pa.Spec{View: &pa.View{Type: pa.ViewCode, Entry: "other.txt"}}}))(t)
+}
+
+// The file limit counts what the publish brings, not the artifact.json the
+// service writes; an oversized body is a 413 that says so.
+func TestRequestLimits(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.Limits.MaxFilesPerVersion = 2; c.Limits.MaxInlineBytes = 1 << 10 })
+	ctx := context.Background()
+	must(h.c.Create(ctx, pa.CreateArtifactRequest{ID: "two", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", "a"), pa.Text("b", "b")}}}))(t)
+	_, err := h.c.Create(ctx, pa.CreateArtifactRequest{ID: "three", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", "a"), pa.Text("b", "b"), pa.Text("c", "c")}}})
+	wantCode(t, err, 413, "too_many_files")
+	_, err = h.c.Create(ctx, pa.CreateArtifactRequest{ID: "big", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("a", strings.Repeat("x", 4<<20))}}})
+	wantCode(t, err, 413, "too_large")
 }

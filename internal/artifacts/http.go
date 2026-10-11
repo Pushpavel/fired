@@ -137,9 +137,13 @@ func writeErr(w http.ResponseWriter, err error) {
 }
 
 func decode(r *http.Request, v any, max int64) error {
-	dec := json.NewDecoder(io.LimitReader(r.Body, max))
+	lr := &io.LimitedReader{R: r.Body, N: max + 1}
+	dec := json.NewDecoder(lr)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		if lr.N <= 0 {
+			return errf(http.StatusRequestEntityTooLarge, "too_large", "request body exceeds %d bytes; upload large files as blobs", max)
+		}
 		if err == io.EOF {
 			return badRequest("request body is required")
 		}

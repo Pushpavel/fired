@@ -977,17 +977,23 @@ async function publish() {
     const blobs = [];
     for (const [path, op] of S.stage) {
       if (op.delete) { files.push({ path, delete: true }); continue; }
-      // small text inline; other uploads go up as blobs (only the ones the
-      // store is missing), or base64 when this page can't hash them
-      if (op.content != null && (!op.hash || op.size <= 256 << 10)) { files.push({ path, content: op.content }); continue; }
-      if (op.hash) { files.push({ path, hash: op.hash }); blobs.push(op); continue; }
+      // Uploads go up as blobs (only the ones the store is missing), so a
+      // build of any size fits; text typed here goes inline unless it's
+      // big. Base64 only when this page can't hash (no crypto.subtle).
+      let hash = op.hash, blob = op.blob;
+      if (!hash && op.content != null && op.size > 256 << 10) {
+        blob = new Blob([op.content]); hash = await sha256(await blob.arrayBuffer());
+      }
+      if (hash) { files.push({ path, hash }); blobs.push({ hash, blob }); continue; }
+      if (op.content != null) { files.push({ path, content: op.content }); continue; }
       const buf = new Uint8Array(await op.blob.arrayBuffer());
       let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
       files.push({ path, content_base64: btoa(bin) });
     }
     if (blobs.length) {
-      const { missing } = await api("POST", "/blobs/missing", { hashes: blobs.map(b => b.hash) });
-      for (const b of blobs) if (missing.includes(b.hash)) await api("PUT", `/blobs/${b.hash}`, b.blob);
+      const { missing } = await api("POST", "/blobs/missing", { hashes: [...new Set(blobs.map(b => b.hash))] });
+      const todo = [...new Map(blobs.filter(b => missing.includes(b.hash)).map(b => [b.hash, b])).values()];
+      await Promise.all(Array.from({ length: 6 }, async () => { for (let b; (b = todo.shift());) await api("PUT", `/blobs/${b.hash}`, b.blob); }));
     }
     const req = { base_version: a.current_version, files };
     if (S.mirror.length) req.replace_dirs = S.mirror;

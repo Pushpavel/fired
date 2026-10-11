@@ -211,7 +211,9 @@ one file changed copies one file.
   rename.
 - **All or nothing:** any invalid path, missing blob, invalid spec or limit
   breach means no version is created.
-- **Limits:** `limits.max_files_per_version`, `limits.max_version_bytes`, and
+- **Limits:** `limits.max_files_per_version` (`artifact.json` isn't
+  counted), `limits.max_version_bytes`, the request body (twice
+  `limits.max_inline_bytes` plus 1 MiB; over it is `413 too_large`), and
   the quota key's `storage_bytes`, counted over distinct blobs.
 - **`run_now`** triggers those jobs right after the publish, so an agent
   learns quickly whether a job works. A blocked job isn't triggered; its

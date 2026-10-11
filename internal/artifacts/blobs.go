@@ -64,6 +64,16 @@ func (b *Blobs) Has(h string) bool {
 	return err == nil
 }
 
+// Touch reports whether blob h is stored, and if so refreshes its mtime:
+// whoever asked is about to reference it, so garbage collection gives it
+// the grace period again instead of removing it before the publish lands.
+func (b *Blobs) Touch(h string, now time.Time) bool {
+	if !validHash(h) {
+		return false
+	}
+	return os.Chtimes(b.path(h), now, now) == nil
+}
+
 // Put stores r under hash h, verifying the content. maxSize <= 0 means no
 // limit. Storing an existing blob is a no-op (it refreshes its mtime so a
 // concurrent garbage collection doesn't remove it before it's referenced).
