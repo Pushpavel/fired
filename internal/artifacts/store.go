@@ -278,7 +278,7 @@ func scanVersion(sc interface{ Scan(...any) error }) (*pa.Version, error) {
 	var d versionData
 	_ = json.Unmarshal([]byte(data), &d)
 	v.Parent, v.Label, v.Labels, v.RunID, v.Job = d.Parent, d.Label, d.Labels, d.RunID, d.Job
-	v.FileCount, v.SizeBytes, v.Spec = d.FileCount, d.SizeBytes, loadedSpec(d.Spec)
+	v.FileCount, v.SizeBytes, v.Spec = d.FileCount, d.SizeBytes, d.Spec
 	v.CreatedAt = fromMS(c)
 	return &v, nil
 }

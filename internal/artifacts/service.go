@@ -483,17 +483,18 @@ func (s *Service) specFor(tree map[string]pa.File) (pa.Spec, error) {
 	return spec, nil
 }
 
-// ensureSpecFile makes sure tree has an artifact.json, writing spec (or,
-// when nil, the default for the tree) if it has none, and sets the title
-// and description given.
-func (s *Service) ensureSpecFile(tree map[string]pa.File, spec *pa.Spec, title, description *string) error {
+// specFile gives tree its artifact.json. When the publish didn't bring one
+// (supplied is false), the current one is kept, or the default written for
+// a new artifact, and a default view (none, or html of index.html) follows
+// the files: index.html added or removed changes it. A view someone chose
+// is kept. Title and description, when set, replace just those fields.
+func (s *Service) specFile(tree, cur map[string]pa.File, supplied bool, title, description *string) error {
 	f, ok := tree[pa.SpecFile]
-	if ok && title == nil && description == nil {
-		return nil
+	if !ok {
+		f, ok = cur[pa.SpecFile] // left out by replace or a mirrored folder
 	}
 	var sp pa.Spec
-	switch {
-	case ok:
+	if ok {
 		data, err := s.blobs.ReadAll(f.Hash, 1<<20)
 		if err != nil {
 			return badRequest("%s: %v", pa.SpecFile, err)
@@ -501,16 +502,22 @@ func (s *Service) ensureSpecFile(tree map[string]pa.File, spec *pa.Spec, title, 
 		if sp, err = ParseSpec(data); err != nil {
 			return badRequest("%v", err)
 		}
-	case spec != nil:
-		sp = *spec
-	default:
-		sp = DefaultSpec(tree)
 	}
-	if title != nil {
-		sp.Title = *title
+	changed := !ok
+	if v := sp.View; !supplied && (v == nil || *v == defaultView) {
+		if want := DefaultSpec(tree).View; (v == nil) != (want == nil) {
+			sp.View, changed = want, true
+		}
 	}
-	if description != nil {
-		sp.Description = *description
+	if title != nil && *title != sp.Title {
+		sp.Title, changed = *title, true
+	}
+	if description != nil && *description != sp.Description {
+		sp.Description, changed = *description, true
+	}
+	if !changed {
+		tree[pa.SpecFile] = f
+		return nil
 	}
 	data := EncodeSpec(sp)
 	h, err := s.blobs.PutBytes(data)
@@ -716,12 +723,11 @@ func (s *Service) commitEdit(ctx context.Context, q querier, a *pa.Artifact, req
 	if len(tree) == 0 {
 		return nil, false, badRequest("a version needs at least one file")
 	}
-	if _, ok := tree[pa.SpecFile]; !ok {
-		if f, ok := cur[pa.SpecFile]; ok {
-			tree[pa.SpecFile] = f // left out (replace, a mirrored folder): kept
-		}
+	supplied := p.specHash != ""
+	for _, op := range p.ops {
+		supplied = supplied || op.path == pa.SpecFile
 	}
-	if err := s.ensureSpecFile(tree, nil, req.Title, req.Description); err != nil {
+	if err := s.specFile(tree, cur, supplied, req.Title, req.Description); err != nil {
 		return nil, false, err
 	}
 	if a.CurrentVersion > 0 && treesEqual(cur, tree) {
@@ -847,9 +853,6 @@ func (s *Service) Restore(ctx context.Context, id string, req pa.RestoreRequest)
 		if err != nil {
 			return err
 		}
-		if err := s.ensureSpecFile(tree, &old.Spec, nil, nil); err != nil {
-			return err
-		}
 		cur, err := getTree(ctx, q, id, a.CurrentVersion)
 		if err != nil {
 			return err
@@ -943,7 +946,7 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		if req.Title != "" {
 			title, spec.Title = &req.Title, req.Title
 		}
-		if err := s.ensureSpecFile(tree, &old.Spec, title, nil); err != nil {
+		if err := s.specFile(tree, nil, true, title, nil); err != nil {
 			return err
 		}
 		size, err := s.checkTree(ctx, q, req.QuotaKey, tree)

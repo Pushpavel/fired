@@ -234,7 +234,6 @@ func TestPublishSemantics(t *testing.T) {
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"views":[]}`)}, Spec: &pa.Spec{}},
 			{BaseVersion: cur, Spec: &pa.Spec{View: &pa.View{Type: "html", Entry: "nope.html"}}},
 			{BaseVersion: cur, Spec: &pa.Spec{View: &pa.View{Type: "flash", Entry: "index.html"}}},
-			{BaseVersion: cur, Spec: &pa.Spec{Views: []pa.View{{Type: "html", Entry: "index.html"}, {Type: "text", Entry: "index.html"}}}},
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"view":{"type":"html","entry":"index.html"},"views":[{"type":"html","entry":"index.html"}]}`)}},
 			{BaseVersion: cur, Files: []pa.FileOp{pa.Text(pa.SpecFile, `{"jobs":{"a":{"run":"x","schedul":"* * * * *"}}}`)}},
 			{BaseVersion: cur, Spec: &pa.Spec{Jobs: map[string]pa.Job{"a": {Run: "x", Schedule: "61 * * * *"}}}},
@@ -577,22 +576,10 @@ func TestCreateNeedsFirstVersion(t *testing.T) {
 	}
 }
 
-// An artifact has one view. The earlier "views" list is read when it has one
-// entry, and versions stored with several keep the first.
+// An artifact has one view; "views" is an unknown field like any other.
 func TestOneView(t *testing.T) {
-	h := newHarness(t, nil)
-	ctx := context.Background()
-	c := h.c
-	r := must(c.Create(ctx, pa.CreateArtifactRequest{ID: "legacy", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{
-		pa.Text("README.md", "# hi"), pa.Text(pa.SpecFile, `{"views":[{"type":"md","entry":"README.md"}]}`)}}}))(t)
-	if v := r.Publish.Version.Spec; v.View == nil || v.View.Type != "md" || v.Views != nil {
-		t.Fatalf("legacy views: %+v", v)
-	}
-	if v := loadedSpec(pa.Spec{Views: []pa.View{{Type: "md", Entry: "a"}, {Type: "csv", Entry: "b"}}}); v.View == nil || v.View.Entry != "a" || v.Views != nil {
-		t.Fatalf("loaded: %+v", v)
-	}
-	if _, err := ParseSpec([]byte(`{"views":[{"type":"md","entry":"a"},{"type":"csv","entry":"b"}]}`)); err == nil || !strings.Contains(err.Error(), "one view") {
-		t.Fatalf("two views: %v", err)
+	if _, err := ParseSpec([]byte(`{"views":[{"type":"md","entry":"a"}]}`)); err == nil || !strings.Contains(err.Error(), `unknown field "views"`) {
+		t.Fatalf("views: %v", err)
 	}
 }
 
@@ -647,4 +634,39 @@ func TestSpecFileAlwaysThere(t *testing.T) {
 	if fv := must(c.Version(ctx, f.ID, 1))(t); fv.Spec.Title != "Copy" {
 		t.Fatalf("fork spec: %+v", fv.Spec)
 	}
+}
+
+// A view nobody chose follows the files when a publish doesn't bring
+// artifact.json (a sandbox folder mirrored at the root): republishing the
+// same files is unchanged, index.html coming or going changes the view, and
+// a chosen view is kept.
+func TestDefaultViewFollowsFiles(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	c := h.c
+	mirror := func(base int, files ...string) *pa.PublishResult {
+		t.Helper()
+		var ops []pa.FileOp
+		for _, f := range files {
+			ops = append(ops, pa.Text(f, f))
+		}
+		return must(c.Publish(ctx, "mirror", pa.PublishRequest{BaseVersion: base, Replace: true, Files: ops}))(t)
+	}
+	must(c.Create(ctx, pa.CreateArtifactRequest{ID: "mirror", QuotaKey: "u", Publish: &pa.PublishRequest{Files: []pa.FileOp{pa.Text("page.html", "page.html")}}}))(t)
+	if r := mirror(1, "page.html"); !r.Unchanged {
+		t.Fatalf("same files: %+v", r)
+	}
+	if r := mirror(1, "page.html", "index.html"); r.Version.Spec.View == nil || r.Version.Spec.View.Entry != "index.html" {
+		t.Fatalf("index.html added: %+v", r.Version.Spec)
+	}
+	if r := mirror(2, "page.html"); r.Version.Spec.View != nil {
+		t.Fatalf("index.html removed: %+v", r.Version.Spec)
+	}
+	// Chosen: kept, and its entry going away is an error.
+	must(c.Publish(ctx, "mirror", pa.PublishRequest{BaseVersion: 3, Spec: &pa.Spec{View: &pa.View{Type: "text", Entry: "page.html"}}}))(t)
+	if r := mirror(4, "page.html", "index.html"); r.Version.Spec.View.Type != "text" {
+		t.Fatalf("chosen view: %+v", r.Version.Spec)
+	}
+	_, err := c.Publish(ctx, "mirror", pa.PublishRequest{BaseVersion: 5, Replace: true, Files: []pa.FileOp{pa.Text("index.html", "x")}})
+	wantCode(t, err, 400, "invalid_request")
 }

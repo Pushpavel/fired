@@ -53,7 +53,7 @@ durable storage. Runs happen on whichever fired host it points at.
   exported and forked with everything else. Every version has one: when a
   publish doesn't bring one, the current one is kept, and a new artifact
   gets the default (an html view of `index.html` if there is one, no jobs).
-  It can't be deleted.
+  It can't be deleted. A view nobody set follows the files (below).
 
 ## artifact.json
 
@@ -93,14 +93,16 @@ with its name, view and jobs.
 file, which must be in the version, and a `type`: `html`, `react`, `md`,
 `csv`, `json`, `text`, `image`, `svg` or `pdf`. An artifact has one view.
 Its other files are reached from the entry (links, imports, `fetch`) or
-listed as files, each at its own URL. Without a view, an `index.html` at
-the root is shown as html; without either, there's nothing to show but the
-files. The service serves raw files; rendering (compiling a JSX entry,
-showing a CSV as a table) is the viewer's job.
+listed as files, each at its own URL. The service serves raw files;
+rendering (compiling a JSX entry, showing a CSV as a table) is the viewer's
+job.
 
-The earlier form, a `"views"` list, is still read when it has one entry
-(it becomes `"view"`). A list of several is an error: pick the entry and
-link the rest from it.
+Unless someone sets it, the view follows the files: when a publish doesn't
+bring `artifact.json` (say, a sandbox folder mirrored at the root) and the
+current one has no view or the default one, `index.html` appearing sets
+the view to html of it, and `index.html` going away removes it. A view
+that was set (any other) is kept, and its entry going away fails the
+publish. Republishing the same files changes nothing.
 
 **Jobs**:
 

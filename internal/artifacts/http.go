@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -487,9 +486,8 @@ func (s *Service) handleRouted(w http.ResponseWriter, r *http.Request, id string
 	s.servePreview(w, r, id, n)
 }
 
-// handleExport streams a version as a zip of its files. artifact.json is
-// always in it: versions from before every version had one get theirs
-// written from the version's spec.
+// handleExport streams a version as a zip of its files, artifact.json
+// included.
 func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 	n, err := versionParam(r.PathValue("v"))
 	if err != nil {
@@ -504,11 +502,6 @@ func (s *Service) handleExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-v%d.zip"`, v.Artifact, v.Version))
 	zw := zip.NewWriter(w)
-	if !slices.ContainsFunc(v.Files, func(f pa.File) bool { return f.Path == pa.SpecFile }) {
-		if fw, err := zw.CreateHeader(&zip.FileHeader{Name: pa.SpecFile, Method: zip.Deflate, Modified: v.CreatedAt}); err == nil {
-			_, _ = fw.Write(EncodeSpec(v.Spec))
-		}
-	}
 	for _, f := range v.Files {
 		hdr := &zip.FileHeader{Name: f.Path, Method: zip.Deflate, Modified: v.CreatedAt}
 		hdr.SetMode(0o644)

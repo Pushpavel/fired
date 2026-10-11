@@ -57,53 +57,24 @@ func ParseSpec(data []byte) (pa.Spec, error) {
 	if dec.More() {
 		return s, fmt.Errorf("%s: trailing data after the JSON object", pa.SpecFile)
 	}
-	if err := oneView(&s); err != nil {
-		return s, fmt.Errorf("%s: %v", pa.SpecFile, err)
-	}
 	return s, nil
 }
 
-// oneView moves the earlier "views" form into View. An artifact has one
-// view: a list of several is an error.
-func oneView(s *pa.Spec) error {
-	switch {
-	case len(s.Views) == 0:
-		return nil
-	case s.View != nil:
-		return fmt.Errorf(`set "view", not both "view" and "views"`)
-	case len(s.Views) > 1:
-		return fmt.Errorf(`an artifact has one view: set "view" to the entry to show (views lists %d) and link the other files from it`, len(s.Views))
-	}
-	s.View, s.Views = &s.Views[0], nil
-	return nil
-}
-
-// loadedSpec is a spec read back from the database: one stored with
-// several views (before an artifact had one) keeps the first.
-func loadedSpec(s pa.Spec) pa.Spec {
-	if len(s.Views) > 0 && s.View == nil {
-		s.View = &s.Views[0]
-	}
-	s.Views = nil
-	return s
-}
-
-// EncodeSpec renders a spec as artifact.json content, a one-entry "views"
-// as "view".
+// EncodeSpec renders a spec as artifact.json content.
 func EncodeSpec(s pa.Spec) []byte {
-	if len(s.Views) == 1 && s.View == nil {
-		v := s.Views[0]
-		s.View, s.Views = &v, nil
-	}
 	b, _ := json.MarshalIndent(s, "", "  ")
 	return append(b, '\n')
 }
 
-// DefaultSpec is the spec of a tree without artifact.json: an index.html
-// at the root is viewed as html; there are no jobs.
+// defaultView is the view of a tree with an index.html at the root.
+var defaultView = pa.View{Type: "html", Entry: "index.html"}
+
+// DefaultSpec is what a new artifact's artifact.json says when it brings
+// none: an index.html at the root is viewed as html; there are no jobs.
 func DefaultSpec(tree map[string]pa.File) pa.Spec {
-	if _, ok := tree["index.html"]; ok {
-		return pa.Spec{View: &pa.View{Type: "html", Entry: "index.html"}}
+	if _, ok := tree[defaultView.Entry]; ok {
+		v := defaultView
+		return pa.Spec{View: &v}
 	}
 	return pa.Spec{}
 }
@@ -112,9 +83,6 @@ func DefaultSpec(tree map[string]pa.File) pa.Spec {
 func ValidateSpec(s *pa.Spec, tree map[string]pa.File) error {
 	var errs []string
 	add := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
-	if err := oneView(s); err != nil {
-		add("%v", err)
-	}
 	if len(s.Title) > 200 {
 		add("title is longer than 200 bytes")
 	}

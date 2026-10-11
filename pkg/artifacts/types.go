@@ -27,12 +27,10 @@ type Spec struct {
 	Description string `json:"description,omitempty"`
 	// View is how the artifact is shown: one entry file and how to render
 	// it. Other files are reached from it (links, imports) or listed as
-	// files. Without a view, an index.html at the root is shown as html.
-	View *View `json:"view,omitempty"`
-	// Views is the earlier form of View. It is still read, with at most
-	// one entry, and becomes View when the spec is parsed or loaded.
-	Views []View         `json:"views,omitempty"`
-	Jobs  map[string]Job `json:"jobs,omitempty"`
+	// files. Unless someone sets it, it follows the files: html of
+	// index.html when there is one, none otherwise.
+	View *View          `json:"view,omitempty"`
+	Jobs map[string]Job `json:"jobs,omitempty"`
 }
 
 // View says how the artifact's entry file is presented. The service serves
