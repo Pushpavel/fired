@@ -951,6 +951,11 @@ func (s *Service) Fork(ctx context.Context, id string, req pa.ForkRequest) (*pa.
 		if err := copyDocs(ctx, q, id, newIDv, now); err != nil {
 			return err
 		}
+		// The files were checked against the new key's storage; the
+		// documents it gets count too.
+		if err := s.checkStorage(ctx, q, req.QuotaKey); err != nil {
+			return err
+		}
 		if err := insertVersion(ctx, q, v, tree); err != nil {
 			return err
 		}

@@ -1140,6 +1140,18 @@ func TestDB(t *testing.T) {
 		}
 	})
 
+	t.Run("a fork's documents count against its key's storage", func(t *testing.T) {
+		// Room for the version's files, not for its documents.
+		must(c.SetDoc(ctx, "app", "other/x", map[string]any{"s": strings.Repeat("x", 180)}))(t)
+		v := must(c.Version(ctx, "app", 0))(t)
+		must(c.SetQuota(ctx, "small", pa.Quota{StorageBytes: v.SizeBytes + 50}))(t)
+		_, err := c.Fork(ctx, "app", pa.ForkRequest{ID: "app-copy", QuotaKey: "small"})
+		wantCode(t, err, 413, "quota_exceeded")
+		if _, err := c.Get(ctx, "app-copy"); err == nil {
+			t.Fatal("a refused fork left an artifact behind")
+		}
+	})
+
 	t.Run("delete a collection, clear, events and quota", func(t *testing.T) {
 		if err := c.DeleteDoc(ctx, "app", "tasks"); err != nil {
 			t.Fatal(err)
